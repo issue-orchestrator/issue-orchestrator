@@ -9,7 +9,7 @@ const item = (number, extra = {}) => ({
     kind: 'proposal', number, operation: 'reset_retry', title: `Proposal ${number}`,
     recommendation: 'Reset it', approval_effect: 'Resets and retries', link: `https://github.com/o/a/issues/${number}`,
     waiting_since: '', status: 'awaiting_approval', status_label: 'Awaiting your approval',
-    can_approve: true, can_decline: true, details: [], ...extra,
+    can_approve: true, can_decline: true, details: [], approval_steps: [], operator_steps: [], ...extra,
 });
 const section = (waiting, extra = {}) => ({
     repository: 'o/a', generated_at: 'now', waiting_count: waiting.length,
@@ -310,4 +310,27 @@ test('a hostile repository name or title never leaves its attribute', () => {
         const attributes = [...tag.matchAll(/\s([a-z-]+)(?:="[^"]*")?/g)].map(([, name]) => name);
         assert.ok(!attributes.includes('onmouseover'), tag);
     }
+});
+
+test('a decision shows the steps approval runs and the operator checklist, each list labelled (#8691)', () => {
+    const decision = item(530, {
+        operation: 'propose_decision',
+        approval_steps: ["Rewrites PR #525's `Closes #327` to `Refs #327`.", 'Sends PR #525 back for rework.'],
+        operator_steps: ['Raise the CI ceiling in .github/workflows/ci.yml <script>'],
+    });
+    const html = view().renderPage(page([repo(section([decision]))])).waiting;
+    const approval = html.match(/<p id="([^"]+)"><strong>Approving also:<\/strong><\/p><ol class="tl-steps" aria-labelledby="([^"]+)">(.*?)<\/ol>/);
+    assert.ok(approval, html);
+    assert.equal(approval[1], approval[2]);
+    assert.equal((approval[3].match(/<li>/g) || []).length, 2);
+    const checklist = html.match(/<p id="([^"]+)"><strong>You do by hand \(io cannot\):<\/strong><\/p><ul class="tl-checklist" aria-labelledby="([^"]+)">(.*?)<\/ul>/);
+    assert.ok(checklist, html);
+    assert.equal(checklist[1], checklist[2]);
+    assert.match(checklist[3], /aria-hidden="true">&#9744;<\/span> Raise the CI ceiling/);
+    assert.doesNotMatch(html, /<script>/);
+});
+
+test('an item with no steps renders neither list', () => {
+    const html = view().renderPage(page([repo(section([item(7)]))])).waiting;
+    assert.doesNotMatch(html, /Approving also|by hand/);
 });

@@ -38,6 +38,19 @@ ANSWERABLE_CODER_LABEL = "agent:exam-coder-asks-answerable"
 """Case I's coder that asks, before any work, a question its issue's spec
 answers, until the tech lead resolves it (porchpin#327)."""
 
+DECIDING_CODER_LABEL = "agent:exam-coder-asks-delivery"
+"""Case J's coder (#8691): it asks porchpin#459's question until a decision is
+posted on its issue (an approved ``propose_decision``, or a ``resolve_block``),
+then codes."""
+
+#: The question Case J's coder asks (porchpin#326/#459's shape). Its issue's
+#: spec names the decision and every consequence beyond the issue.
+DELIVERY_QUESTION = (
+    "Before I start: this issue cannot be delivered as filed. Which slice do I build now,"
+    " and what happens to the sibling issue, the parent's acceptance list, the older"
+    " proposal and the CI ceiling that this issue's 'Decision consequences' section names?"
+)
+
 #: The question Case I's answerable coder asks (porchpin#327's shape).
 ANSWERABLE_QUESTION = (
     "Before I start: should the buyer contact index be its own table with a deletion"

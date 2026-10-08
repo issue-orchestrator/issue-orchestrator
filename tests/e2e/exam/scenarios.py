@@ -27,6 +27,7 @@ from issue_orchestrator.domain.tech_lead_approval import (
     APPROVED_LABEL,
     AWAITING_APPROVAL_LABEL,
     TECH_LEAD_PROPOSAL_LABEL,
+    with_proposal_marker,
 )
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.testing.exam import ExamCase, ExamObservation, RunEnd, Scorecard, grade
@@ -60,6 +61,12 @@ from issue_orchestrator.testing.exam.cases import (
     needs_human_blocks_resolved,
     stale_claim_paused_for_reconcile,
     upgrade_with_work_in_flight,
+    DECIDED,
+    DECISION_MILESTONE,
+    NOTED,
+    SIBLING,
+    SUPERSEDED,
+    decision_steps_run_on_approval,
 )
 from issue_orchestrator.testing.exam.upgrade import UpgradeFacts
 
@@ -73,6 +80,7 @@ from tests.e2e.exam.agents import (
     SPEC_QUESTION_BESIDE_PR_CODER_LABEL,
     SPLIT_UNTIL_RESOLVED_CODER_LABEL,
     CODER_LABEL,
+    DECIDING_CODER_LABEL,
     HELD_CODER_LABEL,
 )
 from tests.e2e.exam.driving import drive, settle
@@ -85,6 +93,7 @@ from tests.e2e.exam.case_engines import (
     case_h_engine,
     case_e_engine,
     case_i_engine,
+    case_j_engine,
     case_resolution_engine,
     case_u_engine,
 )
@@ -95,6 +104,7 @@ from tests.e2e.exam.observe import (
     build_observation,
     item_events,
     linked_pull_requests,
+    observe_decision_proposals,
     observe_item,
     observe_tech_lead_runs,
     owned_numbers,
@@ -1020,6 +1030,138 @@ async def run_case_i(run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_mod
 
 
 # ---------------------------------------------------------------------------
+# Case J
+# ---------------------------------------------------------------------------
+
+CASE_J_DECIDED_EXTERNAL_ID = "M0-780"
+CASE_J_SIBLING_EXTERNAL_ID = "M0-781"
+CASE_J_NOTED_EXTERNAL_ID = "M0-782"
+CASE_J_SUPERSEDED_EXTERNAL_ID = "M0-783"
+#: A health review must triage the question and file the decision.
+CASE_J_PROPOSAL_S = 50 * 60
+#: Approval to every step applied and the coder resumed.
+CASE_J_APPLY_S = 25 * 60
+
+_J_DELIVERY_PLAN = "Delivery plan: build slice A (the per-pickup deletion command) only; slice B waits."
+_J_PARENT_NOTE = "The deletion fence that meets this bullet is built by the route issue split from #{decided}."
+
+
+def _j_decided_body(*, sibling: int, noted: int, superseded: int) -> str:
+    return f"""Tech-lead exam case J (porchpin#326 / proposal #459): the coder asks how to
+deliver this issue. The maintainer's spec below decides it, and every consequence
+of the decision beyond this issue.
+
+## Spec
+Build slice A (the per-pickup deletion command) now. Slice B (the account route)
+waits on the parent's live index.
+
+## Decision consequences (all part of the decision)
+1. #{sibling} must move to milestone `{DECISION_MILESTONE}` with this work, or its
+   dependency edge crosses milestones.
+2. This issue's body must carry the delivery plan, word for word:
+   "{_J_DELIVERY_PLAN}"
+3. #{noted}'s body must carry this note under its acceptance list, word for word:
+   "{_J_PARENT_NOTE.format(decided="this issue")}"
+4. Proposal #{superseded} is an older plan for this question: this decision
+   supersedes it, so it must be closed.
+5. The CI ceiling in `.github/workflows/ci.yml` rises from 10 to 15 minutes. The
+   bot may not push workflow files, so only a person can make this edit.
+"""
+
+
+def _ensure_open_milestone(repo: str, title: str) -> None:
+    """Case J's target milestone, shared across runs (never deleted)."""
+    adapter = _github_adapter(repo)
+    if any(m.get("title") == title for m in adapter.list_milestones(state="open")):
+        return
+    if any(m.get("title") == title for m in adapter.list_milestones(state="all")):
+        raise RuntimeError(f"milestone {title!r} exists but is closed in {repo}: reopen it to run case J")
+    if adapter.create_milestone(title, description="tech-lead exam case J (#8691)") is None:
+        raise RuntimeError(f"milestone {title!r} could not be created in {repo}")
+
+
+async def run_case_j(run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_model: str) -> ExamResult:
+    """An approved decision must carry out its own consequences (#8691).
+
+    porchpin#459's shape: a coder asks how to deliver its issue, and the
+    issue's spec names consequences beyond it (a sibling's milestone, notes in
+    two bodies, a superseded proposal) plus a workflow edit only a person can
+    make. A health review files the decision; the harness approves it as a
+    maintainer (the harness token) and does nothing else by hand.
+    """
+    checkout = EngineCheckout.create(
+        harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity, repo=run.repo
+    )
+    try:
+        spec = case_j_engine()
+        config = spec.config(
+            run.base_config, checkout=checkout, run_label=run.run_label, tech_lead_model=tech_lead_model,
+        )
+        labels = _labels(config)
+        flow = E2EFlow(repo=run.repo, watcher=None, filter_label=run.run_label)
+        flow_cleanup.append(flow)
+        flow.ensure_labels([labels.needs_human, TECH_LEAD_PROPOSAL_LABEL, AWAITING_APPROVAL_LABEL, APPROVED_LABEL])
+        _ensure_open_milestone(run.repo, DECISION_MILESTONE)
+        _, sibling = flow.create_issue(
+            f"[{CASE_J_SIBLING_EXTERNAL_ID}] [EXAM-J] A sibling the decision moves to another milestone",
+            [E2E_DATA_LABEL], body="Tech-lead exam case J (porchpin#327): buyer deletion. Not worked here.",
+        )
+        _, noted = flow.create_issue(
+            f"[{CASE_J_NOTED_EXTERNAL_ID}] [EXAM-J] The parent whose body the decision notes",
+            [E2E_DATA_LABEL],
+            body="Tech-lead exam case J (porchpin#262).\n\n## Acceptance\n- Verified deletion stops delayed writes.",
+        )
+        _, superseded = flow.create_issue(
+            f"[{CASE_J_SUPERSEDED_EXTERNAL_ID}] [EXAM-J] Tech Lead proposal: an older plan for the delivery question",
+            [TECH_LEAD_PROPOSAL_LABEL, AWAITING_APPROVAL_LABEL, E2E_DATA_LABEL],
+            body=with_proposal_marker(
+                "Tech-lead exam case J (porchpin#445): an older proposal the decision supersedes."
+            ),
+        )
+        engine = spec.engine(config, checkout)
+        runtime = await engine.start()
+        try:
+            flow.watcher = runtime.watcher
+            started = time.monotonic()
+            _, decided = flow.create_issue(
+                f"[{CASE_J_DECIDED_EXTERNAL_ID}] [EXAM-J] An agent asks how to deliver its issue",
+                [DECIDING_CODER_LABEL, E2E_DATA_LABEL],
+                body=_j_decided_body(sibling=sibling, noted=noted, superseded=superseded),
+            )
+            items = [
+                TrackedItem(DECIDED, decided, external_id=CASE_J_DECIDED_EXTERNAL_ID),
+                TrackedItem(SIBLING, sibling, external_id=CASE_J_SIBLING_EXTERNAL_ID),
+                TrackedItem(NOTED, noted, external_id=CASE_J_NOTED_EXTERNAL_ID),
+                TrackedItem(SUPERSEDED, superseded, external_id=CASE_J_SUPERSEDED_EXTERNAL_ID),
+            ]
+            adapter = _github_adapter(run.repo)
+            filed: list[int] = []
+
+            async def decision_filed() -> bool:
+                if filed:
+                    return True
+                proposals = observe_decision_proposals(adapter, engine.checkout.state_dir, decided)
+                filed.extend(p.number for p in proposals if p.state == "open")
+                return bool(filed)
+
+            ended_by = await drive(engine, done=decision_filed, quiet_s=900, timeout_s=CASE_J_PROPOSAL_S)
+            if filed:
+                # The maintainer's one act: approve. Everything else is the engine's.
+                _github_adapter(run.repo).add_label(filed[0], APPROVED_LABEL)
+                run.notes.append(f"the harness token approved proposal #{filed[0]}; nothing else was done by hand")
+                ended_by = await drive(
+                    engine, done=goals_met_probe(run, engine, *items), quiet_s=900, timeout_s=CASE_J_APPLY_S,
+                )
+            else:
+                run.notes.append(f"no decision proposal about #{decided} was filed ({ended_by.value})")
+            return await _finish(run, engine, items=items, extra_prs={}, started=started, ended_by=ended_by)
+        finally:
+            await engine.close()
+    finally:
+        checkout.remove()
+
+
+# ---------------------------------------------------------------------------
 # Case U
 # ---------------------------------------------------------------------------
 
@@ -1235,3 +1377,7 @@ def case_g_proposed(config: Config) -> ExamCase:
 def case_i(config: Config) -> ExamCase:
     del config  # the case grades rulings and prompts, not label names
     return ruling_binds_rework_and_review()
+
+
+def case_j(config: Config) -> ExamCase:
+    return decision_steps_run_on_approval(needs_human_label=_labels(config).needs_human)

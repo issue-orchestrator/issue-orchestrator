@@ -8168,6 +8168,13 @@
                 "approval_effect": {
                     "type": "string"
                 },
+                "approval_steps": {
+                    "items": {
+                        "minLength": 1,
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
                 "can_approve": {
                     "type": "boolean"
                 },
@@ -8197,6 +8204,13 @@
                 },
                 "operation": {
                     "type": "string"
+                },
+                "operator_steps": {
+                    "items": {
+                        "minLength": 1,
+                        "type": "string"
+                    },
+                    "type": "array"
                 },
                 "recommendation": {
                     "type": "string"
@@ -8235,7 +8249,9 @@
                 "status_label",
                 "can_approve",
                 "can_decline",
-                "details"
+                "details",
+                "approval_steps",
+                "operator_steps"
             ],
             "type": "object"
         },

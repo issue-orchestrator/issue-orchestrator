@@ -35,6 +35,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
+from .decision_steps import DECISION_STEPS_PROMPT_RULES
 from .tech_lead_artifacts import TriageClass
 
 
@@ -246,6 +247,7 @@ def render_triage_instructions(agenda: TriageAgenda) -> str:
         "  cause that came back after a resolve is the operator's: never resolve it",
         "  again. The operator's `tech_lead.authority.resolve_block` decides whether",
         "  it runs directly or waits for approval; the engine re-checks it either way.",
+        *DECISION_STEPS_PROMPT_RULES.rstrip("\n").splitlines(),
         "",
         "Items owed a triage this run:",
     ]

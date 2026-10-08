@@ -19,7 +19,7 @@ only (tamper evidence when they diverge).
 
 import json
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
@@ -30,6 +30,7 @@ from .session_run import SessionRunIdentity, canonical_run_dir_name
 from .blocked_item_triage import TriageGrant
 from .tech_lead_artifacts import ACT_LEVEL_TECH_LEAD_ACTIONS, DecisionFollowUp
 from .block_resolution import RESOLVE_BLOCK_ACTION, BlockResolution
+from .decision_steps import DecisionFollowThrough
 from .scoped_rework import ReworkRequest, ReworkTarget
 
 if TYPE_CHECKING:
@@ -891,6 +892,10 @@ class StoredTechLeadOp:
     # What a ``resolve_block`` op decides (#7658), recorded with the op so an
     # approval runs exactly the decision the operator read.
     resolution: BlockResolution | None = None
+    # What approving the decision executes beyond its item, and the
+    # operator's own checklist (#8691); a decision op's only, never empty
+    # on any other op.
+    follow_through: DecisionFollowThrough = field(default_factory=DecisionFollowThrough)
     schema_version: int = _SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -899,6 +904,10 @@ class StoredTechLeadOp:
                 f"Unsupported tech_lead op schema_version: {self.schema_version!r}"
             )
         _validate_stored_op_decision(self)
+        if not isinstance(cast(object, self.follow_through), DecisionFollowThrough):
+            raise ValueError("StoredTechLeadOp follow_through must be a DecisionFollowThrough")
+        if self.follow_through and self.op_type not in ("propose_decision", RESOLVE_BLOCK_ACTION):
+            raise ValueError("Only a decision op (propose_decision, resolve_block) carries follow-through steps")
         if self.op_type not in ACT_LEVEL_TECH_LEAD_ACTIONS:
             raise ValueError(
                 f"StoredTechLeadOp op_type must be one of"
@@ -968,6 +977,7 @@ class StoredTechLeadOp:
             ),
             "decision": self.decision.to_dict() if self.decision is not None else None,
             "resolution": self.resolution.to_dict() if self.resolution is not None else None,
+            "follow_through": self.follow_through.to_dict(),
         }
 
     @classmethod
@@ -1019,6 +1029,9 @@ class StoredTechLeadOp:
                 BlockResolution.from_mapping(data["resolution"], context="stored op")
                 if data.get("resolution") is not None
                 else None
+            ),
+            follow_through=DecisionFollowThrough.from_dict(
+                cast(dict[str, Any], data.get("follow_through") or {})
             ),
             schema_version=raw_schema,
         )

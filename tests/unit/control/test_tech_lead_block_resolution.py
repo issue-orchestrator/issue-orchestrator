@@ -17,6 +17,9 @@ from typing import Any
 
 import pytest
 
+from tests.unit.control.decision_steps_fakes import unused_decision_steps
+from issue_orchestrator.control.tech_lead_decision_steps import DecisionStepsOwner
+from issue_orchestrator.domain.decision_steps import DecisionFollowThrough, DecisionStep, DecisionStepKind
 from issue_orchestrator.control.standing_rulings import StandingRulingsOwner
 from issue_orchestrator.domain.standing_ruling import (
     RulingAuthority,
@@ -190,7 +193,7 @@ class World:
         self.bodies_written.append(number)
         self.github.bodies[number] = body
 
-    def executor(self) -> TechLeadBlockResolutionExecutor:
+    def executor(self, steps: DecisionStepsOwner | None = None) -> TechLeadBlockResolutionExecutor:
         labels = LabelManager(Config())
 
         def requeue(number: int) -> tuple[str, ...]:
@@ -222,6 +225,7 @@ class World:
             rulings=StandingRulingsOwner(
                 read_issue=self.github.issue, write_body=self.write_body, index=InMemoryStandingRulingsIndex(),
             ),
+            steps=steps or unused_decision_steps(),
         )
 
 
@@ -1093,3 +1097,63 @@ def test_a_narrowing_split_binds_the_parent_and_a_lift_binds_nothing(tmp_path: P
 
     assert len(parse_rulings_block(world.github.bodies[ITEM])) == 1
     assert parse_rulings_block(world.github.bodies.get(326, "")) == ()
+
+
+# -- steps beyond the item (#8691) ---------------------------------------------
+
+
+def _steps_owner(world: World) -> DecisionStepsOwner:
+    rulings = StandingRulingsOwner(
+        read_issue=world.github.issue, write_body=world.write_body, index=InMemoryStandingRulingsIndex(),
+    )
+    return DecisionStepsOwner(
+        read_issue=world.github.issue, read_pr=lambda number: None, list_milestones=lambda: [],
+        set_milestone=lambda number, milestone: None, write_body=world.write_body,
+        comment_marker_present=lambda number, marker: any(
+            marker in body for body in world.github.comments.get(number, [])),
+        apply_action=world.applier.apply, require_authority=lambda action, number: None,
+        rulings=rulings, block=world.block, repo_slug="porchpin/porchpin",
+    )
+
+
+def _approved_with_steps(*steps: DecisionStep) -> ResolveBlockAction:
+    from dataclasses import replace
+
+    return replace(_action(_resolution(title="Build the D1 index", body="ADR-0009 rules it.")),
+                   proposal_issue_number=501, follow_through=DecisionFollowThrough(steps=steps))
+
+
+def test_an_approved_answer_carries_out_its_steps_beyond_the_item_once(tmp_path: Path) -> None:
+    """porchpin#327/#501: the approved answer also notes its consequence in
+    another issue's body; it lands before the block comes off, once."""
+    world = World(tmp_path)
+    world.blocked_by(ITEM, _AGENT)
+    world.github.labels[290] = {AGENT}
+    action = _approved_with_steps(
+        DecisionStep(DecisionStepKind.RECORD_RULING, 290, text="#262's index is the one buyer registry."),
+        DecisionStep(DecisionStepKind.COMMENT, 290, text="Decided on #262."),
+    )
+    executor = world.executor(_steps_owner(world))
+
+    first = executor.apply(action)
+    applied = len(world.applier.applied)
+    again = executor.apply(action)
+
+    assert first.success and again.success, (first.error, again.error)
+    [ruling] = parse_rulings_block(world.github.bodies[290])
+    assert ruling.text == "#262's index is the one buyer registry."
+    assert sum("Decided on #262." in body for body in world.github.comments[290]) == 1
+    markers = [body for body in world.github.comments[501] if "io:decision-step:" in body]
+    assert len(markers) == 2
+    assert len([a for a in world.applier.applied[applied:] if not isinstance(a, AddCommentAction)]) == 0
+
+
+def test_an_answer_whose_step_no_longer_applies_is_refused_untouched(tmp_path: Path) -> None:
+    world = World(tmp_path)
+    world.blocked_by(ITEM, _AGENT)
+    action = _approved_with_steps(DecisionStep(DecisionStepKind.RECORD_RULING, 404, text="note"))
+
+    result = world.executor(_steps_owner(world)).apply(action)
+
+    assert result.details["refusal"] == BlockResolutionRefusal.STEP_NOT_APPLICABLE.value
+    assert world.applier.applied == [] and "needs-human" in world.github.labels[ITEM]

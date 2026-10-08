@@ -26,11 +26,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ..domain.decision_steps import DecisionStepKind
 from ..domain.tech_lead_artifacts import ACT_LEVEL_TECH_LEAD_ACTIONS
 from ..domain.tech_lead_session import TechLeadLaunchAuthority, TechLeadSessionFlavor
 
 if TYPE_CHECKING:
-    from ..domain.tech_lead_artifacts import TechLeadDecision
+    from ..domain.tech_lead_artifacts import ProposedTechLeadAction, TechLeadDecision
 
 #: Comment/routing proposals whose ``target_number`` must fall inside the
 #: general launch scope.
@@ -122,6 +123,9 @@ def target_scope_violation(
                     " no launch-observed retained-work authority for"
                     f" #{action.target_number}"
                 )
+            unbound = _unbound_rework_step(action, authority)
+            if unbound is not None:
+                return unbound
             continue
         if action.action_type not in TARGET_SCOPED_ACTION_TYPES:
             continue
@@ -130,5 +134,22 @@ def target_scope_violation(
                 f"proposed action {action.id} ({action.action_type}) targets"
                 f" #{action.target_number}, outside this session's launch"
                 f" scope: {_launch_scope_description(authority, allowed)}"
+            )
+    return None
+
+
+def _unbound_rework_step(action: "ProposedTechLeadAction", authority: TechLeadLaunchAuthority) -> str | None:
+    """A decision's ``request_pr_rework`` step needs the decided issue's PR as
+    observed at launch (#8691): the engine binds the rework to that head, as it
+    does a ``request_rework``'s, so the agent can name a PR but never a head."""
+    for step in action.follow_through.steps:
+        if step.kind is not DecisionStepKind.REQUEST_PR_REWORK:
+            continue
+        target = authority.observed_rework_target(step.number)
+        if target is None or target.issue_number != action.target_number:
+            return (
+                f"proposed action {action.id} ({action.action_type}) has a request_pr_rework step"
+                f" for PR #{step.number}, which is not #{action.target_number}'s open PR as this"
+                " session observed it at launch (tech-lead-data/scoped-rework-targets.json)"
             )
     return None

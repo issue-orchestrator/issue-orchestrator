@@ -1933,6 +1933,7 @@ class TechLeadTriagedItemPayload(BaseModel):
 class TechLeadWaitingItemPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     approval_effect: str
+    approval_steps: list[str]
     can_approve: bool = Field(..., strict=True)
     can_decline: bool = Field(..., strict=True)
     details: list[TechLeadDetailRowPayload]
@@ -1940,6 +1941,7 @@ class TechLeadWaitingItemPayload(BaseModel):
     link: str
     number: int = Field(..., ge=1, strict=True)
     operation: str
+    operator_steps: list[str]
     recommendation: str
     status: Literal['awaiting_approval', 'approved', 'approval_not_accepted', 'executing', 'merge_held', 'handed_over']
     status_label: str

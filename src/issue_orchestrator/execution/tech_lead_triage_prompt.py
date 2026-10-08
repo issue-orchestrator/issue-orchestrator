@@ -6,6 +6,8 @@ same rules are restated by the engine itself in every health review's prompt
 repository may run its own tech-lead prompt.
 """
 
+from ..domain.decision_steps import DECISION_STEPS_PROMPT_RULES
+
 #: The decision-file rules for ``propose_decision`` and ``triage_class``.
 TECH_LEAD_DECISION_TRIAGE_RULES = """- `propose_decision` puts ONE decision to the operator: `target_number` (the
   ISSUE it decides), the decision you recommend as `title`, and the question,
@@ -17,7 +19,7 @@ TECH_LEAD_DECISION_TRIAGE_RULES = """- `propose_decision` puts ONE decision to t
   the item's labels and milestone, and posts the decision on the item for the
   session that resumes it. Use it when an item waits on a decision (an agent's
   question, a split, a scope call) rather than escalating the question as-is.
-- `resolve_block` decides a `needs-human` WORK block yourself instead of
+""" + DECISION_STEPS_PROMPT_RULES + """- `resolve_block` decides a `needs-human` WORK block yourself instead of
   asking the operator: `target_number` (the ISSUE), your rationale as `body`,
   and a `resolution` object: `kind` (`answer`, `split` or `lift`), `causes`
   (the needs-human causes it discharges, from the item's `needs_human_causes`:

@@ -1788,6 +1788,7 @@ export interface TechLeadTriagedItemPayload {
 
 export interface TechLeadWaitingItemPayload {
   approval_effect: string;
+  approval_steps: string[];
   can_approve: boolean;
   can_decline: boolean;
   details: TechLeadDetailRowPayload[];
@@ -1795,6 +1796,7 @@ export interface TechLeadWaitingItemPayload {
   link: string;
   number: number;
   operation: string;
+  operator_steps: string[];
   recommendation: string;
   status: "awaiting_approval" | "approved" | "approval_not_accepted" | "executing" | "merge_held" | "handed_over";
   status_label: string;

@@ -19,7 +19,7 @@ that may have changed since.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Callable
 
 from ..contracts.engine_start import ActionAuthority, EffectiveCharter
@@ -28,6 +28,7 @@ from ..domain.tech_lead_charter import (
     PROMOTE_FINDING_KIND,
     CharterAuthority,
     CharterOutcome,
+    CharterReason,
     CharterRole,
     CharterVerdict,
     TechLeadCharter,
@@ -40,6 +41,7 @@ from .action_results import ActionResult
 from .tech_lead_mutation import NO_RECONCILIATION_SUBJECT, TechLeadMutation
 
 if TYPE_CHECKING:
+    from ..domain.tech_lead_artifacts import ProposedTechLeadAction
     from ..infra.config import Config
     from ..infra.config_models import TechLeadAuthorityConfig, TechLeadFindingsConfig
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
@@ -79,6 +81,24 @@ class TechLeadCharterPolicy:
 
     def executes(self, kind: str) -> bool:
         return self.decide(kind).executes
+
+    def decide_for(self, proposed: "ProposedTechLeadAction") -> CharterVerdict:
+        """The verdict for one proposed action: its kind's, except that a
+        decision carrying steps beyond its item (#8691: other issues' milestones
+        and bodies, a PR's routing) always waits for the operator, whatever the
+        dials let its kind do unattended."""
+        verdict = self.decide(proposed.action_type)
+        if not (verdict.executes and proposed.follow_through.steps):
+            return verdict
+        return replace(
+            verdict,
+            outcome=CharterOutcome.PROPOSED,
+            reason_code=CharterReason.FOLLOW_THROUGH_REQUIRES_APPROVAL,
+            reason=(
+                f"{proposed.action_type} carries steps beyond its item (other issues, its PR),"
+                " which run only on the operator's approval"
+            ),
+        )
 
     @property
     def promotion_lane_enabled(self) -> bool:

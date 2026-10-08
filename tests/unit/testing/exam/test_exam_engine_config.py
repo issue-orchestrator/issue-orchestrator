@@ -36,6 +36,7 @@ from tests.e2e.exam.case_engines import (
     case_h_engine,
     case_e_engine,
     case_i_engine,
+    case_j_engine,
     case_resolution_engine,
     case_u_engine,
 )
@@ -109,8 +110,9 @@ def _load_case_config(
         case_resolution_engine(resolve_block="execute"),
         case_resolution_engine(resolve_block="propose"),
         case_i_engine(RulingAgents(Path("/tmp/exam-i-prompts"))),
+        case_j_engine(),
     ],
-    ids=["A", "B", "C", "U", "D", "H", "E", "F", "G", "I"],
+    ids=["A", "B", "C", "U", "D", "H", "E", "F", "G", "I", "J"],
 )
 def test_every_case_engine_config_loads(
     spec: CaseEngine, tmp_path: Path, written: list[Path]
@@ -314,3 +316,20 @@ def test_case_i_captures_every_ruled_prompt(tmp_path: Path, written: list[Path])
     answerable = loaded.agents[ANSWERABLE_CODER_LABEL].command
     assert "--until-resolved" in answerable and "--asks" in answerable
     assert loaded.tech_lead.authority.mode_for("resolve_block") == "execute"
+
+
+def test_case_j_asks_until_a_decision_is_posted_and_decisions_wait_for_approval(
+    tmp_path: Path, written: list[Path]
+) -> None:
+    """#8691: the coder asks porchpin#459's question until a decision lands on
+    its issue; a health review triages it, and a decision waits for the
+    maintainer whatever the dials (it carries steps beyond the item)."""
+    from tests.e2e.exam.agents import DECIDING_CODER_LABEL
+
+    loaded = _load_case_config(case_j_engine(), tmp_path, written)
+
+    deciding = loaded.agents[DECIDING_CODER_LABEL]
+    assert "--until-resolved" in deciding.command and "--asks" in deciding.command
+    assert deciding.reviewer == REVIEWER_LABEL
+    assert loaded.tech_lead.health_review.interval_minutes > 0
+    assert loaded.tech_lead.authority.mode_for("resolve_block") == "propose"

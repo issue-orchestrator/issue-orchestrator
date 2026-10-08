@@ -101,6 +101,7 @@ from .actions import (
     SurfaceTechLeadProposalAction,
 )
 from .label_manager import LabelManager
+from .tech_lead_decision_steps import bind_follow_through
 from .tech_lead_concrete_actions import concrete_tech_lead_actions
 from ..domain.tech_lead_comment import provenance_footer
 from .proposal_dedup import similarity
@@ -353,7 +354,7 @@ class _DecisionActionPlanner:
     def plan(self, proposed: ProposedTechLeadAction) -> None:
         # The role and depth come from the action TYPE, never from anything the
         # agent wrote, so no proposal can pick a more permissive role (#7329).
-        verdict = self.policy.decide(proposed.action_type)
+        verdict = self.policy.decide_for(proposed)
         self.charter_log.note(proposed, verdict)
         before = list(self.actions)
         if verdict.advice_only and proposed.action_type != "create_issue":
@@ -417,6 +418,9 @@ class _DecisionActionPlanner:
         )
         if proposed.action_type == "recover_validated_work" and validated_work_authority is None:
             raise ValueError("recover_validated_work has no immutable launch authority")
+        follow_through = bind_follow_through(
+            proposed, rework_targets=self.rework_targets, report_text=self.report_text,
+        ) if proposed.follow_through else None
         key = proposal_ledger_key(
             proposed.action_type, proposed.target_number, rework_request=request,
             decision=_operator_decision(proposed),
@@ -434,7 +438,7 @@ class _DecisionActionPlanner:
                             if proposed.action_type == "kill_hung_session" else None,
                         rework_request=request,
                         validated_work_authority=validated_work_authority,
-                        observed_at=self.observed_at),
+                        observed_at=self.observed_at, follow_through=follow_through),
                     number=existing,
                     comment=build_duplicate_proposal_comment(
                         proposed, anchor_issue_number=self._anchor_number
@@ -477,6 +481,7 @@ class _DecisionActionPlanner:
                 rework_request=request,
                 validated_work_authority=validated_work_authority,
                 observed_at=self.observed_at,
+                follow_through=follow_through,
             )
         )
 

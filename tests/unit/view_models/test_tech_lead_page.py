@@ -307,3 +307,30 @@ def test_an_item_without_rulings_shows_none() -> None:
     section = _section(proposals=((_issue(10), None),), ops={10: _op()}, rulings={})
 
     assert not any(row.label.startswith("Standing ruling") for row in section.waiting[0].details)
+
+
+def test_a_decision_lists_its_steps_and_the_operator_checklist() -> None:
+    """#8691: what approval executes beyond the item, typed, and what only the
+    operator can do, as a checklist rather than prose in the body."""
+    from issue_orchestrator.domain.decision_steps import DecisionFollowThrough, DecisionStep, DecisionStepKind
+
+    follow_through = DecisionFollowThrough(
+        steps=(DecisionStep(DecisionStepKind.SET_MILESTONE, 327, milestone="M1 - Surfaces"),
+               DecisionStep(DecisionStepKind.CLOSE_SUPERSEDED_PROPOSAL, 445)),
+        operator_steps=("Raise the CI ceiling in .github/workflows/ci.yml",),
+    )
+    decision = OperatorDecision(title="Split #326", body="why", follow_ups=())
+    section = _section(
+        proposals=((_issue(459), None), (_issue(460), None)),
+        ops={459: _op("propose_decision", target=326, decision=decision, follow_through=follow_through),
+             460: _op()},
+    )
+
+    by_number = {item.number: item for item in section.waiting}
+    assert by_number[459].approval_steps == [
+        "Moves #327 to milestone `M1 - Surfaces`.",
+        "Closes proposal #445, which this decision supersedes.",
+    ]
+    assert by_number[459].operator_steps == ["Raise the CI ceiling in .github/workflows/ci.yml"]
+    assert "runs the 2 step(s) listed" in by_number[459].approval_effect
+    assert (by_number[460].approval_steps, by_number[460].operator_steps) == ([], [])

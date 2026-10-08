@@ -19,10 +19,17 @@ gated until everything the resumed session needs exists:
    a standing ruling** on the item (#8141): the approved decision binds every
    later session on the issue, so it goes into the issue body's rulings block
    (create-once by the proposal), where every prompt and review reads it.
+   Then **carry out the decision's steps beyond the item** (#8691: another
+   issue's milestone or body, a superseded proposal, the item's PR reference
+   line) through ``tech_lead_decision_steps``, each once, in order. Every
+   step's precondition is checked in step 1, so a decision whose step no
+   longer applies writes nothing.
 4. **Retry the item last**, through the operator's own retry command, the
    one owner of which labels a retry clears. The item stays blocked until the
    decision and its follow-ups are on GitHub, so no session resumes it
    without them.
+   A PR rework step follows the retry: the engine refuses a blocked issue's
+   rework.
 5. **Bracket the retry durably** (``ports/operator_decision_retries``): begun
    before it, committed after, then mark the proposal applied with a comment.
    A replay of the op (a marker or finalize write that failed) finds the retry
@@ -52,6 +59,7 @@ from ..ports.operator_issue_commands import OperatorCommandOutcome, OperatorComm
 from .actions import Action, ActionResult, AddCommentAction
 from .claim_gate import ClaimLostError
 from .reconciliation import ReconciliationRequired, build_expected_for_mutation
+from .tech_lead_decision_steps import DecisionStepContext
 from .tech_lead_op_actions import ApplyOperatorDecisionAction
 from .tech_lead_reset_retry import STALE_DOWNGRADE_MODE
 
@@ -62,6 +70,7 @@ if TYPE_CHECKING:
     from ..ports.issue import Issue
     from .label_manager import LabelManager
     from .standing_rulings import StandingRulingsOwner
+    from .tech_lead_decision_steps import DecisionStepsOwner
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +114,8 @@ class OperatorDecisionExecutor:
     retries: "DecisionRetryLedger"
     #: The owner the approved decision is recorded through as a standing ruling (#8141).
     rulings: "StandingRulingsOwner"
+    #: The owner of the decision's steps beyond the item (#8691).
+    steps: "DecisionStepsOwner"
 
     def apply(self, action: ApplyOperatorDecisionAction) -> ActionResult:
         prior = self.retries.decision_retry_state(proposal_issue_number=action.proposal_issue_number)
@@ -145,6 +156,10 @@ class OperatorDecisionExecutor:
         unrecorded = self._record_ruling(action)
         if unrecorded is not None:
             return ActionResult.fail(action, unrecorded, issue_number=action.issue_number)
+        before = self.steps.apply(_step_context(action), action.follow_through, after_release=False)
+        if before.failed is not None:  # the item stays blocked; a replay resumes at the step
+            return ActionResult.fail(action, f"decision step not applied: {before.failed}",
+                                     issue_number=action.issue_number)
         self.retries.begin_decision_retry(proposal_issue_number=proposal)
         outcome = self.retry_issue(action.issue_number)
         unsettled = _UNSETTLED_RETRY.get(outcome.status)
@@ -186,12 +201,18 @@ class OperatorDecisionExecutor:
         removed: tuple[str, ...],
         replayed: bool,
     ) -> ActionResult:
-        """Mark the proposal applied once the retry committed, and report it."""
+        """Run the steps that follow the release, mark the proposal applied
+        once the retry committed, and report it."""
         proposal = action.proposal_issue_number
+        after = self.steps.apply(_step_context(action), action.follow_through, after_release=True)
+        if after.failed is not None:  # the retry committed; a replay finishes the steps only
+            return ActionResult.fail(action, f"decision step not applied: {after.failed}",
+                                     issue_number=action.issue_number)
+        refused = "".join(f"\n- Refused at write time: {item}" for item in after.refused)
         marked = self._comment_once(
             proposal, applied_marker(proposal),
             f"Applied: #{action.issue_number} was retried with the decision posted on it."
-            f"\n\n{applied_marker(proposal)}",
+            f"{refused}\n\n{applied_marker(proposal)}",
             reason=f"operator decision {action.proposal_id} applied",
         )
         if marked is not None:
@@ -202,7 +223,8 @@ class OperatorDecisionExecutor:
             "proposal_type": OP_TYPE,
             "target_number": action.issue_number,
             "finding_ids": list(action.finding_ids),
-            "boundary": {"retried": list(removed), "follow_ups": list(follow_ups), "replayed": replayed},
+            "boundary": {"retried": list(removed), "follow_ups": list(follow_ups), "replayed": replayed,
+                         "steps": len(action.follow_through.steps), "steps_refused": list(after.refused)},
         }))
         logger.info(issue_log(action.issue_number,
             "Operator approved decision %s (proposal #%d): retried, follow-ups %s"),
@@ -226,7 +248,8 @@ class OperatorDecisionExecutor:
                     f"#{action.issue_number}'s {self.labels.needs_human} is held by"
                     f" {', '.join(held)}, which the operator's retry may not override"
                 )
-        return None
+        # Every step must still be applicable before the first write (#8691).
+        return self.steps.refusal(_step_context(action), action.follow_through)
 
     def _record_ruling(self, action: ApplyOperatorDecisionAction) -> str | None:
         """The approved decision as a standing ruling on the item (create-once); the failure, else None."""
@@ -283,6 +306,15 @@ class OperatorDecisionExecutor:
     def _inherited_labels(self, labels: Sequence[str]) -> list[str]:
         """The item's own labels (agent, priority, area), never workflow state."""
         return [label for label in labels if not self.labels.is_workflow_reserved(label)]
+
+def _step_context(action: ApplyOperatorDecisionAction) -> DecisionStepContext:
+    return DecisionStepContext(
+        action=action, subject=action.issue_number,
+        proposal_issue_number=action.proposal_issue_number,
+        anchor_issue_number=action.anchor_issue_number,
+        proposal_id=action.proposal_id, finding_ids=action.finding_ids,
+    )
+
 
 def _stale(action: ApplyOperatorDecisionAction, why: str) -> ActionResult:
     logger.warning(issue_log(action.issue_number, "Approved decision %s not applied: %s"),

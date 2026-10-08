@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..domain.block_resolution import PARENT, ParentDisposition
+from ..domain.decision_steps import follow_through_section
 
 if TYPE_CHECKING:
     from ..domain.tech_lead_session import StoredTechLeadOp
@@ -29,7 +30,7 @@ def resolution_proposal_section(op: "StoredTechLeadOp") -> str:
 
 ### Evidence
 {evidence}
-{_split_section(op)}
+{_split_section(op)}{follow_through_section(op.follow_through, subject=number)}
 ### What approving does
 
 1. Re-checks #{number}: still open, nothing running or claiming it, the causes

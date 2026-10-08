@@ -43,7 +43,8 @@ from issue_orchestrator.domain.standing_ruling import (
     RulingsBlockError,
     parse_rulings_block,
 )
-from issue_orchestrator.testing.exam.observation import BodyRulingFact, CapturedPrompt
+from issue_orchestrator.domain.decision_steps import DECISION_STEP_MARKER_PREFIX as DECISION_STEP_MARKER
+from issue_orchestrator.testing.exam.observation import BodyRulingFact, CapturedPrompt, DecisionProposalFact
 
 #: The tech lead's ``resolve_block`` decision comment (``domain/block_resolution.decision_marker``).
 RESOLUTION_COMMENT = "<!-- io:resolve-block:comment:decision="
@@ -304,7 +305,34 @@ def observe_item(
             len(adapter.issue_comment_bodies_containing(fact.number, REFUSED_APPROVAL_MARKER)) for fact in facts
         ),
         resolution_comments=tuple(adapter.issue_comment_bodies_containing(item.issue_number, RESOLUTION_COMMENT)),
+        milestone=issue.milestone or "",
+        decision_proposals=(
+            observe_decision_proposals(adapter, state_dir, item.issue_number) if state_dir is not None else ()
+        ),
     )
+
+
+#: The tech-lead actions that put a decision to the operator (#8691).
+_DECISION_KINDS = frozenset({"propose_decision", "resolve_block"})
+
+
+def observe_decision_proposals(adapter: Any, state_dir: Path, issue_number: int) -> tuple[DecisionProposalFact, ...]:
+    """Every decision proposal the charter ledger records about the item, as
+    GitHub holds it: its body and its per-step markers (#8691)."""
+    numbers = sorted({
+        decision.proposal_issue_number for decision in _charter_records(state_dir, issue_number)
+        if decision.action_kind in _DECISION_KINDS and decision.proposal_issue_number is not None
+    })
+    facts = []
+    for number in numbers:
+        proposal = adapter.get_issue(number)
+        if proposal is None:
+            raise RuntimeError(f"decision proposal #{number} vanished while observing")
+        facts.append(DecisionProposalFact(
+            number=number, state=str(proposal.state), body=proposal.body or "",
+            step_comments=tuple(adapter.issue_comment_bodies_containing(number, DECISION_STEP_MARKER)),
+        ))
+    return tuple(facts)
 
 
 def _body_rulings(body: str | None) -> tuple[tuple[BodyRulingFact, ...], str]:

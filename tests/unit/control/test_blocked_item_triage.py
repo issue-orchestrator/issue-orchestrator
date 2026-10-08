@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tests.unit.control.decision_steps_fakes import unused_decision_steps
 from issue_orchestrator.control.standing_rulings import StandingRulingsOwner
 from issue_orchestrator.domain.standing_ruling import StandingRuling
 from tests.standing_ruling_helpers import InMemoryStandingRulingsIndex
@@ -609,6 +610,7 @@ def _executor(host: _Host, retry, *, held: tuple[str, ...] = (), authority=None)
         rulings=StandingRulingsOwner(
             read_issue=host.get_issue, write_body=host.write_body, index=InMemoryStandingRulingsIndex(),
         ),
+        steps=unused_decision_steps(),
     )
 
 

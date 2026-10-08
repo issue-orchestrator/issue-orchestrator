@@ -229,6 +229,8 @@ def _proposal(
     op = inputs.ops.get(issue.number)
     details: list[TechLeadDetailRowPayload] = []
     receipt = None
+    approval_steps: list[str] = []
+    operator_steps: list[str] = []
     if op is None:
         operation = "follow_up"
         recommendation = issue.title
@@ -245,6 +247,11 @@ def _proposal(
                 f"Files {len(op.decision.follow_ups)} follow-up issue(s), posts this decision on"
                 f" #{op.target_issue_number}, then retries #{op.target_issue_number}."
             )
+        # A decision's steps beyond its item, and what the operator does by hand (#8691).
+        approval_steps = [step.describe(op.target_issue_number) for step in op.follow_through.steps]
+        operator_steps = list(op.follow_through.operator_steps)
+        if approval_steps:
+            effect += f" It also runs the {len(approval_steps)} step(s) listed, once each, in order."
         if op.rework_request is not None:
             key = op.rework_request.key
             receipt = next((item for item in inputs.rework_receipts if item.request_key == key), None)
@@ -266,6 +273,8 @@ def _proposal(
         can_approve=open_for_decision and status in ("awaiting_approval", "approval_not_accepted"),
         can_decline=open_for_decision,
         details=details,
+        approval_steps=approval_steps,
+        operator_steps=operator_steps,
     )
 
 
@@ -351,6 +360,8 @@ def _merge_ready(
         can_approve=False,
         can_decline=False,
         details=details,
+        approval_steps=[],
+        operator_steps=[],
     )
 
 
@@ -371,6 +382,8 @@ def _hand_over(
         can_approve=False,
         can_decline=False,
         details=ruling_details(rulings, issue.number),
+        approval_steps=[],
+        operator_steps=[],
     )
 
 

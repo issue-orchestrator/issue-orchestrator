@@ -94,6 +94,7 @@ from .actions import (
 )
 from .claim_gate import ClaimLostError
 from .reconciliation import ReconciliationRequired, build_expected_for_mutation
+from .tech_lead_decision_steps import DecisionStepContext
 from .tech_lead_reset_retry import STALE_DOWNGRADE_MODE, publish_proposal_surfaced
 
 if TYPE_CHECKING:
@@ -107,6 +108,7 @@ if TYPE_CHECKING:
     from .published_review_custody import PublishedReviewHolds
     from .review_exchange_lifecycle import IssueRuntimeActivity
     from .standing_rulings import StandingRulingsOwner
+    from .tech_lead_decision_steps import DecisionStepsOwner
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +143,8 @@ class BlockResolutionRefusal(StrEnum):
     RESOLVED_BEFORE = "resolved_before"
     #: The item, the agent's question or the decision names human-only work.
     HUMAN_ONLY_WORK = "human_only_work"
+    #: A step the decision executes beyond its item no longer applies (#8691).
+    STEP_NOT_APPLICABLE = "step_not_applicable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +206,8 @@ class TechLeadBlockResolutionExecutor:
     index_proposals: Callable[[list[int]], None]
     #: The owner the decided answer is recorded through as a standing ruling (#8141).
     rulings: "StandingRulingsOwner"
+    #: The owner of the decision's steps beyond the item (#8691).
+    steps: "DecisionStepsOwner"
 
     # -- preconditions --------------------------------------------------------
 
@@ -222,6 +228,8 @@ class TechLeadBlockResolutionExecutor:
             cause = NeedsHumanCause(value)
             priors[cause] = priors.get(cause, frozenset()) | decisions
         refusal = self._block_refusal(action, issue, priors)
+        if refusal is None and (step := self.steps.refusal(_step_context(action), action.follow_through)):
+            refusal = RefusedResolution(BlockResolutionRefusal.STEP_NOT_APPLICABLE, step)
         return refusal or ResolvableBlock(issue)
 
     def stale_reason(self, action: ResolveBlockAction) -> str | None:
@@ -335,6 +343,7 @@ class TechLeadBlockResolutionExecutor:
             (f"{self.labels.pr_pending} not put on", lambda: self._gate_published_review(action, issue)),
             ("decision not posted", lambda: self._post_decision(action)),
             ("standing ruling not recorded on", lambda: self._record_ruling(action)),
+            ("decision step not applied for", lambda: self._apply_steps(action, after_release=False)),
         ):
             failed = step()
             if failed is not None:
@@ -393,6 +402,10 @@ class TechLeadBlockResolutionExecutor:
             return ActionResult.fail_limited(
                 action, f"discharge not recorded on #{action.issue_number}: {marked.error}",
                 marked.host_rate_limit, issue_number=action.issue_number, proposal_id=action.proposal_id)
+        stepped = self._apply_steps(action, after_release=True)
+        if stepped is not None:  # the discharge committed: a replay finishes the steps only
+            return ActionResult.fail(action, f"decision step not applied for #{action.issue_number}: {stepped.error}",
+                                     issue_number=action.issue_number, proposal_id=action.proposal_id)
         if parent.state != "open":
             return self._applied(action, children=children, outcome=outcome, still_blocked=())
         if action.resolution.parent is ParentDisposition.CLOSE and outcome is BlockOutcome.CLEARED:
@@ -626,6 +639,12 @@ class TechLeadBlockResolutionExecutor:
             f"tech lead {action.decision_id}: record the discharge on #{action.issue_number}",
         )
 
+    def _apply_steps(self, action: ResolveBlockAction, *, after_release: bool) -> ActionResult | None:
+        """One phase of the decision's steps (#8691); the failure, else None.
+        A step refused by a race after the check is recorded on the proposal."""
+        applied = self.steps.apply(_step_context(action), action.follow_through, after_release=after_release)
+        return None if applied.failed is None else ActionResult.fail(action, applied.failed)
+
     def _comment_once(
         self, action: ResolveBlockAction, marker: str, comment: str, reason: str
     ) -> ActionResult | None:
@@ -658,6 +677,14 @@ def _predecessor(child: ResolutionChild, parent: "Issue", earlier: tuple[int, ..
     if child.after is None:
         return None
     return parent.number if child.after == PARENT else earlier[int(child.after) - 1]
+
+
+def _step_context(action: ResolveBlockAction) -> DecisionStepContext:
+    return DecisionStepContext(
+        action=action, subject=action.issue_number, proposal_issue_number=action.proposal_issue_number,
+        anchor_issue_number=action.anchor_issue_number, proposal_id=action.proposal_id,
+        finding_ids=action.finding_ids,
+    )
 
 
 def _decision_comment(action: ResolveBlockAction) -> str:

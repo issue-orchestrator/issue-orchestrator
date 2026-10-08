@@ -27,6 +27,7 @@ from ..control.issue_work_claims import claims_on_issue
 from ..control.session_history import SessionHistoryOwner
 from ..infra.repo_scope import require_repo
 from ..control.tech_lead_review_release import TechLeadReviewReleaseExecutor
+from ..control.tech_lead_decision_steps import DecisionStepsOwner
 from ..control.tech_lead_operator_decision import OperatorDecisionExecutor
 from ..control.tech_lead_block_resolution import TechLeadBlockResolutionExecutor
 from ..control.blocked_item_triage import agent_questions_in
@@ -132,6 +133,28 @@ def build_tech_lead_operator_decision_executor(
         require_authority=deps.action_applier.require_mutation_authority,
         retries=deps.tech_lead_authority,
         rulings=deps.standing_rulings,
+        steps=build_decision_steps_owner(orchestrator, host),
+    )
+
+
+def build_decision_steps_owner(orchestrator: "Orchestrator", host: "RepositoryHost") -> DecisionStepsOwner:
+    """Bind a decision's steps beyond its item (#8691) to the owner of each write:
+    the guarded applier (comments, closes, PR rework), the standing-rulings
+    owner (body blocks), and fresh repository reads and writes behind the
+    applier's mutation-authority check."""
+    deps = orchestrator.deps
+    return DecisionStepsOwner(
+        read_issue=host.get_issue,
+        read_pr=host.get_pr,
+        list_milestones=host.list_milestones,
+        set_milestone=host.update_issue_milestone,
+        write_body=host.update_issue_body,
+        comment_marker_present=host.issue_comment_marker_present,
+        apply_action=deps.action_applier.apply,
+        require_authority=deps.action_applier.require_mutation_authority,
+        rulings=deps.standing_rulings,
+        block=deps.needs_human_block,
+        repo_slug=require_repo(orchestrator.config),
     )
 
 
@@ -176,6 +199,7 @@ def build_tech_lead_block_resolution_executor(
         discharges=deps.tech_lead_authority,
         index_proposals=deps.tech_lead_authority.proposal_index.index_proposals,
         rulings=deps.standing_rulings,
+        steps=build_decision_steps_owner(orchestrator, host),
     )
 
 

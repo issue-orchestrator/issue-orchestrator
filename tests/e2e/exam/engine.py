@@ -25,6 +25,8 @@ from tests.e2e.exam.agents import (
     RULED_CODER_LABEL,
     ASKING_BESIDE_PR_CODER_LABEL,
     ASKING_CODER_LABEL,
+    DECIDING_CODER_LABEL,
+    DELIVERY_QUESTION,
     ASKING_PROVISIONING_CODER_LABEL,
     BESIDE_PR_QUESTION,
     CODER_LABEL,
@@ -74,6 +76,7 @@ def exam_config(
     reviewer_changes_once: Path | None = None,
     resolution_coders: bool = False,
     ruling_agents: "RulingAgents | None" = None,
+    deciding_coder: bool = False,
 ) -> Config:
     """The e2e session config, pointed at the checkout, with exam agents.
 
@@ -92,6 +95,9 @@ def exam_config(
     reviewer capture each prompt they are launched with (the reviewer still
     approves whatever it sees), and a coder asks a question its issue's spec
     answers until the tech lead resolves it.
+
+    With ``deciding_coder`` (Case J, #8691), a coder asks porchpin#459's
+    question until a decision is posted on its issue, then codes.
 
     With ``release_file``, work is held mid-flight until the file exists:
     every review waits, and ``HELD_CODER_LABEL`` is a coder that waits before
@@ -186,6 +192,17 @@ def exam_config(
             )
     if ruling_agents is not None:
         _add_ruling_agents(config, prompt, ruling_agents)
+    if deciding_coder:
+        config.agents[DECIDING_CODER_LABEL] = AgentConfig(
+            prompt_path=prompt,
+            timeout_minutes=3,
+            model="sonnet",
+            command=shim_command("coder", asks=DELIVERY_QUESTION, until_resolved=True),
+            meta_agent="claude-code",
+            ai_system="claude-code",
+            provider_args={"permission_mode": "bypassPermissions"},
+            reviewer=REVIEWER_LABEL,
+        )
     if tech_lead_model:
         config.agents[TECH_LEAD_LABEL] = AgentConfig(
             prompt_path=checkout.root / TECH_LEAD_PROMPT,
