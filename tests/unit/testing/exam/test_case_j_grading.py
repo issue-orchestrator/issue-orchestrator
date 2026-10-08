@@ -22,8 +22,10 @@ from issue_orchestrator.testing.exam.cases import (
     DECIDED,
     DECISION_MILESTONE,
     DECISION_STEPS_RUN_ON_APPROVAL,
+    DELIVERY_PLAN_NOTE,
     EXAM_CASE_IDS,
     NOTED,
+    PARENT_NOTE,
     SIBLING,
     SUPERSEDED,
     decision_steps_run_on_approval,
@@ -35,14 +37,15 @@ DECIDED_N, SIBLING_N, NOTED_N, SUPERSEDED_N, PROPOSAL_N = 920, 921, 922, 923, 93
 STEPS = DecisionFollowThrough(
     steps=(
         DecisionStep(DecisionStepKind.SET_MILESTONE, SIBLING_N, milestone=DECISION_MILESTONE),
-        DecisionStep(DecisionStepKind.RECORD_RULING, DECIDED_N, text="Delivery plan: slice A only."),
-        DecisionStep(DecisionStepKind.RECORD_RULING, NOTED_N, text="The fence is built by the route issue."),
+        DecisionStep(DecisionStepKind.RECORD_RULING, DECIDED_N, text=DELIVERY_PLAN_NOTE),
+        DecisionStep(DecisionStepKind.RECORD_RULING, NOTED_N, text=PARENT_NOTE),
         DecisionStep(DecisionStepKind.CLOSE_SUPERSEDED_PROPOSAL, SUPERSEDED_N),
     ),
     operator_steps=("Raise the CI ceiling in .github/workflows/ci.yml to 15 minutes.",),
 )
 BODY = f"## Decision for #{DECIDED_N}: build slice A\n{follow_through_section(STEPS, subject=DECIDED_N)}"
-RULING = (BodyRulingFact("ds-930-2", "approved_decision", "Delivery plan: slice A only."),)
+RULING = (BodyRulingFact("pd-930", "approved_decision", "## Build slice A\n\nwhy"),
+          BodyRulingFact("ds-930-2", "approved_decision", DELIVERY_PLAN_NOTE))
 
 
 def _applied(*indices: int, verb: str = "applied") -> tuple[str, ...]:
@@ -62,7 +65,7 @@ def _right() -> tuple[WorkItemFact, ...]:
         _decided(),
         replace(item(), role=SIBLING, issue_number=SIBLING_N, milestone=DECISION_MILESTONE),
         replace(item(), role=NOTED, issue_number=NOTED_N,
-                body_rulings=(BodyRulingFact("ds-930-3", "approved_decision", "The fence."),)),
+                body_rulings=(BodyRulingFact("ds-930-3", "approved_decision", PARENT_NOTE),)),
         replace(item(), role=SUPERSEDED, issue_number=SUPERSEDED_N, issue_state="closed"),
     )
 
@@ -92,14 +95,15 @@ def test_hand_steps_left_to_the_operator_fail_every_consequence() -> None:
     prose = (f"## Decision for #{DECIDED_N}\n\n### Before you approve\n1. Move #{SIBLING_N} to"
              f" {DECISION_MILESTONE}.\n2. Raise the CI ceiling in ci.yml.")
     failed = _failed(
-        _decided(body=prose, comments=()),
+        replace(_decided(body=prose, comments=()), body_rulings=RULING[:1]),
         replace(item(), role=SIBLING, issue_number=SIBLING_N, milestone="M0"),
         replace(item(), role=NOTED, issue_number=NOTED_N),
         replace(item(), role=SUPERSEDED, issue_number=SUPERSEDED_N, issue_state="open"),
     )
     assert failed == {
         "decided.decision_steps_ran_once", "decided.operator_checklist", "decided.no_hand_steps_in_prose",
-        "sibling.in_milestone", "noted.ruling_in_body", "superseded.issue_closed",
+        "decided.body_ruling_states_note", "sibling.in_milestone", "noted.body_ruling_states_note",
+        "superseded.issue_closed",
     }
 
 
@@ -121,3 +125,13 @@ def test_the_item_still_blocked_fails() -> None:
 def test_observation_round_trips_the_new_facts() -> None:
     decided = _decided()
     assert WorkItemFact.from_dict(decided.to_dict()) == decided
+
+
+def test_each_missing_note_fails_on_its_own() -> None:
+    """r2 F5: the decision's own ruling does not stand in for the delivery plan,
+    nor any other ruling for the parent's note."""
+    decided = _right()[0]
+    only_decision = replace(decided, body_rulings=decided.body_rulings[:1])
+    assert _failed(*_with(only_decision)) == {"decided.body_ruling_states_note"}
+    noted = replace(_right()[2], body_rulings=(BodyRulingFact("pd-1", "approved_decision", "other"),))
+    assert _failed(_right()[0], _right()[1], noted, _right()[3]) == {"noted.body_ruling_states_note"}

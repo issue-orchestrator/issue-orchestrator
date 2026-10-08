@@ -813,3 +813,18 @@ def no_hand_steps_in_prose(role: str) -> Goal:
 
     return Goal(f"{role}.no_hand_steps_in_prose", role,
                 f"the {role} decision carries no 'Before you approve' chores", check)
+
+
+def body_ruling_states(role: str, text: str, *, authority: str) -> Goal:
+    """The item's body carries ``text`` word for word in a standing ruling of
+    ``authority`` (#8691: a decision step's note, not just the decision itself)."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        if item.body_rulings_error:
+            return GoalCheck(False, f"issue #{item.issue_number}'s rulings block: {item.body_rulings_error}")
+        stating = [r.ruling_id for r in item.body_rulings if r.authority == authority and text in r.text]
+        listed = [r.ruling_id for r in item.body_rulings] or "none"
+        return GoalCheck(bool(stating), f"#{item.issue_number}: rulings {listed}; stating the note: {stating or 'none'}")
+
+    return Goal(f"{role}.body_ruling_states_note", role,
+                f"the {role} issue body carries the decided note as a standing ruling", check)

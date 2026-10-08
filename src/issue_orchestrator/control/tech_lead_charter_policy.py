@@ -85,18 +85,19 @@ class TechLeadCharterPolicy:
     def decide_for(self, proposed: "ProposedTechLeadAction") -> CharterVerdict:
         """The verdict for one proposed action: its kind's, except that a
         decision carrying steps beyond its item (#8691: other issues' milestones
-        and bodies, a PR's routing) always waits for the operator, whatever the
-        dials let its kind do unattended."""
+        and bodies, a PR's routing) or an operator checklist always waits for the
+        operator, whatever the dials let its kind do unattended: the operator
+        must see both before anything moves."""
         verdict = self.decide(proposed.action_type)
-        if not (verdict.executes and proposed.follow_through.steps):
+        if not (verdict.executes and proposed.follow_through):
             return verdict
         return replace(
             verdict,
             outcome=CharterOutcome.PROPOSED,
             reason_code=CharterReason.FOLLOW_THROUGH_REQUIRES_APPROVAL,
             reason=(
-                f"{proposed.action_type} carries steps beyond its item (other issues, its PR),"
-                " which run only on the operator's approval"
+                f"{proposed.action_type} carries steps beyond its item or an operator checklist,"
+                " which wait for the operator's approval"
             ),
         )
 

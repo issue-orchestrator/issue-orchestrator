@@ -94,6 +94,19 @@ class StandingRulingsOwner:
             source=source, scope=scope, recorded_at=self.clock().isoformat(),
         )
 
+    def unrecordable(self, issue_number: int, ruling: StandingRuling) -> str | None:
+        """Why :meth:`record` would fail for *ruling* now (an unreadable issue, a
+        malformed rulings block, a block that would not fit), else None. Reads only:
+        a caller with several writes checks this before its first (#8691)."""
+        try:
+            issue = self._read(issue_number)
+            current = self._parse(issue_number, issue.body)
+            if not any(existing.ruling_id == ruling.ruling_id for existing in current):
+                with_rulings_block(issue.body, (*current, ruling))
+        except (StandingRulingsUnavailable, RulingsBlockError) as error:
+            return str(error)
+        return None
+
     def record(self, issue_number: int, ruling: StandingRuling) -> RecordOutcome:
         """Put *ruling* on the issue, create-once by its id. Raises on any failure."""
         with self._lock:

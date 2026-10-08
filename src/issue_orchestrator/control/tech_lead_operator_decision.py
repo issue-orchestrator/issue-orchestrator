@@ -134,6 +134,12 @@ class OperatorDecisionExecutor:
         if refusal is not None:
             return _stale(action, refusal)
         assert target is not None  # a missing issue is a refusal
+        steps_refused = self.steps.refusal(_step_context(action), action.follow_through)
+        if steps_refused is not None:
+            # A partial one already changed other items: the operator's, never stale.
+            return (ActionResult.fail(action, steps_refused.hand_back(), issue_number=action.issue_number)
+                    if steps_refused.partial else _stale(action, steps_refused.reason))
+        self.steps.check_authority(_step_context(action), action.follow_through)
         try:
             follow_ups = tuple(
                 self._file_follow_up(action, target, index, follow_up)
@@ -248,8 +254,7 @@ class OperatorDecisionExecutor:
                     f"#{action.issue_number}'s {self.labels.needs_human} is held by"
                     f" {', '.join(held)}, which the operator's retry may not override"
                 )
-        # Every step must still be applicable before the first write (#8691).
-        return self.steps.refusal(_step_context(action), action.follow_through)
+        return None
 
     def _record_ruling(self, action: ApplyOperatorDecisionAction) -> str | None:
         """The approved decision as a standing ruling on the item (create-once); the failure, else None."""

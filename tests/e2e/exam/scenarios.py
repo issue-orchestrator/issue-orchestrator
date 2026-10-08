@@ -63,7 +63,9 @@ from issue_orchestrator.testing.exam.cases import (
     upgrade_with_work_in_flight,
     DECIDED,
     DECISION_MILESTONE,
+    DELIVERY_PLAN_NOTE,
     NOTED,
+    PARENT_NOTE,
     SIBLING,
     SUPERSEDED,
     decision_steps_run_on_approval,
@@ -1042,8 +1044,6 @@ CASE_J_PROPOSAL_S = 50 * 60
 #: Approval to every step applied and the coder resumed.
 CASE_J_APPLY_S = 25 * 60
 
-_J_DELIVERY_PLAN = "Delivery plan: build slice A (the per-pickup deletion command) only; slice B waits."
-_J_PARENT_NOTE = "The deletion fence that meets this bullet is built by the route issue split from #{decided}."
 
 
 def _j_decided_body(*, sibling: int, noted: int, superseded: int) -> str:
@@ -1059,9 +1059,9 @@ waits on the parent's live index.
 1. #{sibling} must move to milestone `{DECISION_MILESTONE}` with this work, or its
    dependency edge crosses milestones.
 2. This issue's body must carry the delivery plan, word for word:
-   "{_J_DELIVERY_PLAN}"
+   "{DELIVERY_PLAN_NOTE}"
 3. #{noted}'s body must carry this note under its acceptance list, word for word:
-   "{_J_PARENT_NOTE.format(decided="this issue")}"
+   "{PARENT_NOTE}"
 4. Proposal #{superseded} is an older plan for this question: this decision
    supersedes it, so it must be closed.
 5. The CI ceiling in `.github/workflows/ci.yml` rises from 10 to 15 minutes. The

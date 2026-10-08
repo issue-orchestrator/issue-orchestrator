@@ -1157,3 +1157,25 @@ def test_an_answer_whose_step_no_longer_applies_is_refused_untouched(tmp_path: P
 
     assert result.details["refusal"] == BlockResolutionRefusal.STEP_NOT_APPLICABLE.value
     assert world.applier.applied == [] and "needs-human" in world.github.labels[ITEM]
+
+
+def test_an_answer_whose_later_step_broke_after_an_earlier_applied_is_handed_back(tmp_path: Path) -> None:
+    """#8691 r2 F2 on resolve_block: step 1 already applied (its marker is on the
+    proposal) and step 2's target closed: never closed as stale, the operator's."""
+    from issue_orchestrator.domain.decision_steps import step_marker
+
+    world = World(tmp_path)
+    world.blocked_by(ITEM, _AGENT)
+    world.github.labels[290] = {AGENT}
+    world.github.labels[291] = {AGENT}
+    world.github.states[291] = "closed"
+    world.github.comments[501] = [f"Step 1 applied: x\n\n{step_marker('501', 1)}"]
+    action = _approved_with_steps(
+        DecisionStep(DecisionStepKind.COMMENT, 290, text="one"),
+        DecisionStep(DecisionStepKind.RECORD_RULING, 291, text="two"),
+    )
+
+    result = world.executor(_steps_owner(world)).apply(action)
+
+    assert result.result_type.value == "failure" and "partly applied: step(s) 1" in (result.error or "")
+    assert "needs-human" in world.github.labels[ITEM]

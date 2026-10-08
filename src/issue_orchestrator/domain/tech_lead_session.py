@@ -904,10 +904,6 @@ class StoredTechLeadOp:
                 f"Unsupported tech_lead op schema_version: {self.schema_version!r}"
             )
         _validate_stored_op_decision(self)
-        if not isinstance(cast(object, self.follow_through), DecisionFollowThrough):
-            raise ValueError("StoredTechLeadOp follow_through must be a DecisionFollowThrough")
-        if self.follow_through and self.op_type not in ("propose_decision", RESOLVE_BLOCK_ACTION):
-            raise ValueError("Only a decision op (propose_decision, resolve_block) carries follow-through steps")
         if self.op_type not in ACT_LEVEL_TECH_LEAD_ACTIONS:
             raise ValueError(
                 f"StoredTechLeadOp op_type must be one of"
@@ -1085,6 +1081,10 @@ class OperatorDecision:
 
 
 def _validate_stored_op_decision(op: StoredTechLeadOp) -> None:
+    if not isinstance(cast(object, op.follow_through), DecisionFollowThrough):
+        raise ValueError("StoredTechLeadOp follow_through must be a DecisionFollowThrough")
+    if op.follow_through and op.op_type not in ("propose_decision", RESOLVE_BLOCK_ACTION):
+        raise ValueError("Only a decision op (propose_decision, resolve_block) carries follow-through steps")
     if (op.op_type == "propose_decision") != isinstance(op.decision, OperatorDecision):
         raise ValueError("Only propose_decision carries, and requires, an OperatorDecision")
     if (op.op_type == RESOLVE_BLOCK_ACTION) != isinstance(op.resolution, BlockResolution):

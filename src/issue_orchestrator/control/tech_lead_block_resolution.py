@@ -151,6 +151,9 @@ class BlockResolutionRefusal(StrEnum):
 class RefusedResolution:
     code: BlockResolutionRefusal
     detail: str
+    #: Set when the decision's steps were partly applied before a later one
+    #: broke (#8691): the hand-back message; such a refusal never closes stale.
+    partial: str = ""
 
     def describe(self) -> str:
         return f"{self.code.value}: {self.detail}"
@@ -229,7 +232,8 @@ class TechLeadBlockResolutionExecutor:
             priors[cause] = priors.get(cause, frozenset()) | decisions
         refusal = self._block_refusal(action, issue, priors)
         if refusal is None and (step := self.steps.refusal(_step_context(action), action.follow_through)):
-            refusal = RefusedResolution(BlockResolutionRefusal.STEP_NOT_APPLICABLE, step)
+            refusal = RefusedResolution(BlockResolutionRefusal.STEP_NOT_APPLICABLE, step.reason,
+                                        partial=step.hand_back() if step.partial else "")
         return refusal or ResolvableBlock(issue)
 
     def stale_reason(self, action: ResolveBlockAction) -> str | None:
@@ -327,9 +331,9 @@ class TechLeadBlockResolutionExecutor:
                 " causes; whatever stands on it now may have been raised since, so it is the"
                 " operator's",
             ))
-        verdict = self.verify(action)
-        if isinstance(verdict, RefusedResolution):
-            return self._refuse(action, verdict)
+        verdict = self._verified(action)
+        if isinstance(verdict, ActionResult):
+            return verdict
         issue = verdict.issue
         try:
             filed = self._file_children(action, issue)
@@ -371,6 +375,17 @@ class TechLeadBlockResolutionExecutor:
                 issue_number=action.issue_number, proposal_id=action.proposal_id)
         self.discharges.commit_block_resolution(decision_id=action.decision_id)
         return self._settle(action, issue, outcome, filed=filed)
+
+    def _verified(self, action: ResolveBlockAction) -> ResolvableBlock | ActionResult:
+        """The block to decide, its steps' targets authority-checked, or the outcome of a refusal."""
+        verdict = self.verify(action)
+        if isinstance(verdict, RefusedResolution):
+            if verdict.partial:  # some steps already changed other items: the operator's, never stale
+                return ActionResult.fail(action, verdict.partial, issue_number=action.issue_number,
+                                         proposal_id=action.proposal_id)
+            return self._refuse(action, verdict)
+        self.steps.check_authority(_step_context(action), action.follow_through)
+        return verdict
 
     def _finish(self, action: ResolveBlockAction) -> ActionResult:
         """The discharge committed before: never discharge again, only settle."""

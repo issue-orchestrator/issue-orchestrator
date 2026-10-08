@@ -305,8 +305,8 @@ class ResolveBlockAction(Action):
                 raise ValueError(f"ResolveBlockAction requires {name}")
         if self.proposal_issue_number < 0:
             raise ValueError("proposal_issue_number cannot be negative")
-        if self.follow_through.steps and self.proposal_issue_number <= 0:
-            raise ValueError("a resolve_block with follow-through steps runs only from an approved proposal")
+        if self.follow_through and self.proposal_issue_number <= 0:
+            raise ValueError("a resolve_block with follow-through runs only from an approved proposal")
 
     @property
     def decision_id(self) -> str:

@@ -32,8 +32,8 @@ from collections.abc import Mapping
 from enum import Enum
 from typing import Any, Literal, cast
 
-from .block_resolution import BlockResolution
-from .decision_steps import DecisionFollowThrough
+from .block_resolution import BlockResolution, ParentDisposition
+from .decision_steps import DecisionFollowThrough, DecisionStepKind
 from .tech_lead_findings import VALID_FINDING_FIX_CLASSES
 
 
@@ -503,6 +503,19 @@ class ProposedTechLeadAction:
         self._validate_type_scoped_fields(context)
         self._validate_optional_field_shapes(context)
         self._validate_required_fields(context)
+        self._validate_follow_through(context)
+
+    def _validate_follow_through(self, context: str) -> None:
+        """A decision's steps beyond its item (#8691): typed, and never closing its own item."""
+        _require(isinstance(cast(object, self.follow_through), DecisionFollowThrough),
+                 f"{context} follow_through must be a DecisionFollowThrough")
+        if self.follow_through and self.target_number is not None:
+            self.follow_through.validate_for(self.target_number)
+        reworks = any(step.kind is DecisionStepKind.REQUEST_PR_REWORK for step in self.follow_through.steps)
+        closes = self.resolution is not None and self.resolution.parent is ParentDisposition.CLOSE
+        _require(not (reworks and closes),
+                 f"{context} closes its item (a closing split) and reworks its PR: the rework"
+                 " of a closed issue's PR never launches")
 
     def _validate_type_scoped_fields(self, context: str) -> None:
         """Reject optional fields set on an action type that cannot use them.
@@ -639,10 +652,6 @@ class ProposedTechLeadAction:
             if self.action_type == "propose_decision":
                 _require(bool(self.title), f"{context} requires title (the decision)")
                 _require(not self.target_is_pr, f"{context} targets an issue, not a PR")
-            if self.follow_through:
-                _require(isinstance(cast(object, self.follow_through), DecisionFollowThrough),
-                         f"{context} follow_through must be a DecisionFollowThrough")
-                self.follow_through.validate_for(cast(int, self.target_number))
             if self.action_type == "resolve_block":
                 _require(
                     isinstance(cast(object, self.resolution), BlockResolution),

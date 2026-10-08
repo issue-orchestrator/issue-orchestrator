@@ -55,6 +55,7 @@ if TYPE_CHECKING:
     from ..ports.issue import Issue
     from ..ports.pull_request_tracker import PRInfo
     from .needs_human_block import SharedNeedsHumanBlock
+    from ..domain.standing_ruling import StandingRuling
     from .standing_rulings import StandingRulingsOwner
 
 
@@ -109,6 +110,24 @@ class DecisionStepContext:
 
 
 @dataclass(frozen=True)
+class StepRefusal:
+    """Why a decision's steps cannot all be carried out, and which already were."""
+
+    reason: str
+    applied: tuple[int, ...] = ()
+
+    @property
+    def partial(self) -> bool:
+        return bool(self.applied)
+
+    def hand_back(self) -> str:
+        """The operator's message for a partial refusal: nothing is closed as stale."""
+        done = ", ".join(str(index) for index in self.applied)
+        return (f"approved decision partly applied: step(s) {done} were carried out, but {self.reason}."
+                " The proposal stays open: finish the rest by hand, or close it.")
+
+
+@dataclass(frozen=True)
 class StepsApplied:
     """What :meth:`DecisionStepsOwner.apply` did: a retryable failure, else the
     steps it applied and any refused at write time (a race after the check)."""
@@ -139,28 +158,48 @@ class DecisionStepsOwner:
 
     # -- approval-time check ------------------------------------------------------
 
-    def refusal(self, context: DecisionStepContext, follow_through: DecisionFollowThrough) -> str | None:
-        """Why the steps cannot all be carried out now, or None. Reads only."""
+    def refusal(self, context: DecisionStepContext, follow_through: DecisionFollowThrough) -> StepRefusal | None:
+        """Why the steps cannot all be carried out now, or None. Reads only.
+
+        A refusal after some step already applied (a race broke a later one) is
+        PARTIAL: the decision changed things and cannot be closed as stale."""
+        applied: list[int] = []
         for index, step in enumerate(follow_through.steps, start=1):
             if self._applied(context, index):
+                applied.append(index)
                 continue
-            why = self._precondition(context, step)
+            why = self._precondition(context, index, step)
             if why is not None:
-                return f"step {index} ({step.kind.value} #{step.number}) cannot be carried out: {why}"
+                return StepRefusal(
+                    f"step {index} ({step.kind.value} #{step.number}) cannot be carried out: {why}",
+                    applied=tuple(applied),
+                )
         return None
 
-    def _precondition(self, context: DecisionStepContext, step: DecisionStep) -> str | None:
-        number = step.number
+    def check_authority(self, context: DecisionStepContext, follow_through: DecisionFollowThrough) -> None:
+        """The applier's mutation-authority check on every step's target, before
+        the decision's first write; each write checks again. Raises."""
+        for _index, step in enumerate(follow_through.steps, start=1):
+            self.require_authority(context.action, step.number)
+
+    def _precondition(self, context: DecisionStepContext, index: int, step: DecisionStep) -> str | None:
         if step.acts_on_pr:
-            pr = self.read_pr(number)
-            if pr is None:
-                return f"PR #{number} could not be read"
-            if step.kind is DecisionStepKind.COMMENT:
-                return None
-            if step.kind is DecisionStepKind.RETARGET_PR:
-                return _retarget_precondition(pr, context.subject, self.repo_slug)
-            assert step.rework is not None  # bound at planning (bind_follow_through)
-            return rework_target_stale_reason(step.rework, pr, self.read_issue(context.subject))
+            return self._pr_precondition(context, step)
+        return self._issue_precondition(context, index, step)
+
+    def _pr_precondition(self, context: DecisionStepContext, step: DecisionStep) -> str | None:
+        pr = self.read_pr(step.number)
+        if pr is None:
+            return f"PR #{step.number} could not be read"
+        if step.kind is DecisionStepKind.COMMENT:
+            return None
+        if step.kind is DecisionStepKind.RETARGET_PR:
+            return _retarget_precondition(pr, context.subject, self.repo_slug)
+        assert step.rework is not None  # bound at planning (bind_follow_through)
+        return rework_target_stale_reason(step.rework, pr, self.read_issue(context.subject))
+
+    def _issue_precondition(self, context: DecisionStepContext, index: int, step: DecisionStep) -> str | None:
+        number = step.number
         issue = self.read_issue(number)
         if issue is None:
             return f"#{number} could not be read"
@@ -178,6 +217,8 @@ class DecisionStepsOwner:
             return f"#{number} is {issue.state}"
         if step.kind is DecisionStepKind.SET_MILESTONE and self._milestone_number(step.milestone) is None:
             return f"no open milestone is named {step.milestone!r}"
+        if step.kind is DecisionStepKind.RECORD_RULING:
+            return self.rulings.unrecordable(number, self._step_ruling(context, index, step))
         return None
 
     # -- execution ------------------------------------------------------------------
@@ -229,7 +270,7 @@ class DecisionStepsOwner:
 
     def _apply_step(self, context: DecisionStepContext, index: int, step: DecisionStep) -> str | None:
         """Carry out one step; why it was refused at write time, else None. Raises on failure."""
-        why = self._precondition(context, step)
+        why = self._precondition(context, index, step)
         if why is not None:
             return why
         writes: dict[DecisionStepKind, Callable[[DecisionStepContext, int, DecisionStep], str | None]] = {
@@ -252,16 +293,19 @@ class DecisionStepsOwner:
         return None
 
     def _record_ruling(self, context: DecisionStepContext, index: int, step: DecisionStep) -> str | None:
-        proposal = context.proposal_issue_number
         self.require_authority(context.action, step.number)
-        self.rulings.record(step.number, self.rulings.ruling(
+        self.rulings.record(step.number, self._step_ruling(context, index, step))
+        return None
+
+    def _step_ruling(self, context: DecisionStepContext, index: int, step: DecisionStep) -> "StandingRuling":
+        proposal = context.proposal_issue_number
+        return self.rulings.ruling(
             ruling_id=f"ds-{proposal}-{index}",
             text=step.text,
             authority=RulingAuthority.APPROVED_DECISION,
             source=f"tech-lead decision on #{context.subject}, approved on proposal #{proposal} (step {index})",
             scope=RulingScope(),
-        ))
-        return None
+        )
 
     def _close_proposal(self, context: DecisionStepContext, index: int, step: DecisionStep) -> str | None:
         issue = self.read_issue(step.number)

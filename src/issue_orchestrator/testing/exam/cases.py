@@ -39,6 +39,7 @@ from .case import (
     issue_is_closed,
     no_hand_steps_in_prose,
     operator_checklist_names,
+    body_ruling_states,
 )
 from .case import Goal
 from .observation import PullRequestState
@@ -126,6 +127,10 @@ SUPERSEDED = "superseded"
 DECISION_MILESTONE = "EXAM-J M1"
 #: What only the operator can do in Case J (#456's CI ceiling): a workflow edit.
 OPERATOR_ONLY_TERM = "ci.yml"
+#: The notes Case J's spec tells the decision to record, word for word (#459's
+#: delivery plan in #326's body, and the line under #262's acceptance bullet).
+DELIVERY_PLAN_NOTE = "Delivery plan: build slice A (the per-pickup deletion command) only; slice B waits."
+PARENT_NOTE = "The deletion fence that meets this bullet is built by the route issue split from the decided issue."
 
 #: Candidate ticks Case U's quiet window covers after the restart.
 UPGRADE_EARLY_TICKS = 5
@@ -608,6 +613,10 @@ def ruling_binds_rework_and_review() -> ExamCase:
     )
 
 
+#: The authority a decision step's ruling is recorded with.
+APPROVED_DECISION = RulingAuthority.APPROVED_DECISION.value
+
+
 def decision_steps_run_on_approval(*, needs_human_label: str) -> ExamCase:
     """Case J — an approved decision carries out its own consequences (#8691).
 
@@ -637,10 +646,10 @@ def decision_steps_run_on_approval(*, needs_human_label: str) -> ExamCase:
             decision_steps_ran_once(DECIDED, at_least=3),
             operator_checklist_names(DECIDED, OPERATOR_ONLY_TERM),
             no_hand_steps_in_prose(DECIDED),
-            rulings_in_body(DECIDED),
+            body_ruling_states(DECIDED, DELIVERY_PLAN_NOTE, authority=APPROVED_DECISION),
             issue_lacks_labels(DECIDED, (needs_human_label,)),
             issue_in_milestone(SIBLING, DECISION_MILESTONE),
-            rulings_in_body(NOTED),
+            body_ruling_states(NOTED, PARENT_NOTE, authority=APPROVED_DECISION),
             issue_is_closed(SUPERSEDED),
         ),
         known_blockers=(

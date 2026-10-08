@@ -629,3 +629,89 @@ def test_an_approved_proposal_is_never_closed_as_superseded(tmp_path: Path) -> N
 
     assert "#445 is not a tech-lead proposal awaiting approval" in result.details["skip_reason"]
     assert world.github.states[SUPERSEDED] == "open"
+
+
+# -- review round 2 ---------------------------------------------------------------
+
+
+def test_an_operator_checklist_alone_still_waits_for_the_operator(tmp_path: Path) -> None:
+    """r2 F1: an execute-authority answer whose only follow-through is the
+    operator's checklist must be shown to the operator before it runs."""
+    from issue_orchestrator.control.tech_lead_charter_policy import TechLeadCharterPolicy
+
+    world = World(tmp_path)
+    world.config.tech_lead.authority.resolve_block = "execute"
+    checklist_only = ProposedTechLeadAction.from_mapping({
+        "id": "A1", "action_type": "resolve_block", "target_number": ITEM, "body": "The spec answers it.",
+        "resolution": {"kind": "answer", "causes": ["agent_completion"], "title": "Build the D1 index",
+                       "body": "ADR-0009 rules it.", "evidence": ["#327 body: ADR-0009"]},
+        "operator_steps": ["Raise the CI ceiling in ci.yml"],
+    }, index=1)
+
+    assert not TechLeadCharterPolicy.from_config(world.config).decide_for(checklist_only).executes
+
+
+def test_a_step_broken_after_an_earlier_one_applied_is_handed_back_not_closed_stale(tmp_path: Path) -> None:
+    """r2 F2: step 1 moved #326; #327 closes before step 2. The replay must not
+    close the proposal as 'no changes were made': it is handed to the operator."""
+    world = World(tmp_path)
+    proposed = _plant_459(world)
+    action = world.approve(world.plan(proposed))
+    real = world.github.set_milestone
+
+    def move_then_close_sibling(number: int, milestone: int) -> None:
+        real(number, milestone)
+        world.github.states[SIBLING] = "closed"
+
+    world.github.set_milestone = move_then_close_sibling  # type: ignore[method-assign]
+    executor = world.executor()
+
+    first = executor.apply(action)
+    replay = executor.apply(action)
+
+    assert not first.success and world.github.milestones[SUBJECT] == 1
+    assert replay.result_type is ActionResultType.FAILURE
+    assert "partly applied: step(s) 1" in (replay.error or "") and "#327 is closed" in (replay.error or "")
+    assert world.retried == []
+
+
+def test_an_unwritable_rulings_block_refuses_before_any_write(tmp_path: Path) -> None:
+    """r2 F3: a malformed rulings block on step 4's target is found before step 1 moves anything."""
+    world = World(tmp_path)
+    proposed = _plant_459(world)
+    world.github.bodies[PARENT] += "\n\n<!-- io:standing-rulings:begin -->\nbroken"
+    before = list(world.github.writes)
+
+    result = world.executor().apply(world.approve(world.plan(proposed)))
+
+    assert result.result_type is ActionResultType.SKIPPED and "step 4 (record_ruling #262)" in result.details["skip_reason"]
+    assert world.github.writes == before and world.github.milestones[SUBJECT] == 3
+
+
+def test_every_step_target_is_authority_checked_before_the_first_write(tmp_path: Path) -> None:
+    """r2 F3: a claim on step 4's target stops the decision before step 1 writes."""
+    from issue_orchestrator.control.claim_gate import ClaimLostError
+
+    world = World(tmp_path)
+    proposed = _plant_459(world)
+
+    def refuse(action: Action, number: int) -> None:
+        if number == PARENT:
+            raise ClaimLostError(number, "decision step")
+
+    executor = _with_steps_authority(world.executor(), refuse)
+    with pytest.raises(ClaimLostError):
+        executor.apply(world.approve(world.plan(proposed)))
+    assert world.github.milestones[SUBJECT] == 3
+
+
+def test_a_closing_split_cannot_rework_its_pr() -> None:
+    """r2 F4: the rework of a closed issue's PR never launches."""
+    with pytest.raises(ValueError, match="closes its item"):
+        ProposedTechLeadAction.from_mapping({
+            "id": "A1", "action_type": "resolve_block", "target_number": ITEM, "body": "split",
+            "resolution": {"kind": "split", "causes": ["agent_completion"], "title": "Split", "body": "b",
+                           "evidence": ["spec"], "parent": "close",
+                           "children": [{"title": "child", "body": "rest"}]},
+            "steps": [{"kind": "request_pr_rework", "number": PR}],
+        }, index=1)
