@@ -148,6 +148,22 @@ def test_a_quote_over_several_lines_is_in_the_function_its_lines_are_in(run_dir:
     assert source.enclosing_function(path, 3, "never written here") is None
 
 
+def test_a_quote_twice_in_the_window_is_the_one_on_the_cited_line_or_no_site(run_dir: Path) -> None:
+    """r6 F2: the validator accepts a quote anywhere in the window; where it
+    is twice, only the cited line tells which one was read."""
+    twins = run_dir / "improver-data" / "engine-source" / "src" / "issue_orchestrator" / "twins.py"
+    twins.write_text(
+        "def first() -> None:\n    retry_the_tick()\n\ndef second() -> None:\n    retry_the_tick()\n"
+    )
+    source = RunDirEngineSource(run_dir)
+    path = "improver-data/engine-source/src/issue_orchestrator/twins.py"
+    module = ("issue_orchestrator", "twins")
+
+    assert source.enclosing_function(path, 3, "retry_the_tick()") is None
+    assert source.enclosing_function(path, 2, "retry_the_tick()") == CodeSite(module, ("first",))
+    assert source.enclosing_function(path, 5, "retry_the_tick()") == CodeSite(module, ("second",))
+
+
 def test_a_name_defined_twice_is_no_one_site(run_dir: Path) -> None:
     """r4 F2: a `def run` in each branch of an `if` is two functions."""
     runner = run_dir / "improver-data" / "engine-source" / "src" / "issue_orchestrator" / "runner.py"

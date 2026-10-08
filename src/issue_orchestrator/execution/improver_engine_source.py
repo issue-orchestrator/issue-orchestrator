@@ -38,16 +38,19 @@ class RunDirEngineSource:
         if parsed is None or module is None:
             return None
         tree, lines = parsed
-        span = _quoted_span(lines, line, quote)
-        if span is None:
-            return None
         # The quote's own lines decide (r5 F2), and they must be in one function.
-        first, last = (_function_at(tree, at) for at in span)
-        if first is None or first != last:
-            return None
+        sites = {span: _function_of(tree, span) for span in _quoted_spans(lines, line, quote)}
+        found = set(sites.values())
+        if len(found) > 1:
+            # The quote is twice in the window (r6 F2): the one on the cited
+            # line, or no site when that does not tell them apart.
+            found = {site for (first, last), site in sites.items() if first <= line <= last}
+        symbol = next(iter(found)) if len(found) == 1 else None
         # A name defined twice (r4 F2: `def run` in each branch of an `if`)
         # names two functions: no one site.
-        return CodeSite(module=module, symbol=first) if _defined_names(tree)[first] == 1 else None
+        if symbol is None or _defined_names(tree)[symbol] != 1:
+            return None
+        return CodeSite(module=module, symbol=symbol)
 
     def resolve(self, written: CodeSite) -> CodeSite | None:
         # A file staged under two names (a symlink) is one module (r2 F4).
@@ -94,20 +97,29 @@ def _ends_with(path: tuple[str, ...], tail: tuple[str, ...]) -> bool:
     return 0 < len(tail) <= len(path) and path[len(path) - len(tail):] == tail
 
 
-def _quoted_span(lines: list[str], line: int, quote: str) -> tuple[int, int] | None:
-    """The first and last line of the shortest run of lines, within the
-    citation slack of ``line``, that holds ``quote`` (the validator matches
-    a quote across the lines of that window, so it may span several), the
-    nearest to ``line`` of those; None when no run holds it."""
+def _quoted_spans(lines: list[str], line: int, quote: str) -> list[tuple[int, int]]:
+    """Each run of lines within the citation slack of ``line`` that holds
+    ``quote`` and no shorter run inside it (the validator matches a quote
+    across the lines of that window, so one may span several): one per
+    place the quote is."""
     wanted = normalized(quote)
     low, high = max(1, line - LINE_SLACK), min(len(lines), line + LINE_SLACK)
-    spans = [
+
+    def holds(first: int, last: int) -> bool:
+        return first <= last and wanted in normalized(" ".join(lines[first - 1:last]))
+
+    return [
         (first, last)
         for first in range(low, high + 1)
         for last in range(first, high + 1)
-        if wanted in normalized(" ".join(lines[first - 1:last]))
+        if holds(first, last) and not holds(first + 1, last) and not holds(first, last - 1)
     ]
-    return min(spans, key=lambda s: (s[1] - s[0], abs(s[0] - line)), default=None)
+
+
+def _function_of(tree: ast.Module, span: tuple[int, int]) -> tuple[str, ...] | None:
+    """The one function both ends of ``span`` are in; None otherwise."""
+    first, last = (_function_at(tree, at) for at in span)
+    return first if first == last else None
 
 
 def _function_at(tree: ast.Module, line: int) -> tuple[str, ...] | None:

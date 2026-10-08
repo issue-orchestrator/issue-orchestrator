@@ -168,8 +168,8 @@ class DefectProfile:
             return False
         if self.items & other.items:
             return True
-        return any(record in quote for record in self.records for quote in other.quotes) or any(
-            record in quote for record in other.records for quote in self.quotes
+        return any(_names(quote, record) for record in self.records for quote in other.quotes) or any(
+            _names(quote, record) for record in other.records for quote in self.quotes
         )
 
 
@@ -225,6 +225,12 @@ def design_profile(design: DesignFinding, source: EngineSource) -> DefectProfile
         cited=tuple(cited),
         quotes=tuple(normalized(c.quote) for c in design.evidence),
     )
+
+
+def _names(quote: str, record: str) -> bool:
+    """Whether ``quote`` names the record id whole (r6 F1: ``D1`` is not
+    ``D10``)."""
+    return re.search(rf"(?<![\w-]){re.escape(record)}(?![\w-])", quote) is not None
 
 
 def _items(texts: Iterable[str]) -> frozenset[int]:

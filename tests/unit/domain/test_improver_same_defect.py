@@ -290,6 +290,18 @@ def test_a_finding_it_cannot_join_does_not_keep_it_from_one_it_can() -> None:
     ]
 
 
+def test_a_record_a_quote_names_is_named_whole() -> None:
+    """r6 F1: a stall finding citing decision D1 and a design finding
+    quoting D10 do not share a record."""
+    stall = {**_chain_stall("fix-555", 555), "stall_evidence": ["D1"]}
+
+    for quote, folded in (("the tech lead applied D10 to it", False), ("the tech lead applied D1 to it", True)):
+        design = _chain_design("crash-after-decision", _log(10, quote))
+        merged = _merge({**_heat(1), "findings": [stall], "design_findings": [design]})
+
+        assert bool(merged.same_defects) is folded, quote
+
+
 def _answer(call: int, quote: str) -> dict:
     return {"kind": "tool", "call": call, "quote": quote}
 
