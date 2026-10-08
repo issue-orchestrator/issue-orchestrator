@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, timezone
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
@@ -555,37 +554,22 @@ def test_a_binding_waits_for_the_block_owners_gate() -> None:
     assert item.fingerprint == "needs-human@unknown" and store.bound == {} and reads == []
 
 
-def test_an_unchanged_issue_is_not_read_from_github_again() -> None:
-    """#8688 review r3 F2: an item verified before whose GitHub updated_at
-    and recorded episode are unchanged is not read again (a label write bumps
-    updated_at); a change to either is."""
+def test_every_recheck_reads_github_whatever_the_cached_snapshot_says() -> None:
+    """#8688 review r6 F1: the cached issue snapshot can be hours old (an
+    incremental refresh that skips it), so an unchanged snapshot proves
+    nothing: each verification reads the standing application again."""
     store, reads, applications = _Episodes({450: EP}), [], {450: 7}
-    written = datetime(2026, 10, 8, tzinfo=timezone.utc).timestamp()
-    now = [written + 2]  # still within the second the issue was last written
-    episodes = _episode_owner(store, applications, clock=lambda: now[0], reads=reads)
+    # Long after the snapshot's updated_at: nothing about its age is suspect.
+    episodes = _episode_owner(store, applications, reads=reads, clock=lambda: 4e9)
     issue = Issue(
         number=450, title="t", labels=["needs-human"], repo="porchpin/porchpin", state="open",
         updated_at="2026-10-08T00:00:00Z",
     )
 
-    # r4 F1: a read this close to updated_at proves nothing (a hand
-    # re-application in the same second keeps updated_at): read again.
     first = episodes.verified({450: issue})
-    applications[450] = 8
-    second = episodes.verified({450: issue})
-    assert second != first and reads == [450, 450]
+    applications[450] = 8  # re-applied by hand; the snapshot still says 00:00:00
 
-    now[0] = written + 60  # settled: an unchanged updated_at now proves it
-    episodes.verified({450: issue})
-    assert episodes.verified({450: issue}) == second and reads == [450, 450, 450]
-    del reads[:2]
-
-    issue.updated_at = "2026-10-08T01:00:00Z"  # something was written to it
-    episodes.verified({450: issue})
-    assert reads == [450, 450]
-    store.recorded[450] = "2026-10-08T02:00:00+00:00#2"  # the owner reopened it
-    episodes.verified({450: issue})
-    assert reads == [450, 450, 450]
+    assert episodes.verified({450: issue}) != first and reads == [450, 450]
 
 
 def test_an_item_a_recheck_could_not_verify_stays_owed_until_one_does() -> None:
@@ -618,12 +602,12 @@ def test_an_item_a_recheck_could_not_verify_stays_owed_until_one_does() -> None:
     assert triage_owed(_config(), state, authority, episodes) is False
 
 
-def test_a_remembered_verification_still_waits_for_the_owners_gate() -> None:
-    """#8688 review r5 F2: the remembered-episode shortcut is taken only under
-    the owner's gate too; while the owner is changing the block it is unknown."""
+def test_a_verified_item_still_waits_for_the_owners_gate() -> None:
+    """#8688 review r5 F2: every verification, including one of an item
+    verified before, waits for the owner's gate; while the owner is changing
+    the block the episode is unknown."""
     store = _Episodes({450: EP})
-    written = datetime(2026, 10, 8, tzinfo=timezone.utc).timestamp()
-    episodes = _episode_owner(store, {450: 7}, clock=lambda: written + 60)
+    episodes = _episode_owner(store, {450: 7})
     issue = Issue(
         number=450, title="t", labels=["needs-human"], repo="porchpin/porchpin", state="open",
         updated_at="2026-10-08T00:00:00Z",

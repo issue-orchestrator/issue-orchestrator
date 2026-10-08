@@ -12,12 +12,9 @@ to GitHub's standing ``labeled`` event, read from the complete issue events
 * the tick's "is a triage owed" check reads the recorded episodes, and
   re-verifies them at most once per health-review interval, so a label taken
   off and put back by hand, unseen by the owner, still makes a review due
-  without a GitHub event scan on every tick;
-* an item verified before whose GitHub ``updated_at`` and recorded episode
-  are both unchanged is not read again: a label write bumps ``updated_at``.
-  That is proof only once the verifying read came in a later second than
-  ``updated_at`` (GitHub keeps whole seconds, so a write in that same second
-  would not change it), so a verification is remembered only then.
+  without a GitHub event scan on every tick. A recheck reads every item:
+  the cached issue snapshot may be hours old, so nothing local can prove an
+  item unchanged (#8688 review r6).
 
 An item whose events cannot be read, that GitHub does not show the label
 standing on, or whose block is being changed by its owner right now (the
@@ -29,7 +26,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime
 from typing import TYPE_CHECKING
 
 from ..domain.issue_disposition_gate import IssueDispositionGateStatus
@@ -41,10 +37,6 @@ if TYPE_CHECKING:
     from .label_manager import LabelManager
 
 logger = logging.getLogger(__name__)
-
-#: How long after an issue's ``updated_at`` a verifying read must come before
-#: it is remembered: GitHub's whole-second timestamps, plus clock skew.
-_SETTLED_SECONDS = 5.0
 
 
 class NeedsHumanEpisodes:
@@ -65,8 +57,6 @@ class NeedsHumanEpisodes:
         self._clock = clock
         self._recheck_seconds = recheck_seconds
         self._checked_at: float | None = None
-        #: ``issue -> (updated_at, episode)`` as last verified by this reader.
-        self._verified: dict[int, tuple[str, str]] = {}
         #: Items the last verification could not verify: unknown until one does.
         self._unverified: set[int] = set()
 
@@ -82,34 +72,11 @@ class NeedsHumanEpisodes:
                 if status is IssueDispositionGateStatus.BUSY:
                     episode = None  # the owner is changing this block right now
                 else:
-                    episode = self._verify(number, issue)
-            if episode is None:
-                self._verified.pop(number, None)
-                continue
-            verified[number] = episode
-            if self._settled(issue.updated_at):
-                self._verified[number] = (str(issue.updated_at), episode)
+                    episode = self._bind(number, self._episode_label(issue.labels))
+            if episode is not None:
+                verified[number] = episode
         self._unverified = set(issues) - set(verified)
         return verified
-
-    def _verify(self, number: int, issue: "Issue") -> str | None:
-        """Under the owner's gate: the remembered episode while nothing has
-        been written to the issue or its generation since, else a fresh bind."""
-        seen = self._verified.get(number)
-        recorded = self._store.needs_human_episodes([number]).get(number)
-        if seen is not None and seen == (issue.updated_at, recorded):
-            return seen[1]
-        return self._bind(number, self._episode_label(issue.labels))
-
-    def _settled(self, updated_at: str | None) -> bool:
-        """No write can still share ``updated_at``'s second (see the module doc)."""
-        if updated_at is None:
-            return False
-        try:
-            stamp = datetime.fromisoformat(updated_at.replace("Z", "+00:00")).timestamp()
-        except ValueError:
-            return False
-        return self._clock() >= stamp + _SETTLED_SECONDS
 
     def current(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
         """The recorded episodes, re-verified once per recheck period.
