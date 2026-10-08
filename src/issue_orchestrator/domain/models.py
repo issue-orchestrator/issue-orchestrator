@@ -2224,6 +2224,8 @@ class OrchestratorState:
     # Each failed Actions job's assessment, by job id: a job's log is read once
     # (#8692). Job ids are per attempt, so a re-run's new failure is read anew.
     ci_job_assessments: OrderedDict[int, CiJobAssessment] = field(default_factory=OrderedDict)
+    # PR number -> scans a failed CI-triage read has been retried (#8692)
+    ci_triage_deferrals: dict[int, int] = field(default_factory=dict)
     discovered_failures: list["DiscoveredFailure"] = field(default_factory=list)  # Failures for tech_lead
     # Immediate cleanups - sessions that need cleanup now (not deferred until review)
     immediate_cleanups: list["ImmediateCleanup"] = field(default_factory=list)

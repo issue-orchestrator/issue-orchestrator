@@ -202,3 +202,57 @@ def test_a_refused_rerun_records_nothing_and_never_becomes_a_rework() -> None:
     assert reworks == [] and plan.actions_of_type(ActionType.QUEUE_REWORK) == []
     (again,) = plan.actions_of_type(ActionType.RERUN_FAILED_CHECKS)
     assert again.liveness_facts() == rerun.liveness_facts()  # one liveness budget
+
+
+def _fail_jobs(engine: _Engine, logs: dict[int, str]) -> None:
+    engine.logs.update(logs)
+    engine.host.read_failed_checks.return_value = FailedChecksRead(head_sha=HEAD, checks=tuple(
+        FailedCheck(f"shard {job}", "FAILURE", True, job, 900) for job in logs
+    ))
+
+
+def test_an_unreadable_failed_check_list_defers_the_rework_a_bounded_number_of_scans() -> None:
+    from issue_orchestrator.control.ci_failure_triage import MAX_READ_DEFERRALS
+    from issue_orchestrator.ports.repository_host import RepositoryHostError
+
+    engine = _Engine()
+    engine.host.read_failed_checks.side_effect = RepositoryHostError("502 Bad Gateway")
+    for _ in range(MAX_READ_DEFERRALS):
+        reworks, reruns, plan = engine.tick()
+        assert (reworks, reruns) == ([], [])
+        assert plan.actions_of_type(ActionType.QUEUE_REWORK) == []
+    (rework,) = engine.tick()[0]
+    assert "could not read the PR's failed checks: 502 Bad Gateway" in (rework.feedback or "")
+
+
+def test_an_unreadable_rerun_record_never_spends_a_rework_cycle_at_once() -> None:
+    from issue_orchestrator.ports.repository_host import RepositoryHostError
+
+    engine = _Engine()
+    engine.fail(11, RUNNER_LOST)
+    engine.host.issue_comment_bodies_containing.side_effect = RepositoryHostError("503")
+    reworks, reruns, plan = engine.tick()
+    assert (reworks, reruns) == ([], [])
+    assert plan.actions_of_type(ActionType.QUEUE_REWORK) == []
+
+
+def test_every_failed_required_job_is_read_before_a_rerun_is_decided() -> None:
+    from issue_orchestrator.control.ci_failure_triage import MAX_LOG_READS_PER_SCAN
+
+    engine = _Engine()
+    jobs = {40 + n: RUNNER_LOST for n in range(MAX_LOG_READS_PER_SCAN + 2)}
+    _fail_jobs(engine, jobs)
+    assert engine.tick()[:2] == ([], [])  # this scan's read budget ran out
+    reworks, (rerun,), _ = engine.tick()
+    assert reworks == [] and rerun.job_ids == tuple(sorted(jobs))
+    assert sorted(c.args[0] for c in engine.host.read_check_job_log_tail.call_args_list) == sorted(jobs)
+
+
+def test_a_genuine_failure_decides_without_reading_every_log() -> None:
+    engine = _Engine()
+    _fail_jobs(engine, {50: TEST_FAILED, **{51 + n: RUNNER_LOST for n in range(6)}})
+    (rework,), reruns, _ = engine.tick()
+    assert reruns == []
+    assert "AssertionError: expected 3 children, saw 2" in (rework.feedback or "")
+    assert "Logs not read" in (rework.feedback or "")
+    assert [c.args[0] for c in engine.host.read_check_job_log_tail.call_args_list] == [50]

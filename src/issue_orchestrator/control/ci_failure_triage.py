@@ -55,8 +55,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: At most this many failed jobs' logs are read for one PR.
-MAX_JOBS_READ = 3
+#: New job logs read per scan; the memo carries a larger set across scans.
+MAX_LOG_READS_PER_SCAN = 4
+#: Failed jobs considered per head. Past this a failure is plainly not one
+#: flaky job, and the rest are listed unread (unknown, so never re-run).
+MAX_JOBS_PER_HEAD = 12
+#: Scans a failed triage read (checks, a log, the re-run record) is retried
+#: before the rework goes ahead with what could be read.
+MAX_READ_DEFERRALS = 3
+#: Job logs a rework brief carries in full; the rest are listed by name.
+MAX_EXCERPTS_IN_BRIEF = 4
+_PENDING = "pending"
 #: Assessments remembered across ticks, so one job's log is read once.
 ASSESSMENT_MEMO_LIMIT = 256
 #: After requesting a re-run, the same failed jobs are still visible until
@@ -107,32 +116,42 @@ class CiFailureTriage:
     def _triage(
         self, state: "OrchestratorState", rework: DiscoveredRework
     ) -> DiscoveredRework | DiscoveredCiRerun | None:
-        """The rework (with its brief extended), a re-run, or ``None`` (wait)."""
+        """The rework (with its brief extended), a re-run, or ``None`` (not yet)."""
         if not self.config.enabled:
             return _with_report(rework, "CI failure triage is disabled in this repository's config; no job log was read.")
         try:
             failed = self.host.read_failed_checks(rework.pr_number)
         except RepositoryHostError as error:
             logger.warning("CI triage: failed checks of PR #%d unreadable: %s", rework.pr_number, error)
-            return _with_report(rework, f"CI failure triage could not read the PR's failed checks: {error}")
+            return self._defer(state, rework, f"CI failure triage could not read the PR's failed checks: {error}")
         targets = [c for c in failed.checks if c.required] or list(failed.checks)
         if not targets:
-            return _with_report(
-                rework,
+            return self._decided(state, rework, (
                 f"CI failure triage found no failed check on head {failed.head_sha[:12]}; "
-                "check the PR's checks before changing code.",
-            )
-        assessments = self._assess_all(state, targets)
+                "check the PR's checks before changing code."
+            ))
+        assessments, unread = self._assess_all(state, targets)
         kind = overall_kind(assessments)
+        if unread and kind is not CiFailureKind.GENUINE:
+            # Only a genuine failure decides before every log is read.
+            if all(why == _PENDING for why in unread.values()):
+                return None  # this scan's read budget ran out; the next continues
+            return self._defer(state, rework, _report(
+                assessments, kind, failed.head_sha, (),
+                note="Not every failed job's log could be read: " + "; ".join(unread.values()),
+            ))
         records: tuple[CiRerunRecord, ...] = ()
         if kind is CiFailureKind.TRANSIENT:
             try:
                 records = self._head_records(rework.pr_number, failed.head_sha)
             except (RepositoryHostError, ValueError) as error:
                 logger.warning("CI triage: re-run record of PR #%d unreadable: %s", rework.pr_number, error)
-                return _with_report(rework, _report(assessments, kind, failed.head_sha, (),
-                                                    note=f"The re-run record could not be read ({error}), so no re-run was requested."))
+                return self._defer(state, rework, _report(
+                    assessments, kind, failed.head_sha, (),
+                    note=f"The re-run record could not be read ({error}), so no re-run was requested.",
+                ))
             if not records:
+                state.ci_triage_deferrals.pop(rework.pr_number, None)
                 return _rerun(rework, failed.head_sha, assessments, self.clock())
             latest = max(records, key=lambda record: record.requested_at)
             job_ids = {a.job_id for a in assessments if a.job_id is not None}
@@ -141,29 +160,70 @@ class CiFailureTriage:
                     logger.info("CI triage: PR #%d re-run requested %s; waiting for it to start",
                                 rework.pr_number, latest.requested_at.isoformat())
                     return None
-                return _with_report(rework, _report(
+                return self._decided(state, rework, _report(
                     assessments, kind, failed.head_sha, records,
                     note=f"The re-run GitHub accepted at {latest.requested_at.isoformat()} has not "
                     f"restarted these jobs within {int(RERUN_START_GRACE.total_seconds() // 60)} minutes.",
                 ))
-        return _with_report(rework, _report(assessments, kind, failed.head_sha, records))
+        not_read = ", ".join(f"`{name}`" for name in unread)
+        return self._decided(state, rework, _report(
+            assessments, kind, failed.head_sha, records,
+            note=f"Logs not read (a genuine failure already decides this): {not_read}" if unread else None,
+        ))
+
+    def _defer(
+        self, state: "OrchestratorState", rework: DiscoveredRework, report: str
+    ) -> DiscoveredRework | None:
+        """A read the decision needs failed: try again next scan, a bounded number
+        of times, then let the rework go with what could be read."""
+        deferrals = state.ci_triage_deferrals.get(rework.pr_number, 0)
+        if deferrals < MAX_READ_DEFERRALS:
+            state.ci_triage_deferrals[rework.pr_number] = deferrals + 1
+            return None
+        return self._decided(state, rework, f"{report}\n- The engine retried for {MAX_READ_DEFERRALS} scans before sending this to rework.")
+
+    def _decided(
+        self, state: "OrchestratorState", rework: DiscoveredRework, report: str
+    ) -> DiscoveredRework:
+        state.ci_triage_deferrals.pop(rework.pr_number, None)
+        return _with_report(rework, report)
 
     def _assess_all(
         self, state: "OrchestratorState", targets: Sequence["FailedCheck"]
-    ) -> tuple[CiJobAssessment, ...]:
+    ) -> tuple[tuple[CiJobAssessment, ...], dict[str, str]]:
+        """Every target's assessment so far, and why each unassessed one is not.
+
+        Reads at most ``MAX_LOG_READS_PER_SCAN`` new logs per scan (the memo
+        carries the rest forward) and stops reading at the first genuine
+        failure, which decides the answer whatever the remaining logs say.
+        """
         signatures = CiFailureSignatures.compile(
             self.config.transient_signatures, self.config.genuine_signatures
         )
-        readable = [c for c in targets if c.job_id is not None]
         assessments: list[CiJobAssessment] = []
-        for check in targets:
+        unread: dict[str, str] = {}
+        reads = 0
+        for index, check in enumerate(targets):
             if check.job_id is None:
                 assessments.append(_unreadable(check, "not a GitHub Actions job: the engine can neither read its log nor re-run it"))
-            elif check in readable[:MAX_JOBS_READ]:
-                assessments.append(self._assess(state, check, signatures))
-            else:
-                assessments.append(_unreadable(check, f"log not read: at most {MAX_JOBS_READ} job logs are read per PR"))
-        return tuple(assessments)
+                continue
+            if index >= MAX_JOBS_PER_HEAD:
+                assessments.append(_unreadable(check, f"log not read: at most {MAX_JOBS_PER_HEAD} jobs are read per head"))
+                continue
+            known = state.ci_job_assessments.get(check.job_id)
+            if known is None and any(a.kind is CiFailureKind.GENUINE for a in assessments):
+                unread[check.name] = _PENDING
+                continue
+            if known is None and reads >= MAX_LOG_READS_PER_SCAN:
+                unread[check.name] = _PENDING
+                continue
+            if known is None:
+                reads += 1
+            assessment = known or self._assess(state, check, signatures)
+            if assessment.unreadable is not None:
+                unread[check.name] = f"`{check.name}`: {assessment.unreadable}"
+            assessments.append(assessment)
+        return tuple(assessments), unread
 
     def _assess(
         self, state: "OrchestratorState", check: "FailedCheck", signatures: CiFailureSignatures
@@ -238,10 +298,15 @@ def _report(
         )
     if note:
         lines.append(f"- {note}")
+    precedence = {CiFailureKind.GENUINE: 0, CiFailureKind.UNKNOWN: 1, CiFailureKind.TRANSIENT: 2}
+    shown = sorted((a for a in assessments if a.excerpt), key=lambda a: precedence[a.kind])
+    excerpted = {id(a) for a in shown[:MAX_EXCERPTS_IN_BRIEF]}
     for a in assessments:
         why = f"signature `{a.signature}`" if a.signature else (a.unreadable or "no known signature")
         lines += ["", f"Job `{a.name}` (job {a.job_id}, conclusion {a.conclusion}): {a.kind.value}, {why}"]
-        if a.excerpt:
+        if a.excerpt and id(a) not in excerpted:
+            lines.append(f"(log excerpt omitted: a brief carries at most {MAX_EXCERPTS_IN_BRIEF})")
+        elif a.excerpt:
             lines += ["```text", a.excerpt.replace("```", "'''"), "```"]
     return "\n".join(lines)
 
