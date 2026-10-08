@@ -15,7 +15,7 @@ from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session
 from issue_orchestrator.domain.session_key import SessionKey
 from issue_orchestrator.domain.session_kind import SessionKind
-from tests.unit.control.liveness_doubles import RecordingEscalation, liveness_owner
+from tests.unit.control.liveness_doubles import ManualClock, RecordingEscalation, liveness_owner
 from tests.unit.session_run_helpers import make_session_run_assets
 
 
@@ -37,6 +37,14 @@ def _containment(policy: LivenessPolicy = LivenessPolicy()):
     return CompletionContainment(liveness_owner(escalation=escalation, policy=policy)), escalation
 
 
+def _active(_session: Session) -> bool:
+    return True
+
+
+def _dropped(_session: Session) -> bool:
+    return False
+
+
 def _row(containment: CompletionContainment, session: Session):
     return containment.owner.admit(CompletionContainment.key(session)).row
 
@@ -52,7 +60,9 @@ def test_a_failed_apply_parks_its_session_and_escalates_its_issue(tmp_path):
             raise RuntimeError("Can't trigger event needs_human from state pr_pending!")
 
     containment.apply_each(
-        [CompletedDecision(failing, None, None), CompletedDecision(sibling, None, None)], apply
+        [CompletedDecision(failing, None, None), CompletedDecision(sibling, None, None)],
+        apply,
+        in_pass=_dropped,
     )
 
     assert applied == ["rework-450", "rework-451"]
@@ -73,13 +83,13 @@ def test_a_failed_decision_backs_off_and_parks_once_its_budget_is_spent(tmp_path
         raise completed.error
 
     decided = CompletedDecision(session, None, RuntimeError("decide failed"))
-    containment.apply_each([decided], apply)
+    containment.apply_each([decided], apply, in_pass=_active)
     row = _row(containment, session)
     assert row is not None and not row.parked and row.last_outcome is OutcomeKind.TRANSIENT
     assert containment.owner.admit(CompletionContainment.key(session)).admission is Admission.BACKING_OFF
     assert escalation.blocks == []
 
-    containment.apply_each([decided], apply)
+    containment.apply_each([decided], apply, in_pass=_active)
     assert _row(containment, session).parked
     assert [r.key.escalation_issue for r in escalation.committed_blocks] == [450]
 
@@ -100,10 +110,14 @@ def test_a_later_success_settles_the_recorded_failure(tmp_path):
     containment, _ = _containment()
     session = _session(tmp_path, 450)
     decided = CompletedDecision(session, None, RuntimeError("decide failed"))
-    containment.apply_each([decided], lambda completed: (_ for _ in ()).throw(completed.error))
+    containment.apply_each(
+        [decided], lambda completed: (_ for _ in ()).throw(completed.error), in_pass=_active
+    )
     assert _row(containment, session) is not None
 
-    containment.apply_each([CompletedDecision(session, None, None)], lambda _completed: None)
+    containment.apply_each(
+        [CompletedDecision(session, None, None)], lambda _completed: None, in_pass=_dropped
+    )
 
     assert _row(containment, session) is None
 
@@ -117,7 +131,7 @@ def test_a_new_run_of_the_same_terminal_is_not_held_by_an_old_park(tmp_path):
     def apply(_completed: CompletedDecision) -> None:
         raise RuntimeError("boom")
 
-    containment.apply_each([CompletedDecision(old, None, None)], apply)
+    containment.apply_each([CompletedDecision(old, None, None)], apply, in_pass=_dropped)
 
     assert not containment.admit(old)
     assert containment.admit(new)
@@ -143,8 +157,36 @@ def test_an_engine_wide_fault_still_reaches_the_loop_after_every_sibling(tmp_pat
 
     with pytest.raises(type(error)):
         containment.apply_each(
-            [CompletedDecision(failing, None, None), CompletedDecision(sibling, None, None)], apply
+            [CompletedDecision(failing, None, None), CompletedDecision(sibling, None, None)],
+            apply,
+            in_pass=_active,
         )
 
     assert applied == ["rework-450", "rework-451"]
     assert _row(containment, failing) is None
+
+
+def test_an_apply_that_fails_before_the_session_leaves_the_pass_is_retried(tmp_path):
+    """r3 F1: retryability is whether the session is still in the pass, not which step raised."""
+    clock = ManualClock()
+    escalation = RecordingEscalation()
+    containment = CompletionContainment(liveness_owner(escalation=escalation, clock=clock))
+    session = _session(tmp_path, 450)
+    failures = [OSError("claim store unavailable")]
+
+    def apply(_completed: CompletedDecision) -> None:
+        if failures:
+            raise failures.pop()
+
+    decided = CompletedDecision(session, None, None)
+    containment.apply_each([decided], apply, in_pass=_active)
+    row = _row(containment, session)
+    assert row is not None and row.last_outcome is OutcomeKind.TRANSIENT and not row.parked
+    assert not containment.admit(session)
+
+    clock.advance(LivenessPolicy().max_backoff)
+    assert containment.admit(session)
+    containment.apply_each([decided], apply, in_pass=_dropped)
+
+    assert _row(containment, session) is None
+    assert escalation.blocks == []

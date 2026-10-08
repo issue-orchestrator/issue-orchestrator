@@ -19,6 +19,8 @@ import pytest
 
 from issue_orchestrator.control.completion_containment import CompletionContainment
 from issue_orchestrator.control.session_controller import SessionDecision
+from issue_orchestrator.control.in_flight_work import InFlightWorkLedger
+from issue_orchestrator.domain.action_liveness import OutcomeKind
 from issue_orchestrator.domain.models import SessionStatus
 from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.state_machines.issue_machine import IssueState
@@ -128,6 +130,7 @@ def test_a_completion_that_raises_is_confined_to_its_session(engine):
     parked = owner.admit(CompletionContainment.key(rework))
     assert not parked.admitted
     assert parked.row is not None and "pr_pending" in parked.row.last_reason
+    assert parked.row.last_outcome is OutcomeKind.PERMANENT
     assert [row.key.escalation_issue for row in escalation.committed_blocks] == [450]
 
 
@@ -219,3 +222,30 @@ def test_a_parked_completion_is_not_retired_while_its_steps_are_undone(engine):
 
     owner.release_issue(450)
     assert owner.admit(key).row is None
+
+
+def test_a_completion_that_fails_while_still_active_completes_after_its_backoff(engine):
+    """r3 F1: the settle raised before the session left the pass; the next pass completes it."""
+    orchestrator, owner, escalation, rework, coding = engine
+    real_settle = InFlightWorkLedger.settle
+    failures = [OSError("claim store unavailable")]
+
+    def settle(ledger, session, outcome):
+        if session.terminal_id == rework.terminal_id and failures:
+            raise failures.pop()
+        return real_settle(ledger, session, outcome)
+
+    with patch.object(InFlightWorkLedger, "settle", settle):
+        orchestrator._process_active_sessions()
+        assert orchestrator.state.active_sessions == [rework]
+        row = owner.admit(CompletionContainment.key(rework)).row
+        assert row is not None and row.last_outcome is OutcomeKind.TRANSIENT
+
+        orchestrator.liveness_clock.advance(timedelta(hours=1))
+        orchestrator._process_active_sessions()
+
+    assert orchestrator.state.active_sessions == []
+    machines = orchestrator.deps.state_machine_manager
+    assert machines.get_issue_machine(rework.issue).get_state() is IssueState.PR_PENDING
+    assert owner.admit(CompletionContainment.key(rework)).row is None
+    assert escalation.blocks == []

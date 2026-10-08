@@ -6336,7 +6336,7 @@ class TestProcessActiveSessions:
             )
 
         containment = _containment()
-        containment.apply_each([first, second], apply)
+        containment.apply_each([first, second], apply, in_pass=lambda session: True)
 
         assert applied == ["issue-1", "issue-2"]
         provider_resilience.record_success.assert_called_once_with(

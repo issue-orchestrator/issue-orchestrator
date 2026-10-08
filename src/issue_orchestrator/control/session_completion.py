@@ -581,6 +581,9 @@ def process_active_sessions(
     dispatcher = completion_dispatcher or SynchronousCompletionDispatcher()
     containment.hold_unfinished()
 
+    def in_pass(session: Session) -> bool:
+        return has_active_terminal(state.active_sessions, session.terminal_id)
+
     def apply(completed: CompletedDecision) -> None:
         _apply_completed_decision(
             completed,
@@ -601,7 +604,7 @@ def process_active_sessions(
     # BEFORE dispatching new work: applying a completed decision removes its
     # session from active_sessions, so the dispatch loop below won't re-dispatch
     # a session whose decision already landed.
-    containment.apply_each(dispatcher.drain(), apply)
+    containment.apply_each(dispatcher.drain(), apply, in_pass=in_pass)
 
     seen_terminals: set[str] = set()
     for session in list(state.active_sessions):
@@ -643,7 +646,7 @@ def process_active_sessions(
 
     # Apply decisions a synchronous dispatcher just produced this tick (the
     # background dispatcher returns nothing here — its work is still running).
-    containment.apply_each(dispatcher.drain(), apply)
+    containment.apply_each(dispatcher.drain(), apply, in_pass=in_pass)
 
 
 def _completion_decider(

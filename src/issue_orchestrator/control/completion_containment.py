@@ -10,18 +10,20 @@ same session again (#8000: one missing run dir, 902 aborted ticks). A rework's
 This owner confines such a failure to its session through the action liveness
 owner (#7350), keyed on the session's run:
 
-* a step that the next tick retries (observe, decide - the session is still
-  active) records the failure as the error's own outcome: backoff, and a park
-  once its budget is spent;
-* a failed APPLY records a permanent outcome: the apply already dropped the
-  session or ran part of its effects, so nothing retries it, and the steps it
-  did not run are a person's to finish. It parks on the spot.
+* a failure that leaves the session in the pass (observe, decide, or an
+  apply that raised before the session left ``active_sessions``) is retried
+  next tick, so it records the error's own outcome: backoff, and a park once
+  its budget is spent;
+* a failure after the session left the pass is not retried by anything - the
+  steps it did not run are a person's to finish - so it records a permanent
+  outcome and parks on the spot.
 
 A park escalates through the liveness owner (the shared needs-human block and
 a comment on the issue) and, while it stands, :meth:`admit` keeps the session
-out of the pass and :meth:`hold_unfinished` keeps it from being retired. Engine-wide faults are not this owner's: anything that is not
-an :class:`Exception`, and a confirmed-permanent issue fetch failure, still
-reach the loop.
+out of the pass and :meth:`hold_unfinished` keeps it from being retired.
+Engine-wide faults are not this owner's: anything that is not an
+:class:`Exception`, and a confirmed-permanent issue fetch failure, still reach
+the loop.
 """
 
 from __future__ import annotations
@@ -116,12 +118,16 @@ class CompletionContainment:
         self,
         completed_decisions: "Iterable[CompletedDecision]",
         apply: "Callable[[CompletedDecision], None]",
+        *,
+        in_pass: "Callable[[Session], bool]",
     ) -> None:
         """Apply every drained decision; confine each session's failure to it.
 
-        A decision that failed to DECIDE leaves its session active, so the next
-        tick retries it; a failed APPLY is not retried. Only an engine-wide
-        fault is raised, after every sibling has been applied.
+        ``in_pass(session)`` says, after a failure, whether the session is
+        still active - so the next tick retries it - whatever step raised: a
+        decide error, or an apply that failed before the session left the pass
+        (#8693 r3). Only an engine-wide fault is raised, after every sibling
+        has been applied.
         """
         errors: list[BaseException] = []
         for completed in completed_decisions:
@@ -131,7 +137,7 @@ class CompletionContainment:
                 if not self.confines(exc):
                     errors.append(exc)
                     continue
-                self.contain(completed.session, exc, retried=completed.error is not None)
+                self.contain(completed.session, exc, retried=in_pass(completed.session))
             except BaseException as exc:
                 errors.append(exc)
             else:
@@ -144,8 +150,8 @@ class CompletionContainment:
     def contain(self, session: "Session", error: Exception, *, retried: bool) -> None:
         """Record ``error`` against ``session`` instead of aborting the tick.
 
-        ``retried``: the session is still active and the next tick runs the
-        failed step again. Otherwise the failure is permanent and parks now.
+        ``retried``: the session is still in the pass and the next tick runs
+        it again. Otherwise the failure is permanent and parks now.
         """
         logger.error(
             "[COMPLETION] Completion of %s (issue #%d) failed; confined to this session"
@@ -157,8 +163,8 @@ class CompletionContainment:
             outcome_of_error(error)
             if retried
             else ActionOutcome.permanent(
-                f"applying the completion of {session.terminal_id} raised"
-                f" {type(error).__name__}: {error}; the completion steps after it did not run"
+                f"completing {session.terminal_id} raised {type(error).__name__}: {error}"
+                " after it left the completion pass; the steps after it did not run"
             )
         )
         self.owner.record(self.key(session), outcome)
