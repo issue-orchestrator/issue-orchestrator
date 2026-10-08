@@ -91,7 +91,7 @@ def blind(evidence: StagedEvidence) -> dict:
         "missing_evidence": ["why the health review produced advice instead of a binding hand-over"],
     }
     return {
-        "schema_version": 5, "engine_commit": COMMIT, "engine_started_at": STARTED.isoformat(), "design_findings": [],
+        "schema_version": 6, "engine_commit": COMMIT, "engine_started_at": STARTED.isoformat(), "design_findings": [],
         "findings": [finding],
         "blocked_items": [{"number": 364, "disposition": "finding", "finding_id": finding["id"], "why": "w"}],
         "trend": {"exam_scores": "unobserved", "operator_interventions": "unobserved", "notes": ""},

@@ -19,14 +19,20 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Any, Protocol
 
-from ..contracts.improver_findings import DesignFinding, Finding
-from ..contracts.improver_run import EffectReceipt, EffectStatus, ImproverRunRecord, RunOutcome
+from ..contracts.improver_findings import DesignFinding, Finding, ImproverChange
+from ..contracts.improver_run import (
+    EffectReceipt,
+    EffectStatus,
+    ImproverRunRecord,
+    RunOutcome,
+)
 from ..control.improver_effects import (
     IMPROVER_LABEL,
     CommentImproverEvidence,
     plan_effect,
     title_token,
 )
+from ..domain.improver_champion import CHANGE_ID
 from ..ports.engine_audit import OpenIssueLabels
 from ..ports.improver import ImproverRunStore
 from ..ports.repository_host import host_rate_limit_of
@@ -114,9 +120,10 @@ class ImproverEffects:
     ) -> tuple[ImproverRunRecord, bool]:
         accepted = self._store.accepted_findings(run)
         # Ids are unique across both lists (the validator's rule).
-        findings: dict[str, Finding | DesignFinding] = {
+        findings: dict[str, Finding | DesignFinding | ImproverChange] = {
             **{f.id: f for f in accepted.findings},
             **{d.id: d for d in accepted.design_findings},
+            **({CHANGE_ID: accepted.improver_change} if accepted.improver_change is not None else {}),
         }
         for index, receipt in enumerate(run.effects):
             if receipt.status is not EffectStatus.PENDING:
@@ -153,12 +160,19 @@ class ImproverEffects:
     def _apply(
         self,
         run: ImproverRunRecord,
-        finding: Finding | DesignFinding,
+        finding: Finding | DesignFinding | ImproverChange,
         receipt: EffectReceipt,
         open_issues: dict[int, OpenIssueLabels],
         persist: Callable[[EffectReceipt], None],
+        *,
+        proven: dict[int, OpenIssueLabels] | None = None,
     ) -> EffectReceipt:
-        command = plan_effect(run, finding, receipt.key, open_issues)
+        # A challenger's issue is identified only by its body marker (proven
+        # below before any POST), never by the listing's titles: an approval
+        # on it can replace the champion (#8001).
+        marker_only = isinstance(finding, ImproverChange)
+        listing = proven if proven is not None else ({} if marker_only else open_issues)
+        command = plan_effect(run, finding, receipt.key, listing)
         if isinstance(command, CommentImproverEvidence):
             if not self._host.issue_comment_marker_present(command.issue_number, command.marker):
                 self._host.add_comment(command.issue_number, command.body)
@@ -182,14 +196,17 @@ class ImproverEffects:
             # open issue's body settles it before any POST.
             number = self._host.find_open_issue_by_marker(marker=command.marker)
             if number is not None:
-                return self._apply(run, finding, receipt, {**open_issues, number: _carrying(number, receipt.key)}, persist)
+                carrying = {number: _carrying(number, receipt.key)}
+                if marker_only:
+                    return self._apply(run, finding, receipt, open_issues, persist, proven=carrying)
+                return self._apply(run, finding, receipt, {**open_issues, **carrying}, persist)
         if number is None:
             persist(receipt.model_copy(update={"create_attempted_at": self._clock()}))
             created = self._host.create_issue(
                 title=command.title, body=command.body, labels=list(command.labels)
             )
             if not created or not isinstance(created.get("number"), int):
-                raise RuntimeError(f"creating the improver issue for {finding.id} returned no issue number")
+                raise RuntimeError(f"creating the improver issue for {receipt.finding_id} returned no issue number")
             number = created["number"]
         open_issues[number] = OpenIssueLabels(number=number, title=command.title, labels=command.labels)
         return receipt.model_copy(

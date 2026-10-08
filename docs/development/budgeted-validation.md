@@ -252,6 +252,28 @@ data lives under `<git common dir>/io-improver/`:
   the pass noise, the distinguishable pairs and the cost (arm heats and every
   grader call, retries included, per provider; Claude's count against the operator's subscription).
 
+**The champion and its challengers** (#8001) keep the improver improving
+under the same rules. The **champion** (`io-improver/champion/`, seeded once
+with `improver_tournament champion seed --by NAME`) is the configuration
+`improver run` uses for every setting it is not given: prompt, provider and
+model, mode, heats, budget. About one champion run in ten (chosen from the
+run id by the orchestrator, `--change-invitation-rate`) is invited to propose
+ONE change to it: a prompt passage, the agent, the mode, the heats or the
+budget, never the keys, graders or scoring. An accepted change files an
+`improver:challenger` issue. `improver_tournament challenge --run ID
+--snapshot S...` tries it: the champion and the challenger each make whole
+improver runs (default 3 an arm) on each frozen snapshot, graded blind and
+pooled. The challenger wins only if it is told apart above the champion on
+every snapshot. `improver_tournament promote --challenge ID` then replaces the
+champion only if the challenge won against the champion that is current NOW
+and a maintainer approved its issue (#7906: a standing `approved` label from
+a person with the admin or maintain role, on the open issue). A challenge's
+request (snapshots, whole runs, graders, passes, seed) is fixed before any arm
+runs: a retry must ask for exactly it, and resumes without re-running arms.
+Every champion can run live: all its heats in one wave, an agent timeout of
+90 minutes or its budget plus 15, inside the 105-minute run budget (so an
+empowered budget is at most 90 minutes).
+
 **A run is dry unless `--apply`** (`IMPROVER_APPLY=1`): an accepted run's
 GitHub effects are recorded as owed, and `improver apply` files them. A rejected findings file exits 1 with every
 broken rule recorded and changes nothing; an unavailable input or agent exits

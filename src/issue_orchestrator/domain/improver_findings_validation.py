@@ -32,10 +32,10 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Iterator, Mapping
-from itertools import chain
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from itertools import chain
 from typing import Any
 
 from pydantic import ValidationError
@@ -66,7 +66,13 @@ from ..contracts.improver_inputs import (
     StagedDecision,
 )
 from ..events.catalog import EventName
-from .improver_citations import MIN_QUOTE_CHARS, CitationCheck, CitationIndex, normalized
+from .improver_champion import ChangeInvitation, ChangeNotApplicable, challenger_of
+from .improver_citations import (
+    MIN_QUOTE_CHARS,
+    CitationCheck,
+    CitationIndex,
+    normalized,
+)
 from .improver_subjects import decision_issue, mentions_issue
 
 #: ``stall_evidence`` prefix naming a file of the engine's source tree.
@@ -139,6 +145,14 @@ class Rule(StrEnum):
     #: of a staged file (``improver-data/`` or ``toolbox/``, never outside
     #: them), or an answer the toolbox served. No citation, no finding.
     DESIGN_CITATION_RESOLVES = "design_citation_resolves"
+    #: A change to the improver is proposed only by a run the orchestrator
+    #: invited to propose one (#8001): the agent never chooses to.
+    IMPROVER_CHANGE_INVITED = "improver_change_invited"
+    #: The change names this run's own findings as its motivation.
+    IMPROVER_CHANGE_MOTIVATED = "improver_change_motivated"
+    #: The change applies to the champion the run was invited to challenge
+    #: (a prompt passage that occurs once; a setting it changes).
+    IMPROVER_CHANGE_APPLIES = "improver_change_applies"
 
 
 @dataclass(frozen=True)
@@ -214,9 +228,14 @@ class StagedEvidence:
         return found
 
 
-def validate_findings(raw: str | bytes, evidence: StagedEvidence) -> ImproverFindings:
+def validate_findings(
+    raw: str | bytes, evidence: StagedEvidence, *, invitation: ChangeInvitation | None = None
+) -> ImproverFindings:
     """``raw`` as typed findings if it breaks no rule; otherwise raises
-    :class:`ImproverFindingsRejected` naming every rule it broke."""
+    :class:`ImproverFindingsRejected` naming every rule it broke.
+
+    ``invitation``: the champion the run was invited to propose one change
+    to; without it, a proposed change breaks a rule."""
     try:
         findings = ImproverFindings.model_validate_json(raw)
     except ValidationError as error:
@@ -230,10 +249,27 @@ def validate_findings(raw: str | bytes, evidence: StagedEvidence) -> ImproverFin
                 for e in error.errors()
             )
         ) from error
-    violations = tuple(_Checker(findings, evidence).violations())
+    violations = (*_Checker(findings, evidence).violations(), *_change_rules(findings, invitation))
     if violations:
         raise ImproverFindingsRejected(violations)
     return findings
+
+
+def _change_rules(findings: ImproverFindings, invitation: ChangeInvitation | None) -> Iterator[Violation]:
+    change = findings.improver_change
+    if change is None:
+        return
+    if invitation is None:
+        yield Violation(Rule.IMPROVER_CHANGE_INVITED, None, "proposes a change to the improver without an invitation")
+        return
+    ids = {f.id for f in findings.findings} | {d.id for d in findings.design_findings}
+    unknown = sorted(set(change.motivated_by) - ids)
+    if unknown:
+        yield Violation(Rule.IMPROVER_CHANGE_MOTIVATED, None, f"the change cites {unknown}, which are not its findings")
+    try:
+        challenger_of(invitation.champion, invitation.prompt, change)
+    except ChangeNotApplicable as error:
+        yield Violation(Rule.IMPROVER_CHANGE_APPLIES, None, str(error))
 
 
 class _Checker:

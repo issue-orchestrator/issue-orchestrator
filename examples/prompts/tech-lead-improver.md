@@ -194,7 +194,7 @@ decision, never applied.
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "engine_commit": "<sha>",
   "engine_started_at": "<iso>",
   "findings": [
@@ -233,9 +233,14 @@ decision, never applied.
      "impact": "<what it costs: stalls, operator work, wrong outcomes>",
      "proposed_change": "<the change that makes the model match reality>"}
   ],
-  "trend": {"exam_scores": "up | flat | down | unobserved", "operator_interventions": "up | flat | down | unobserved", "notes": "<one paragraph>"}
+  "trend": {"exam_scores": "up | flat | down | unobserved", "operator_interventions": "up | flat | down | unobserved", "notes": "<one paragraph>"},
+  "improver_change": null
 }
 ```
+
+`improver_change` stays `null` (or absent) unless this prompt ends with an
+invitation to propose one change to the improver; a change proposed without
+one rejects the whole file.
 
 One valid example of each output, written against a small staged engine, is
 in `engine-source/examples/improver/findings/`.

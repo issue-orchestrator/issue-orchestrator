@@ -213,6 +213,9 @@ class ImproverRunRecord(_Closed):
     finding_support: tuple[FindingSupport, ...] = ()
     #: What the heats found that could not be merged (#8001).
     heat_conflicts: tuple[HeatConflictRecord, ...] = ()
+    #: The champion (variant id) this run was invited to propose one change
+    #: to (#8001); None: not invited.
+    change_invitation: str | None = None
     #: Earlier runs whose effects were still owed when this run finished:
     #: a run is not green while the improver owes GitHub anything.
     owed_by_earlier_runs: tuple[str, ...] = ()

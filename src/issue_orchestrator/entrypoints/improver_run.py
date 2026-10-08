@@ -41,24 +41,32 @@ from ..contracts.improver_inputs import (
 )
 from ..contracts.improver_run import (
     ExamScore,
+    FindingGrade,
     FindingSupport,
     HeatConflictRecord,
     HeatRecord,
-    FindingGrade,
     ImproverRunRecord,
     RunOutcome,
     StallPointMove,
 )
+from ..contracts.improver_variant import ImproverVariant
 from ..control.improver_effects import design_finding_key, finding_key, planned_effects
-from ..domain.improver_heats import AcceptedHeat, merge_heats
-from ..execution.improver_effect_applier import ImproverEffects
 from ..domain.engine_activity import EngineRef
+from ..domain.improver_champion import INVITATION_RATE, ChangeInvitation, invited
 from ..domain.improver_findings_validation import (
     ImproverFindingsRejected,
     StagedEvidence,
     validate_findings,
 )
-from ..ports.improver import HeatSpace, ImproverAgent, ImproverAgentResult, ImproverRunStore, heat_file
+from ..domain.improver_heats import AcceptedHeat, merge_heats
+from ..execution.improver_effect_applier import ImproverEffects
+from ..ports.improver import (
+    HeatSpace,
+    ImproverAgent,
+    ImproverAgentResult,
+    ImproverRunStore,
+    heat_file,
+)
 from ..ports.improver_investigation import ImproverInvestigation
 from .improver_staging import (
     ImproverInputsUnavailable,
@@ -152,6 +160,25 @@ class HeatPlan:
             )
 
 
+@dataclass(frozen=True)
+class ChangePolicy:
+    """Runs of the champion are sometimes invited to propose one change to
+    it (#8001): about ``rate`` of them, chosen by run id, never by the agent.
+    ``addendum`` is the invitation appended to the prompt (``<<CHAMPION>>``
+    names the champion)."""
+
+    champion: ImproverVariant
+    prompt: str
+    addendum: str
+    rate: float = INVITATION_RATE
+
+    def invitation(self, run_id: str) -> ChangeInvitation | None:
+        return ChangeInvitation(self.champion, self.prompt) if invited(run_id, rate=self.rate) else None
+
+    def instructions(self) -> str:
+        return "\n\n" + self.addendum.replace("<<CHAMPION>>", f"`{self.champion.id}` ({self.champion.describe()})")
+
+
 class ImproverRun:
     def __init__(
         self,
@@ -164,7 +191,22 @@ class ImproverRun:
         prompt: str,
         heats: HeatPlan,
         clock: Callable[[], datetime],
+        change_policy: ChangePolicy | None = None,
     ) -> None:
+        if change_policy is not None:
+            # Only the champion itself is invited to propose a change to it.
+            champion = change_policy.champion
+            mismatched = [
+                what for what, ok in (
+                    ("prompt", prompt == change_policy.prompt),
+                    ("agent", agent.choice == champion.agent),
+                    ("mode", investigation.mode is champion.mode),
+                    ("heats", heats.count == champion.heats),
+                ) if not ok
+            ]
+            if mismatched:
+                raise ValueError(f"a run invited to change the champion runs the champion; its {mismatched} differ")
+        self._change_policy = change_policy
         self._store = store
         self._heats = heats
         self._stager = stager
@@ -195,6 +237,8 @@ class ImproverRun:
         started = self._clock()
         run_id = f"{started.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
         run_dir = self._store.new_run_dir(run_id)
+        # A blind run files nothing, so it is never invited to propose a change.
+        invitation = None if request.blind or self._change_policy is None else self._change_policy.invitation(run_id)
         base = ImproverRunRecord(
             run_id=run_id,
             started_at=started,
@@ -208,6 +252,7 @@ class ImproverRun:
             blind_excluded_issues=tuple(sorted(request.excluded_open_issues)),
             agent=self._agent.choice,
             mode=self._investigation.mode,
+            change_invitation=None if invitation is None else invitation.champion.id,
         )
         try:
             staged = self._stager.stage(
@@ -223,10 +268,12 @@ class ImproverRun:
                 "exam_scores": _exam_scores(evidence),
             }
         )
-        answers = self._investigate(request, run_dir, base)
+        answers = self._investigate(request, run_dir, base, invited=invitation is not None)
         if isinstance(answers, ImproverRunRecord):
             return answers
-        heats = [self._judge(heat, answer, run_dir, evidence, request.engine) for heat, answer in answers]
+        heats = [
+            self._judge(heat, answer, run_dir, evidence, request.engine, invitation) for heat, answer in answers
+        ]
         records = tuple(record for record, _ in heats)
         base = base.model_copy(update={"heats": records})
         accepted = [AcceptedHeat(record.heat, findings) for record, findings in heats if findings is not None]
@@ -240,7 +287,7 @@ class ImproverRun:
         text = merged.findings.model_dump_json(indent=2, by_alias=True) + "\n"
         (run_dir / FINDINGS_FILE).write_text(text, encoding="utf-8")
         try:
-            findings = validate_findings(text, evidence)
+            findings = validate_findings(text, evidence, invitation=invitation)
         except ImproverFindingsRejected as rejection:
             # Each heat was accepted alone: a rejected merge is a merge defect.
             return self._finish(
@@ -268,7 +315,10 @@ class ImproverRun:
             stall_points=self._stall_point_moves(findings, request.engine.engine_id),
             trend=findings.trend,
             # A blind run's findings may duplicate the issues it was not shown.
-            effects=() if request.blind else planned_effects(findings, request.engine, merged.original_ids),
+            effects=() if request.blind else planned_effects(
+                findings, request.engine, merged.original_ids,
+                change_base=None if invitation is None else invitation.champion.id,
+            ),
         )
         if not apply:
             return accepted_run
@@ -282,7 +332,7 @@ class ImproverRun:
         return owed
 
     def _investigate(
-        self, request: ImproverRunRequest, run_dir: Path, base: ImproverRunRecord
+        self, request: ImproverRunRequest, run_dir: Path, base: ImproverRunRecord, *, invited: bool
     ) -> list[tuple[int, ImproverAgentResult]] | ImproverRunRecord:
         """Each heat's answer, run inside the investigation (the toolbox is
         staged once and served while the heats run), or the finished record
@@ -298,7 +348,8 @@ class ImproverRun:
                     base, RunOutcome.UNAVAILABLE, f"toolbox unavailable: {type(error).__name__}: {error}"
                 )
             root = run_dir.resolve()
-            prompt = f"ISSUE_ORCHESTRATOR_RUN_DIR={root}\n\n{self._prompt}{kit.instructions}"
+            invitation = self._change_policy.instructions() if invited and self._change_policy is not None else ""
+            prompt = f"ISSUE_ORCHESTRATOR_RUN_DIR={root}\n\n{self._prompt}{kit.instructions}{invitation}"
             evidence = ((root / IMPROVER_DATA_DIRNAME), *kit.evidence)
 
             def heat_answer(heat: int) -> tuple[int, ImproverAgentResult]:
@@ -318,7 +369,13 @@ class ImproverRun:
                 return list(pool.map(heat_answer, range(1, self._heats.count + 1)))
 
     def _judge(
-        self, heat: int, answer: ImproverAgentResult, run_dir: Path, evidence: StagedEvidence, engine: EngineRef
+        self,
+        heat: int,
+        answer: ImproverAgentResult,
+        run_dir: Path,
+        evidence: StagedEvidence,
+        engine: EngineRef,
+        invitation: ChangeInvitation | None,
     ) -> tuple[HeatRecord, ImproverFindings | None]:
         """One heat's answer, validated alone; its findings if accepted."""
         if answer.final_message is None:
@@ -326,7 +383,7 @@ class ImproverRun:
         text = findings_text(answer.final_message)
         (run_dir / heat_file(FINDINGS_FILE, heat)).write_text(text, encoding="utf-8")
         try:
-            findings = validate_findings(text, evidence)
+            findings = validate_findings(text, evidence, invitation=invitation)
         except ImproverFindingsRejected as rejection:
             return HeatRecord(
                 heat=heat,

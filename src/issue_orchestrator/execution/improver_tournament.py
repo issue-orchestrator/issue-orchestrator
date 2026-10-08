@@ -42,7 +42,12 @@ from typing import Any
 
 from ..contracts.improver_findings import FINDINGS_FILE
 from ..contracts.improver_inputs import INPUTS_FILE, InputsManifest
-from ..contracts.improver_run import ImproverAgentChoice, ImproverProvider, RunOutcome
+from ..contracts.improver_run import (
+    ImproverAgentChoice,
+    ImproverProvider,
+    ImproverRunRecord,
+    RunOutcome,
+)
 from ..contracts.improver_toolbox import ToolboxManifest
 from ..contracts.improver_tournament import (
     GRADE_CREDIT,
@@ -94,6 +99,8 @@ _GRADING_RECORD = "grading.json"
 _REQUEST = "sealed/request.json"
 #: What the tournament's arms were run on (written by run_arms).
 _ARMS_RUN = "arms/run.json"
+#: What the tournament's arms were started with (a resume must match it).
+_ARMS_PLAN = "plan.json"
 
 
 class FrozenInputs:
@@ -158,8 +165,30 @@ class ArmSpec:
     budget_minutes: int
     #: When one heat's agent is stopped.
     agent_timeout_minutes: int
+    #: None: each heat is one graded output (an arm's answers, heat by heat).
+    #: N: the arm runs N whole improver runs, each its heats merged, and
+    #: each run's merged findings is one graded output: how a challenger to
+    #: the improver is tried, since heats change what a run files (#8001).
+    whole_runs: int | None = None
+
+    def describe(self) -> dict[str, object]:
+        """What the arm runs, as a resumed arm must find it unchanged."""
+        return {
+            **self.arm.model_dump(mode="json"),
+            "prompt_sha256": hashlib.sha256(self.prompt.encode("utf-8")).hexdigest(),
+            "addendum_sha256": hashlib.sha256(self.empowered_addendum.encode("utf-8")).hexdigest(),
+            "heats": self.heats.count, "parallel_heats": self.heats.parallel, "budget_minutes": self.budget_minutes,
+            "agent_timeout_minutes": self.agent_timeout_minutes, "whole_runs": self.whole_runs,
+        }
+
+    @property
+    def agent_runs(self) -> int:
+        """How many agent runs the arm costs."""
+        return self.heats.count * (self.whole_runs or 1)
 
     def __post_init__(self) -> None:
+        if self.whole_runs is not None and self.whole_runs < 1:
+            raise ValueError(f"arm {self.arm.name}: at least one whole run, not {self.whole_runs}")
         if self.arm.mode == "empowered" and not 0 < self.budget_minutes < self.agent_timeout_minutes:
             raise ValueError(
                 f"arm {self.arm.name}: its {self.budget_minutes}-minute budget must be below its"
@@ -216,11 +245,26 @@ class TournamentHarness:
     def directory(self, tournament_id: str) -> Path:
         return self._root / require_slug(tournament_id, "a tournament id")
 
-    def run_arms(self, tournament_id: str, snapshot_id: str, specs: Sequence[ArmSpec]) -> list[ArmOutput]:
+    def result_of(self, tournament_id: str) -> TournamentResult | None:
+        """The tournament's result, if it was graded."""
+        path = self.directory(tournament_id) / "result.json"
+        return TournamentResult.model_validate_json(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+    def arms_ran(self, tournament_id: str) -> bool:
+        """Whether the tournament's arms ran to the end (their outputs recorded)."""
+        return (self.directory(tournament_id) / _ARMS_RUN).is_file()
+
+    def run_arms(
+        self, tournament_id: str, snapshot_id: str, specs: Sequence[ArmSpec], *, resume: bool = False
+    ) -> list[ArmOutput]:
         """Each arm's heats on the snapshot, as outputs (a failed heat has none).
 
         The snapshot's answer key must exist first: a key is written before
         any result is seen, never after reading the arms' answers.
+
+        ``resume``: arms interrupted before they all finished are resumed
+        (the same snapshot and arm specifications only): every finished run
+        is reused, only the unfinished ones run.
         """
         self._keys.get(snapshot_id)
         names = [spec.arm.name for spec in specs]
@@ -230,50 +274,107 @@ class TournamentHarness:
         engine = self._snapshots.engine(snapshot_id)
         # A tournament's arms run once: a second run in the same tournament
         # (or a tournament id two runs share) is refused before any agent starts.
-        try:
-            (self.directory(tournament_id) / "arms").mkdir(parents=True)
-        except FileExistsError:
-            raise RuntimeError(f"tournament {tournament_id} has already run its arms") from None
+        plan = json.dumps({"snapshot_id": snapshot_id, "arms": [s.describe() for s in specs]}, indent=2) + "\n"
+        if not self._start_arms(tournament_id, plan):
+            # Started before: only a resume, of exactly that plan, goes on.
+            planned = self.directory(tournament_id) / "arms" / _ARMS_PLAN
+            if not resume:
+                raise RuntimeError(f"tournament {tournament_id} has already run its arms")
+            if planned.read_text(encoding="utf-8") != plan:
+                raise RuntimeError(f"tournament {tournament_id}'s arms were started otherwise; it cannot resume")
         heats_by_provider: dict[str, int] = {}
         for spec in specs:
-            arm, heats = spec.arm, spec.heats
-            heats_by_provider[arm.provider] = heats_by_provider.get(arm.provider, 0) + heats.count
-            store = FileImproverRunStore(self.directory(tournament_id) / "arms" / arm.name)
-            run = ImproverRun(
-                store=store,
-                stager=FrozenInputs(self._snapshots, snapshot_id),
-                agent=self._agent_for(
-                    ImproverAgentChoice(provider=ImproverProvider(arm.provider), model=arm.model),
-                    spec.agent_timeout_minutes,
-                ),
-                investigation=self._investigation(spec, snapshot_id),
-                effects=ImproverEffects(store=store, host=_NoGitHub(), outputs_repo=NO_OUTPUTS_REPO, clock=self._clock),  # type: ignore[arg-type]
-                prompt=spec.prompt,
-                heats=heats,
-                clock=self._clock,
-            )
-            record = run.run(
-                ImproverRunRequest(
-                    engine=engine, outputs_repo=NO_OUTPUTS_REPO, exam_dir=None,
-                    window=timedelta(hours=24), log_tail_bytes=1,
-                ),
-                apply=False,
-            )
-            run_dir = Path(record.run_dir)
-            for heat in range(1, heats.count + 1):
-                answer = run_dir / heat_file(FINDINGS_FILE, heat)
-                heat_record = next((h for h in record.heats if h.heat == heat), None)
-                # Only an answer io accepted is graded: one it rejected would
-                # file nothing, so it is worth nothing (it scores 0).
-                accepted = heat_record is not None and heat_record.outcome is RunOutcome.ACCEPTED
-                text = answer.read_text(encoding="utf-8") if accepted else None
-                outputs.append(ArmOutput(arm.name, heat, text, hide=(str(run_dir.resolve()),)))
+            provider = spec.arm.provider
+            heats_by_provider[provider] = heats_by_provider.get(provider, 0) + spec.agent_runs
+            # Finished runs are reused (a resume launches only unfinished ones).
+            outputs += self._run_arm(tournament_id, snapshot_id, engine, spec)
+        record = self.directory(tournament_id) / _ARMS_RUN
+        if record.is_file():
+            # All the arms had finished: their outputs, rebuilt, must be what was recorded.
+            if json.loads(record.read_text(encoding="utf-8"))["outputs"] != _digests(outputs):
+                raise RuntimeError(f"tournament {tournament_id}'s finished arms no longer give their recorded outputs")
+            return outputs
         # What these outputs were run on: grading them under another snapshot is refused.
-        _write_atomic(self.directory(tournament_id) / _ARMS_RUN, json.dumps(
+        _write_atomic(record, json.dumps(
             {"snapshot_id": snapshot_id, "outputs": _digests(outputs), "heats_by_provider": heats_by_provider},
             indent=2,
         ) + "\n")
         return outputs
+
+    def _start_arms(self, tournament_id: str, plan: str) -> bool:
+        """Publish ``arms/`` with its plan already in it (one rename: never an
+        arms directory without a plan); False if the arms were started before."""
+        root = self.directory(tournament_id)
+        root.mkdir(parents=True, exist_ok=True)
+        if (root / "arms").exists():
+            return False
+        staging = Path(tempfile.mkdtemp(dir=root, prefix=".arms-"))
+        _write_atomic(staging / _ARMS_PLAN, plan)
+        try:
+            os.rename(staging, root / "arms")
+        except OSError:
+            shutil.rmtree(staging, ignore_errors=True)
+            return False
+        return True
+
+    def grading_prepared(self, tournament_id: str) -> bool:
+        """Whether the tournament's grading inputs were sealed (a regrade can run)."""
+        return (self.directory(tournament_id) / _REQUEST).is_file()
+
+    def _run_arm(self, tournament_id: str, snapshot_id: str, engine: EngineRef, spec: ArmSpec) -> list[ArmOutput]:
+        arm = spec.arm
+        request = ImproverRunRequest(
+            engine=engine, outputs_repo=NO_OUTPUTS_REPO, exam_dir=None, window=timedelta(hours=24), log_tail_bytes=1,
+        )
+        arm_dir = self.directory(tournament_id) / "arms" / arm.name
+        if spec.whole_runs is not None:
+            outputs = []
+            for n in range(1, spec.whole_runs + 1):
+                # Its own store: a run staged beside an earlier one would diff
+                # against that run's audit, and the samples would differ.
+                record = self._finished_or_run(FileImproverRunStore(arm_dir / f"run{n}"), snapshot_id, spec, request)
+                run_dir = Path(record.run_dir)
+                # A run io did not accept files nothing: it scores 0.
+                accepted = record.outcome is RunOutcome.ACCEPTED
+                text = (run_dir / FINDINGS_FILE).read_text(encoding="utf-8") if accepted else None
+                outputs.append(ArmOutput(arm.name, n, text, hide=(str(run_dir.resolve()),)))
+            return outputs
+        record = self._finished_or_run(FileImproverRunStore(arm_dir), snapshot_id, spec, request)
+        run_dir = Path(record.run_dir)
+        outputs = []
+        for heat in range(1, spec.heats.count + 1):
+            heat_record = next((h for h in record.heats if h.heat == heat), None)
+            # Only an answer io accepted is graded: one it rejected would
+            # file nothing, so it is worth nothing (it scores 0).
+            accepted = heat_record is not None and heat_record.outcome is RunOutcome.ACCEPTED
+            text = (run_dir / heat_file(FINDINGS_FILE, heat)).read_text(encoding="utf-8") if accepted else None
+            outputs.append(ArmOutput(arm.name, heat, text, hide=(str(run_dir.resolve()),)))
+        return outputs
+
+    def _finished_or_run(
+        self, store: FileImproverRunStore, snapshot_id: str, spec: ArmSpec, request: ImproverRunRequest
+    ) -> ImproverRunRecord:
+        """The store's finished run (an arm resumed), or a new one."""
+        finished = store.runs()
+        if finished:
+            return finished[0]
+        return self._improver_run(store, snapshot_id, spec).run(request, apply=False)
+
+    def _improver_run(self, store: FileImproverRunStore, snapshot_id: str, spec: ArmSpec) -> ImproverRun:
+        arm = spec.arm
+        return ImproverRun(
+            store=store,
+            stager=FrozenInputs(self._snapshots, snapshot_id),
+            agent=self._agent_for(
+                ImproverAgentChoice(provider=ImproverProvider(arm.provider), model=arm.model),
+                spec.agent_timeout_minutes,
+            ),
+            investigation=self._investigation(spec, snapshot_id),
+            effects=ImproverEffects(store=store, host=_NoGitHub(), outputs_repo=NO_OUTPUTS_REPO, clock=self._clock),  # type: ignore[arg-type]
+            prompt=spec.prompt,
+            heats=spec.heats,
+            clock=self._clock,
+        )
 
     def _investigation(self, spec: ArmSpec, snapshot_id: str) -> Any:
         if spec.arm.mode == "scripted":

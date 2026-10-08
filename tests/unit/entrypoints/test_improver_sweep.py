@@ -76,7 +76,7 @@ class EmptyFindingsAgent:
         inputs = json.loads((space.run_dir / "improver-data" / "inputs.json").read_text())
         self.engines.append((inputs["engine_id"], inputs["audited_repo"]))
         return ImproverAgentResult(json.dumps({
-            "schema_version": 5, "engine_commit": COMMIT, "engine_started_at": STARTED.isoformat(), "design_findings": [],
+            "schema_version": 6, "engine_commit": COMMIT, "engine_started_at": STARTED.isoformat(), "design_findings": [],
             "findings": [], "blocked_items": [],
             "trend": {"exam_scores": "unobserved", "operator_interventions": "unobserved", "notes": ""},
         }), "done")

@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from typing import TypeVar
 
 from ..contracts.improver_findings import DesignFinding, Finding, ImproverFindings
+from .improver_champion import CHANGE_ID
 from .improver_citations import normalized
 
 _F = TypeVar("_F", Finding, DesignFinding)
@@ -104,6 +105,15 @@ class _Merge:
         self._original_ids: dict[str, str] = {}
 
     def add(self, heat: AcceptedHeat) -> None:
+        change = heat.findings.improver_change
+        if change is not None and change != self._primary.findings.improver_change:
+            # Only the primary heat's change is carried: its motivating
+            # findings stand unrenamed. Another heat's is shown, not dropped.
+            self._conflicts.append(HeatConflict(
+                finding_id=CHANGE_ID, heat=heat.heat,
+                reason="a change to the improver from a heat other than the primary is not carried",
+                claim=change.model_dump_json(),
+            ))
         for finding in heat.findings.findings:
             self._add_stall(heat.heat, finding)
         for design in heat.findings.design_findings:

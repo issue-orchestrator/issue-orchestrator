@@ -48,9 +48,20 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
-from ..contracts.improver_findings import DesignFinding, Finding, ImproverFindings
+from ..contracts.improver_findings import (
+    AgentEdit,
+    BudgetEdit,
+    DesignFinding,
+    Finding,
+    HeatsEdit,
+    ImproverChange,
+    ImproverFindings,
+    ModeEdit,
+    PromptEdit,
+)
 from ..contracts.improver_run import EffectReceipt, EffectStatus, ImproverRunRecord
 from ..domain.engine_activity import EngineRef
+from ..domain.improver_champion import CHANGE_ID
 from ..ports.engine_audit import OpenIssueLabels
 
 #: Every improver issue carries this label, so an operator can find them all.
@@ -68,6 +79,8 @@ _LABELS: dict[str, tuple[str, ...]] = {
 }
 #: A design finding: the operator decides whether the model changes.
 DESIGN_LABELS: tuple[str, ...] = (IMPROVER_LABEL, OPERATOR_DECISION_LABEL, "improver:design")
+#: A challenger to the improver itself: tried, then a maintainer approves it.
+CHALLENGER_LABELS: tuple[str, ...] = (IMPROVER_LABEL, OPERATOR_DECISION_LABEL, "improver:challenger")
 
 
 class EffectRoute(StrEnum):
@@ -112,6 +125,12 @@ def design_finding_key(design: DesignFinding, engine: EngineRef) -> str:
     return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:12]
 
 
+def change_key(change: ImproverChange, base: str) -> str:
+    """A proposed change's identity: what it changes, in which champion."""
+    identity = {"champion": base, "edit": change.edit.model_dump(mode="json")}
+    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:12]
+
+
 def title_token(key: str) -> str:
     return f"[improver:{key}]"
 
@@ -121,9 +140,15 @@ def finding_marker(key: str) -> str:
 
 
 def planned_effects(
-    findings: ImproverFindings, engine: EngineRef, original_ids: Mapping[str, str] | None = None
+    findings: ImproverFindings,
+    engine: EngineRef,
+    original_ids: Mapping[str, str] | None = None,
+    *,
+    change_base: str | None = None,
 ) -> tuple[EffectReceipt, ...]:
-    """One pending effect per accepted finding and design finding.
+    """One pending effect per accepted finding and design finding, and one
+    for the change to the improver an invited run proposed (``change_base``:
+    the champion it was invited to challenge).
 
     ``original_ids``: a design finding renamed by a multi-heat merge keeps the
     effect key of the id its heat wrote, so it deduplicates the same way
@@ -141,6 +166,11 @@ def planned_effects(
                 status=EffectStatus.PENDING,
             )
             for d in findings.design_findings
+        ),
+        *(
+            (EffectReceipt(finding_id=CHANGE_ID, key=change_key(change, change_base), status=EffectStatus.PENDING),)
+            if (change := findings.improver_change) is not None and change_base is not None
+            else ()
         ),
     )
 
@@ -174,12 +204,14 @@ class TrackedIssueNotOpen(RuntimeError):
 
 def plan_effect(
     run: ImproverRunRecord,
-    finding: Finding | DesignFinding,
+    finding: Finding | DesignFinding | ImproverChange,
     key: str,
     open_issues: Mapping[int, OpenIssueLabels],
 ) -> ImproverEffectCommand:
     """The one GitHub effect an accepted finding asks for, deduplicated
     against ``open_issues``."""
+    if isinstance(finding, ImproverChange):
+        return _plan_change_effect(run, finding, key, open_issues)
     if isinstance(finding, DesignFinding):
         return _plan_design_effect(run, finding, key, open_issues)
     target = finding.tracked_issue if finding.classification == "tracked" else None
@@ -233,6 +265,67 @@ def _plan_design_effect(
         body=f"{marker}\n{design_issue_body(run, design)}",
         labels=DESIGN_LABELS,
     )
+
+
+def _plan_change_effect(
+    run: ImproverRunRecord, change: ImproverChange, key: str, open_issues: Mapping[int, OpenIssueLabels]
+) -> ImproverEffectCommand:
+    token = title_token(key)
+    filed = next((n for n, i in sorted(open_issues.items()) if token in i.title), None)
+    if filed is not None:
+        marker = f"<!-- io-improver:{run.run_id}:{CHANGE_ID} -->"
+        return CommentImproverEvidence(
+            issue_number=filed, marker=marker,
+            body=f"{marker}\n**Improver run `{run.run_id}`** proposed this change again.\n\n{_change_json(change)}",
+        )
+    marker = finding_marker(key)
+    return FileImproverIssue(
+        title=f"{token} Improver challenger ({change.edit.kind.replace('_', ' ')}) from run {run.run_id}",
+        marker=marker,
+        body=f"{marker}\n{change_issue_body(run, change)}",
+        labels=CHALLENGER_LABELS,
+    )
+
+
+def change_issue_body(run: ImproverRunRecord, change: ImproverChange) -> str:
+    """The issue a proposed change to the improver files: what it changes,
+    why, and how it is tried and decided. Nothing is applied by filing it."""
+    tournament = "python -m issue_orchestrator.entrypoints.cli_tools.improver_tournament"
+    return "\n\n".join(
+        (
+            f"Proposed by tech-lead improver run `{run.run_id}` (#8001), invited to propose ONE change to"
+            f" the improver's champion `{run.change_invitation}`." + support_note(run, CHANGE_ID),
+            f"**Change:** {_inert(_describe_edit(change))}",
+            f"**Why:** {_inert(change.why)}",
+            f"**Expected effect:** {_inert(change.expected_effect)}",
+            "**Motivated by the run's findings:** " + ", ".join(f"`{_inert(i)}`" for i in change.motivated_by),
+            "**How it is decided (nothing is applied by this issue):**\n"
+            f"1. Try it against the champion on frozen snapshots: `{tournament} challenge --run {run.run_id}"
+            " --snapshot <id>`.\n"
+            "2. It replaces the champion only if it is told apart ABOVE the champion on every snapshot (the"
+            " tournament's noise band and heat test) AND a maintainer labels this issue `approved`.\n"
+            f"3. Then: `{tournament} promote --challenge <challenge id>`.",
+            _change_json(change),
+        )
+    )
+
+
+def _describe_edit(change: ImproverChange) -> str:
+    match change.edit:
+        case PromptEdit(find=find, replace=replace):
+            return f"in the prompt, replace {find!r} with {replace!r}"
+        case AgentEdit(provider=provider, model=model):
+            return f"run on {provider}:{model}"
+        case ModeEdit(mode=mode):
+            return f"investigate in {mode} mode"
+        case HeatsEdit(heats=heats):
+            return f"send {heats} heat(s) per run"
+        case BudgetEdit(minutes=minutes):
+            return f"give the empowered investigation {minutes} minutes"
+
+
+def _change_json(change: ImproverChange) -> str:
+    return "```json\n" + _inert_json(change.model_dump_json(indent=2)) + "\n```"
 
 
 def design_issue_body(run: ImproverRunRecord, design: DesignFinding) -> str:
