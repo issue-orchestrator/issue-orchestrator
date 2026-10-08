@@ -31,6 +31,20 @@ def test_a_rejected_findings_file_exits_one_naming_each_rule(
     assert "[reproduction_fails_on_engine_commit]" in capsys.readouterr().out
 
 
+def test_a_heats_stored_answer_is_validated_offline_as_the_run_reads_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build_improver_data(tmp_path)
+    (tmp_path / "improver-findings-h2.json").write_text("Below is the findings file.\n\n" + json.dumps(example("exam_case")))
+    (tmp_path / "improver-findings-h3.json").write_text("Two: {\"a\": 1} and {\"b\": 2}")
+
+    assert improver.main(["validate", "--run-dir", str(tmp_path), "--heat", "2"]) == improver.EXIT_OK
+    out = capsys.readouterr().out
+    assert "discarded 27 character(s) of prose" in out and "valid: 1 finding(s)" in out
+    assert improver.main(["validate", "--run-dir", str(tmp_path), "--heat", "3"]) == improver.EXIT_REJECTED
+    assert "2 JSON object(s)" in capsys.readouterr().out
+
+
 def test_no_findings_file_is_a_rejection(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     build_improver_data(tmp_path)
 

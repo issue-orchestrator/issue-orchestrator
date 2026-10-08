@@ -14,7 +14,7 @@ from issue_orchestrator.contracts.improver_variant import ImproverVariant
 from issue_orchestrator.domain.improver_champion import CHANGE_ID, ChangeInvitation, prompt_digest
 from issue_orchestrator.domain.improver_findings_validation import ImproverFindingsRejected, Rule, validate_findings
 from issue_orchestrator.domain.improver_heats import AcceptedHeat, merge_heats
-from issue_orchestrator.entrypoints.improver_run import ChangePolicy, HeatPlan, ImproverRun
+from issue_orchestrator.entrypoints.improver_run import FINAL_ANSWER_REMINDER, ChangePolicy, HeatPlan, ImproverRun
 from issue_orchestrator.execution.improver_effect_applier import ImproverEffects
 from issue_orchestrator.execution.improver_investigation import ScriptedInvestigation
 from issue_orchestrator.entrypoints.improver_staging import load_staged_evidence
@@ -119,7 +119,7 @@ def test_an_invited_run_is_asked_and_its_change_files_a_challenger_issue(tmp_pat
     record = _champion_run(store, host, agent, rate=1.0).run(_request())
 
     assert record.outcome is RunOutcome.ACCEPTED and record.change_invitation == CHAMPION.id
-    assert agent.prompts[0].endswith(f"INVITED to change `{CHAMPION.id}` ({CHAMPION.describe()})")
+    assert agent.prompts[0].endswith(f"INVITED to change `{CHAMPION.id}` ({CHAMPION.describe()}){FINAL_ANSWER_REMINDER}")
     [receipt] = [e for e in record.effects if e.finding_id == CHANGE_ID]
     assert receipt.status is EffectStatus.FILED
     [issue] = [c for c in host.created if c["number"] == receipt.issue_number]

@@ -106,7 +106,10 @@ class RunDirCitations:
         if not log.is_file():
             return {}
         calls: dict[int, tuple[str, dict[str, Any]]] = {}
-        for line in log.read_text(encoding="utf-8").splitlines():
+        # JSON Lines end at "\n" only (a U+2028 inside a value is not a break).
+        for line in log.read_text(encoding="utf-8").split("\n"):
+            if not line.strip():
+                continue
             entry = json.loads(line)
             calls[int(entry["call"])] = (str(entry["tool"]), dict(entry.get("arguments") or {}))
         return calls
@@ -161,15 +164,22 @@ def _literal(statement: str, i: int) -> tuple[str, int]:
 
 def _lines_around(path: Path, line: int) -> list[str] | None:
     """Lines ``line - LINE_SLACK`` to ``line + LINE_SLACK`` (1-based), or
-    None if the file has fewer than ``line`` lines."""
+    None if the file has fewer than ``line`` lines.
+
+    Lines are numbered as the agent's tools number them (``grep -n``, the
+    Read tool): a line ends at ``\n`` and nowhere else. A lone ``\r`` (PTY
+    output in an engine log), ``\x0b``, ``\x0c``, ``\x1c``-``\x1e``, ``\x85``
+    or U+2028 is text inside a line, never a break, so the file is split
+    as bytes, not by Python's universal-newline or ``splitlines`` rules.
+    """
     first = max(1, line - LINE_SLACK)
     last = line + LINE_SLACK
     window: deque[str] = deque()
     seen = 0
-    with path.open("r", encoding="utf-8", errors="replace") as handle:
-        for seen, text in enumerate(handle, start=1):
+    with path.open("rb") as handle:
+        for seen, raw in enumerate(handle, start=1):  # binary iteration splits on b"\n" only
             if seen >= first:
-                window.append(text)
+                window.append(raw.decode("utf-8", errors="replace"))
             if seen >= last:
                 break
     return None if seen < line else list(window)

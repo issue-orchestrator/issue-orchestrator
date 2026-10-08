@@ -20,7 +20,7 @@ next run read the same history.
 
 from __future__ import annotations
 
-import re
+import logging
 import uuid
 from collections import Counter
 from collections.abc import Callable
@@ -52,6 +52,7 @@ from ..contracts.improver_run import (
 from ..contracts.improver_variant import ImproverVariant
 from ..control.improver_effects import design_finding_key, finding_key, planned_effects
 from ..domain.engine_activity import EngineRef
+from ..domain.improver_answer import AnswerNotExtractable, extract_findings_answer
 from ..domain.improver_champion import INVITATION_RATE, ChangeInvitation, invited
 from ..domain.improver_findings_validation import (
     ImproverFindingsRejected,
@@ -81,7 +82,15 @@ class ImproverInputStaging(Protocol):
 
     def stage(self, request: ImproverStagingRequest) -> StagedImproverInputs: ...
 
-_FENCED = re.compile(r"\A```(?:json)?\n(?P<body>.*)\n```\Z", re.DOTALL)
+logger = logging.getLogger(__name__)
+
+#: Always the last words of the improver's prompt, after every addendum.
+FINAL_ANSWER_REMINDER = (
+    "\n\nYour final message is the findings JSON object alone: no sentence, heading or note before or"
+    " after it. Anything else around it is discarded, and two JSON objects, or one cut short, reject the answer.\n"
+)
+#: The prose a heat's answer carried around its findings document, kept beside it.
+ANSWER_PROSE_FILE = "improver-answer-prose.txt"
 
 
 @dataclass(frozen=True)
@@ -349,7 +358,10 @@ class ImproverRun:
                 )
             root = run_dir.resolve()
             invitation = self._change_policy.instructions() if invited and self._change_policy is not None else ""
-            prompt = f"ISSUE_ORCHESTRATOR_RUN_DIR={root}\n\n{self._prompt}{kit.instructions}{invitation}"
+            prompt = (
+                f"ISSUE_ORCHESTRATOR_RUN_DIR={root}\n\n{self._prompt}{kit.instructions}{invitation}"
+                f"{FINAL_ANSWER_REMINDER}"
+            )
             evidence = ((root / IMPROVER_DATA_DIRNAME), *kit.evidence)
 
             def heat_answer(heat: int) -> tuple[int, ImproverAgentResult]:
@@ -380,8 +392,23 @@ class ImproverRun:
         """One heat's answer, validated alone; its findings if accepted."""
         if answer.final_message is None:
             return HeatRecord(heat=heat, outcome=RunOutcome.AGENT_FAILED, detail=answer.detail), None
-        text = findings_text(answer.final_message)
+        try:
+            extracted = extract_findings_answer(answer.final_message)
+        except AnswerNotExtractable as error:
+            # Kept as written, for a person (or an offline revalidation) to read.
+            (run_dir / heat_file(FINDINGS_FILE, heat)).write_text(answer.final_message, encoding="utf-8")
+            return HeatRecord(
+                heat=heat, outcome=RunOutcome.REJECTED, detail="no single findings document in the answer",
+                rejections=(f"[schema] <file>: {error}",),
+            ), None
+        text = extracted.text
         (run_dir / heat_file(FINDINGS_FILE, heat)).write_text(text, encoding="utf-8")
+        if extracted.discarded:
+            (run_dir / heat_file(ANSWER_PROSE_FILE, heat)).write_text(extracted.discarded + "\n", encoding="utf-8")
+            logger.info(
+                "[IMPROVER] heat %d: discarded %d character(s) of prose around the findings document",
+                heat, len(extracted.discarded),
+            )
         try:
             findings = validate_findings(text, evidence, invitation=invitation)
         except ImproverFindingsRejected as rejection:
@@ -554,11 +581,13 @@ def render_run(record: ImproverRunRecord) -> str:
 
 
 def findings_text(message: str) -> str:
-    """The findings document in the agent's final message: the message itself,
-    or the one fenced block that is all of it."""
-    stripped = message.strip()
-    fenced = _FENCED.match(stripped)
-    return (fenced.group("body") if fenced else stripped) + "\n"
+    """The findings document in the agent's final message
+    (:func:`~..domain.improver_answer.extract_findings_answer`), or the
+    message itself when it holds no single one (validation then refuses it)."""
+    try:
+        return extract_findings_answer(message).text
+    except AnswerNotExtractable:
+        return message.strip() + "\n"
 
 
 def _grades(findings: ImproverFindings) -> tuple[FindingGrade, ...]:

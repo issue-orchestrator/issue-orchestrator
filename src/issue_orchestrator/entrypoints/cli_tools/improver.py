@@ -56,6 +56,7 @@ from ...contracts.improver_run import (
 from ...contracts.improver_toolbox import DEFAULT_IMPROVER_MODE, ImproverMode
 from ...contracts.improver_variant import ImproverVariant
 from ...domain.engine_activity import EngineInventoryRead, EngineRef, EngineSighting
+from ...domain.improver_answer import AnswerNotExtractable, extract_findings_answer
 from ...domain.improver_champion import INVITATION_RATE, RUN_BUDGET_MINUTES, run_limits
 from ...domain.improver_findings_validation import (
     ImproverFindingsRejected,
@@ -83,7 +84,7 @@ from ...execution.providers import (
 )
 from ...observation.engine_audit import Unavailable
 from ...ports.engine_activity import EngineInventory
-from ...ports.improver import ImproverStoreBusy
+from ...ports.improver import ImproverStoreBusy, heat_file
 from ...ports.improver_investigation import ImproverInvestigation
 from ..improver_run import ChangePolicy, HeatPlan, ImproverRun, render_run
 from ..improver_staging import (
@@ -140,8 +141,12 @@ def build_parser() -> argparse.ArgumentParser:
     _engine_arguments(stage, one_engine=True)
     stage.add_argument("--run-dir", required=True, type=Path)
     stage.add_argument("--previous-audit", type=Path, help="The previous run's audit.json")
-    validate = sub.add_parser("validate", help="Validate improver-findings.json")
+    validate = sub.add_parser("validate", help="Validate improver-findings.json (or one heat's answer)")
     validate.add_argument("--run-dir", required=True, type=Path)
+    validate.add_argument(
+        "--heat", type=int,
+        help="Validate heat N's answer (improver-findings-hN.json), its findings found in it as a run finds them",
+    )
     run = sub.add_parser("run", help="Stage, run the improver agent, validate, record and apply")
     _engine_arguments(run, one_engine=False)
     run.add_argument(
@@ -211,7 +216,7 @@ def main(argv: list[str]) -> int:
         return apply(args.outputs_repo)
     if args.command == "status":
         return status()
-    return validate(args.run_dir)
+    return validate(args.run_dir, heat=args.heat)
 
 
 def _stager(args: argparse.Namespace, audited_repo: str) -> ImproverInputStager:
@@ -445,14 +450,25 @@ def status() -> int:
     return EXIT_OK
 
 
-def validate(run_dir: Path) -> int:
+def validate(run_dir: Path, *, heat: int | None = None) -> int:
+    """The run's findings file, or heat ``heat``'s stored answer, validated
+    offline (no agent runs): an answer is read as a run reads it, its one
+    findings document found among any prose (which is reported)."""
     evidence = load_staged_evidence(run_dir / IMPROVER_DATA_DIRNAME)
-    path = run_dir / FINDINGS_FILE
+    name = FINDINGS_FILE if heat is None else heat_file(FINDINGS_FILE, heat)
+    path = run_dir / name
     if not path.is_file():
-        print(f"[{Rule.SCHEMA.value}] the improver wrote no {FINDINGS_FILE}")
+        print(f"[{Rule.SCHEMA.value}] the improver wrote no {name}")
         return EXIT_REJECTED
     try:
-        findings = validate_findings(path.read_bytes(), evidence)
+        extracted = extract_findings_answer(path.read_text(encoding="utf-8"))
+    except AnswerNotExtractable as error:
+        print(f"[{Rule.SCHEMA.value}] <file>: {error}")
+        return EXIT_REJECTED
+    if extracted.discarded:
+        print(f"discarded {len(extracted.discarded)} character(s) of prose around the findings document")
+    try:
+        findings = validate_findings(extracted.text, evidence)
     except ImproverFindingsRejected as rejection:
         for violation in rejection.violations:
             print(violation.describe())
