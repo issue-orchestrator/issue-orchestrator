@@ -67,6 +67,8 @@ class NeedsHumanEpisodes:
         self._checked_at: float | None = None
         #: ``issue -> (updated_at, episode)`` as last verified by this reader.
         self._verified: dict[int, tuple[str, str]] = {}
+        #: Items the last verification could not verify: unknown until one does.
+        self._unverified: set[int] = set()
 
     def verified(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
         """Each item's episode, bound to GitHub's standing label application.
@@ -74,24 +76,30 @@ class NeedsHumanEpisodes:
         An item whose episode cannot be verified is left out: its episode is
         unknown.
         """
-        recorded = self._store.needs_human_episodes(sorted(issues))
         verified: dict[int, str] = {}
         for number, issue in issues.items():
-            seen = self._verified.get(number)
-            if seen is not None and seen == (issue.updated_at, recorded.get(number)):
-                verified[number] = seen[1]  # nothing written to it since
-                continue
             with self._store.mutate_needs_human(number) as status:
                 if status is IssueDispositionGateStatus.BUSY:
-                    continue  # the owner is changing this block right now
-                episode = self._bind(number, self._episode_label(issue.labels))
+                    episode = None  # the owner is changing this block right now
+                else:
+                    episode = self._verify(number, issue)
             if episode is None:
                 self._verified.pop(number, None)
                 continue
             verified[number] = episode
             if self._settled(issue.updated_at):
                 self._verified[number] = (str(issue.updated_at), episode)
+        self._unverified = set(issues) - set(verified)
         return verified
+
+    def _verify(self, number: int, issue: "Issue") -> str | None:
+        """Under the owner's gate: the remembered episode while nothing has
+        been written to the issue or its generation since, else a fresh bind."""
+        seen = self._verified.get(number)
+        recorded = self._store.needs_human_episodes([number]).get(number)
+        if seen is not None and seen == (issue.updated_at, recorded):
+            return seen[1]
+        return self._bind(number, self._episode_label(issue.labels))
 
     def _settled(self, updated_at: str | None) -> bool:
         """No write can still share ``updated_at``'s second (see the module doc)."""
@@ -108,13 +116,15 @@ class NeedsHumanEpisodes:
 
         The tick reads this, so it makes no GitHub read between rechecks. A
         recheck that finds a new application opens a new episode, and the
-        triage made on the old one no longer covers the item.
+        triage made on the old one no longer covers the item. An item the last
+        recheck could not verify stays unknown (owed) until one does.
         """
         now = self._clock()
         if self._checked_at is None or now - self._checked_at >= self._recheck_seconds():
             self._checked_at = now
             return self.verified(issues)
-        return self._store.needs_human_episodes(sorted(issues))
+        recorded = self._store.needs_human_episodes(sorted(issues))
+        return {number: episode for number, episode in recorded.items() if number not in self._unverified}
 
     def _bind(self, number: int, label: str) -> str | None:
         try:

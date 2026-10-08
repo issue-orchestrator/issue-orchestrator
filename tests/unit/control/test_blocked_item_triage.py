@@ -588,6 +588,53 @@ def test_an_unchanged_issue_is_not_read_from_github_again() -> None:
     assert reads == [450, 450, 450]
 
 
+def test_an_item_a_recheck_could_not_verify_stays_owed_until_one_does() -> None:
+    """#8688 review r5 F1: the recheck after a hand re-application fails to
+    read GitHub. The item must stay owed on every tick until a later recheck
+    verifies it, not only on the tick of the failed read."""
+    from issue_orchestrator.control.blocked_item_triage import triage_owed
+
+    issue = _issue(450, "agent:backend", "needs-human")
+    state = OrchestratorState()
+    state.cached_scope_issues = [issue]
+    store, now, applications = _Episodes({450: EP}), [0.0], {450: 7}
+    episodes = _episode_owner(store, applications, clock=lambda: now[0])
+    [granted] = _owner([issue], episodes=store, applications=applications).agenda(
+        anchor_issue_number=ANCHOR,
+    ).grants
+    authority = _Authority(_Ledger({450: [_triage_record(
+        450, TriageClass.EXPLAINED, granted.fingerprint, effect="applied",
+    )]}))
+    assert triage_owed(_config(), state, authority, episodes) is False
+
+    applications[450] = RuntimeError("events API 502")  # re-applied by hand; the read fails
+    now[0] = 3600.0
+    assert triage_owed(_config(), state, authority, episodes) is True
+    now[0] = 3660.0
+    assert triage_owed(_config(), state, authority, episodes) is True  # still owed between rechecks
+
+    applications[450] = 7  # GitHub reads again: the same application after all
+    now[0] = 7200.0
+    assert triage_owed(_config(), state, authority, episodes) is False
+
+
+def test_a_remembered_verification_still_waits_for_the_owners_gate() -> None:
+    """#8688 review r5 F2: the remembered-episode shortcut is taken only under
+    the owner's gate too; while the owner is changing the block it is unknown."""
+    store = _Episodes({450: EP})
+    written = datetime(2026, 10, 8, tzinfo=timezone.utc).timestamp()
+    episodes = _episode_owner(store, {450: 7}, clock=lambda: written + 60)
+    issue = Issue(
+        number=450, title="t", labels=["needs-human"], repo="porchpin/porchpin", state="open",
+        updated_at="2026-10-08T00:00:00Z",
+    )
+    assert episodes.verified({450: issue}) == {450: EP}
+
+    store.busy.add(450)
+
+    assert episodes.verified({450: issue}) == {}
+
+
 @pytest.mark.parametrize("application", [None, RuntimeError("events API 502")])
 def test_an_unverifiable_episode_is_owed_and_never_covered(application: Any) -> None:
     """GitHub does not show the label standing (a stale cache), or its events
