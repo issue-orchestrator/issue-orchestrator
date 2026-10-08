@@ -38,7 +38,8 @@ from .provider_launch_readiness import ProviderLaunchReadiness
 from .published_review_custody import NO_PUBLISHED_REVIEW_HOLDS, PublishedReviewHolds
 from .published_review_release import held_investigation_subjects
 from .recovery_review_hold import NO_RECOVERY_HOLDS, RecoveryHolds, recovery_held_reviews
-from .blocked_item_triage import UNWIRED_EPISODES, triage_owed
+from .blocked_item_triage import triage_owed
+from .needs_human_episodes import UNWIRED_EPISODES, NeedsHumanEpisodes
 from .health_review_trigger import (
     health_review_decision,
     health_review_interval_minutes,
@@ -70,7 +71,6 @@ if TYPE_CHECKING:
     from ..ports.issue import Issue
     from ..ports.promotion_target import PromotionTargetHost
     from ..ports.queue_cache_store import QueueCacheStore
-    from ..ports.pending_work_claim_store import NeedsHumanEpisodeReader
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from ..domain.models import (
         OrchestratorState,
@@ -114,7 +114,7 @@ class FactGatherer:
     # The needs-human block's episodes (#8688), so a re-blocked item keeps a
     # triage owed. Bound post-construction by ``wire_tech_lead_approvals``;
     # unbound, a triage check raises rather than reading no episodes.
-    needs_human_episodes: "NeedsHumanEpisodeReader" = UNWIRED_EPISODES
+    needs_human_episodes: NeedsHumanEpisodes = UNWIRED_EPISODES
     # Fire-and-forget projection sink for tech_lead facts (#6781): like the
     # event sink, it observes gathered facts (retaining the latest case-file
     # projection + refreshing the tech_lead board file) and makes no decisions.

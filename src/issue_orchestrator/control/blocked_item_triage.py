@@ -25,12 +25,10 @@ The blocking state includes the block's EPISODE (#8688): a needs-human block
 lifted and later re-raised under the same label and cause is a new episode,
 read from the generation its one owner records when it puts the label on
 afresh (:class:`~..ports.pending_work_claim_store.NeedsHumanEpisodeReader`),
-not from the best-effort timeline (#8697). The owner sees only its own writes,
-so a health review's agenda binds each episode to GitHub's standing
-application of the label (its complete issue events): a label removed and
-re-applied outside the owner, or put on by hand, opens a new episode dated by
-GitHub. A block whose episode is unrecorded or cannot be verified is owed a
-triage, never covered: the rule fails toward triaging again, not silence.
+not from the best-effort timeline (#8697), and bound to GitHub's label events
+by :class:`~.needs_human_episodes.NeedsHumanEpisodes`. A block whose episode is
+unrecorded or cannot be verified is owed a triage, never covered: the rule
+fails toward triaging again, not silence.
 """
 
 from __future__ import annotations
@@ -61,14 +59,13 @@ if TYPE_CHECKING:
     from ..domain.human_block import NeedsHumanCause
     from ..domain.models import OrchestratorState
     from ..domain.standing_ruling import StandingRuling
-    from ..domain.tech_lead_approval import StandingLabel
     from ..domain.tech_lead_artifacts import TechLeadDecision
     from ..domain.tech_lead_session import TechLeadLaunchAuthority
     from ..infra.config import Config
     from ..ports.issue import Issue
-    from ..ports.pending_work_claim_store import NeedsHumanEpisodeReader
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from ..ports.tech_lead_charter_ledger import TechLeadCharterDecisionReader
+    from .needs_human_episodes import NeedsHumanEpisodes
     from ..ports.timeline_store import TimelineRecord
     from .label_manager import LabelManager
 
@@ -99,8 +96,7 @@ class StateBlockedItemTriage:
         open_proposals: Callable[[], "OpenProposals"],
         timeline_reader: Callable[[int, int], Sequence["TimelineRecord"]],
         standing_rulings: Callable[[int], Sequence["StandingRuling"]],
-        episodes: "NeedsHumanEpisodeReader",
-        label_applications: Callable[[int, str], "StandingLabel | None"],
+        episodes: "NeedsHumanEpisodes",
     ) -> None:
         self._config = config
         self._state = state
@@ -111,7 +107,6 @@ class StateBlockedItemTriage:
         self._timeline = timeline_reader
         self._standing_rulings = standing_rulings
         self._episodes = episodes
-        self._label_applications = label_applications
 
     def agenda(self, *, anchor_issue_number: int) -> TriageAgenda:
         """Every blocked item owed a triage, oldest first, capped per run.
@@ -120,11 +115,11 @@ class StateBlockedItemTriage:
         required launch input, and guessing it would either churn items whose
         triage is in force or silently skip ones that are owed one.
         """
-        state = self._state()
         owed, in_force = owed_triages(
-            self._config, state, self._labels, self._ledger,
+            self._config, self._state(), self._labels, self._ledger,
             open_proposals=self._open_proposals(), exclude=frozenset({anchor_issue_number}),
-            episodes=lambda numbers: self._verified_episodes(numbers, state),
+            # Every grant pins an episode bound to GitHub's label events (#8688).
+            episodes=self._episodes.verified,
         )
         causes = self._needs_human_causes([item.issue.number for item in owed])
         items = [
@@ -151,44 +146,6 @@ class StateBlockedItemTriage:
             in_force=in_force,
             deferred=tuple(item.issue.number for item in owed[MAX_TRIAGE_ITEMS_PER_RUN:]),
         )
-
-    def _verified_episodes(
-        self, issue_numbers: Sequence[int], state: "OrchestratorState"
-    ) -> dict[int, str]:
-        """Each item's needs-human episode, bound to GitHub's standing
-        application of its label before anything is granted (#8688).
-
-        Every triage is made on an episode bound here, so an application that
-        differs at a later review is a later episode. An item GitHub does not
-        show the label standing on, or whose events cannot be read completely,
-        is left out: its episode is unknown and it is owed a triage.
-        """
-        labels = {issue.number: issue.labels for issue in scope_issues(state)}
-        verified: dict[int, str] = {}
-        for number in issue_numbers:
-            label = self._episode_label(labels[number])
-            try:
-                standing = self._label_applications(number, label)
-            except Exception:
-                logger.warning(
-                    "[TRIAGE] %s events of #%d unreadable; its block episode is unverified",
-                    label, number, exc_info=True,
-                )
-                continue
-            if standing is None:
-                continue
-            verified[number] = self._episodes.bind_needs_human_episode(
-                number, event_id=standing.application.event_id,
-                applied_at=standing.application.created_at,
-            )
-        return verified
-
-    def _episode_label(self, issue_labels: Sequence[str]) -> str:
-        """The label whose application dates the episode: needs-human, else the marker."""
-        needs_human = self._labels.needs_human
-        if needs_human.casefold() in {label.casefold() for label in issue_labels}:
-            return needs_human
-        return self._labels.tech_lead_needs_human
 
     def _agent_question(self, issue_number: int) -> str | None:
         return latest_agent_question(self._timeline, issue_number)
@@ -247,7 +204,7 @@ def owed_triages(
     ledger: "TechLeadCharterDecisionReader",
     *,
     open_proposals: "OpenProposals",
-    episodes: Callable[[Sequence[int]], Mapping[int, str]],
+    episodes: Callable[[Mapping[int, Sequence[str]]], Mapping[int, str]],
     exclude: frozenset[int] = frozenset(),
 ) -> tuple[list[OwedTriage], tuple[int, ...]]:
     """``(owed, in force)``: every blocked work item in scope, oldest first,
@@ -256,8 +213,8 @@ def owed_triages(
     THE one rule both the agenda (who is granted) and the health-review
     trigger (is a review owed) read, so an item deferred by the per-run cap or
     whose triage did not take effect keeps a review due. ``episodes`` reads
-    the needs-human generation of the items whose block holds that label or
-    the hand-over marker (#8688).
+    the needs-human episode of each item (by its labels) whose block holds
+    that label or the hand-over marker (#8688).
     """
     blocked = [
         (issue, blocking)
@@ -265,8 +222,11 @@ def owed_triages(
         if issue.number not in exclude
         and (blocking := blocked_work_item(issue, labels, config.tech_lead_review_agent)) is not None
     ]
-    held = {issue.number for issue, blocking in blocked if _holds_needs_human(blocking, labels)}
-    recorded = episodes(sorted(held)) if held else {}
+    held = {
+        issue.number: tuple(issue.labels)
+        for issue, blocking in blocked if _holds_needs_human(blocking, labels)
+    }
+    recorded = episodes(held) if held else {}
     owed: list[OwedTriage] = []
     in_force: list[int] = []
     for issue, (names, marker) in blocked:
@@ -292,34 +252,20 @@ def triage_owed(
     config: "Config",
     state: "OrchestratorState",
     authority: "TechLeadAuthorityStore",
-    episodes: "NeedsHumanEpisodeReader",
+    episodes: "NeedsHumanEpisodes",
 ) -> bool:
     """Whether any blocked work item in scope is owed a triage (#7593).
 
-    Reads the recorded episodes only (it runs on the tick, so it reads no
-    GitHub events): a block with none is owed, and the agenda that grants it
-    binds one to GitHub's label events (#8688).
+    It runs on the tick, so it reads the recorded episodes, re-verified
+    against GitHub at most once per recheck period (#8688).
     """
     from .label_manager import LabelManager
 
     owed, _ = owed_triages(
         config, state, LabelManager(config), authority.charter_ledger,
-        open_proposals=open_proposal_index(authority), episodes=episodes.needs_human_episodes,
+        open_proposals=open_proposal_index(authority), episodes=episodes.current,
     )
     return bool(owed)
-
-
-class _UnwiredEpisodes:
-    """Stands in until the composition binds the real reader: reading raises."""
-
-    def needs_human_episodes(self, issue_numbers: Sequence[int]) -> dict[int, str]:
-        raise RuntimeError("needs-human episodes are not wired (#8688)")
-
-    def bind_needs_human_episode(self, issue_number: int, *, event_id: int, applied_at: str) -> str:
-        raise RuntimeError("needs-human episodes are not wired (#8688)")
-
-
-UNWIRED_EPISODES: "NeedsHumanEpisodeReader" = _UnwiredEpisodes()
 
 
 @dataclass(frozen=True)

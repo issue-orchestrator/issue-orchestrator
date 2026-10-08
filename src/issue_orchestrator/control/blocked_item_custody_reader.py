@@ -30,6 +30,7 @@ policy turns into "custody unknown" — never into a guessed state.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable, Iterable, Mapping, Sequence, TypeVar, cast
@@ -60,6 +61,7 @@ if TYPE_CHECKING:
     from ..infra.config import Config
     from .orchestrator_deps import OrchestratorDeps
     from ..ports.approval_evidence import ApprovalEvidenceReader
+    from .needs_human_episodes import NeedsHumanEpisodes
     from ..ports.blocked_item_custody import ParkedActionReader
     from ..ports.provider_resilience import ProviderCircuitStatusReader
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
@@ -547,9 +549,23 @@ def build_blocked_item_triage(
         open_proposals=lambda: open_proposal_index(deps.tech_lead_authority),
         timeline_reader=lambda issue, limit: deps.timeline_store.read(issue, limit=limit),
         standing_rulings=deps.standing_rulings.active,
-        episodes=deps.pending_work_claims,
-        # The approval owner's evidence (#7763): GitHub's complete issue events.
+        episodes=build_needs_human_episodes(config, deps),
+    )
+
+
+def build_needs_human_episodes(config: "Config", deps: "OrchestratorDeps") -> "NeedsHumanEpisodes":
+    """The needs-human episode owner (#8688) over the deps' pending-work ledger,
+    verified against GitHub's issue events (the approval owner's evidence,
+    #7763) and rechecked on the tick once per health-review interval."""
+    from .health_review_trigger import health_review_interval_minutes
+    from .needs_human_episodes import NeedsHumanEpisodes
+
+    return NeedsHumanEpisodes(
+        store=deps.pending_work_claims,
         label_applications=lambda number, label: cast(
             "ApprovalEvidenceReader", deps.repository_host
         ).standing_label(number, label),
+        labels=deps.label_manager,
+        clock=time.time,
+        recheck_seconds=health_review_interval_minutes(config) * 60,
     )

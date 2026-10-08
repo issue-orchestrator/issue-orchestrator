@@ -19,6 +19,7 @@ from issue_orchestrator.control.blocked_item_triage import (
 )
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.needs_human_block import NeedsHumanBlock
+from issue_orchestrator.control.needs_human_episodes import NeedsHumanEpisodes
 from issue_orchestrator.domain.human_block import (
     BlockOutcome,
     HumanBlockRequest,
@@ -122,7 +123,16 @@ def test_a_triaged_item_unblocked_then_reblocked_with_the_same_cause_is_owed_a_n
         needs_human_causes=block.recorded_causes, charter_ledger=authority.charter_ledger,
         open_proposals=lambda: open_proposal_index(authority),
         timeline_reader=lambda number, limit: [], standing_rulings=lambda number: (),
-        episodes=store, label_applications=github.standing_label,
+        episodes=NeedsHumanEpisodes(
+            store=store, label_applications=github.standing_label, labels=labels,
+            clock=lambda: 0.0, recheck_seconds=3600,
+        ),
+    )
+    # The tick's check verifies against GitHub on every call here (a zero
+    # recheck period), as it does once per interval in production.
+    episodes = NeedsHumanEpisodes(
+        store=store, label_applications=github.standing_label, labels=labels,
+        clock=lambda: 0.0, recheck_seconds=0,
     )
     question = HumanBlockRequest(
         target=ITEM, cause=NeedsHumanCause.AGENT_COMPLETION, reason="Agent requested human input",
@@ -136,7 +146,7 @@ def test_a_triaged_item_unblocked_then_reblocked_with_the_same_cause_is_owed_a_n
         _explained(granted.fingerprint, "run-1", "2026-10-04T14:50:00+00:00"),
     ])
     assert triage.agenda(anchor_issue_number=ANCHOR).in_force == (ITEM,)
-    assert triage_owed(config, state, authority, store) is False
+    assert triage_owed(config, state, authority, episodes) is False
 
     # 2. The block is lifted (the agent's cause is released: the label comes off).
     assert block.release(question) is BlockOutcome.CLEARED
@@ -148,7 +158,7 @@ def test_a_triaged_item_unblocked_then_reblocked_with_the_same_cause_is_owed_a_n
     observe()
     assert labels.needs_human in github.live[ITEM]
 
-    assert triage_owed(config, state, authority, store) is True
+    assert triage_owed(config, state, authority, episodes) is True
     agenda = triage.agenda(anchor_issue_number=ANCHOR)
     [item] = agenda.items
     assert item.issue_number == ITEM and agenda.in_force == ()
@@ -159,7 +169,7 @@ def test_a_triaged_item_unblocked_then_reblocked_with_the_same_cause_is_owed_a_n
     authority.charter_ledger.record_decisions([
         _explained(item.fingerprint, "run-2", "2026-10-08T01:11:17+00:00"),
     ])
-    assert triage_owed(config, state, authority, store) is False
+    assert triage_owed(config, state, authority, episodes) is False
     assert triage.agenda(anchor_issue_number=ANCHOR).in_force == (ITEM,)
 
     # 5. An operator takes the label off and puts it back BY HAND, between the
@@ -170,6 +180,49 @@ def test_a_triaged_item_unblocked_then_reblocked_with_the_same_cause_is_owed_a_n
     [again] = agenda.items
     assert again.issue_number == ITEM and agenda.in_force == ()
     assert again.fingerprint not in {granted.fingerprint, item.fingerprint}
+    authority.charter_ledger.record_decisions([
+        _explained(again.fingerprint, "run-3", "2026-10-08T02:00:00+00:00"),
+    ])
+    assert triage_owed(config, state, authority, episodes) is False
+
+    # 6. Again by hand: the tick's own recheck sees it, with no review run.
+    github.remove_label(ITEM, labels.needs_human)
+    github.add_label(ITEM, labels.needs_human)
+    assert triage_owed(config, state, authority, episodes) is True
+
+
+def test_the_owner_cannot_reopen_a_generation_while_it_is_being_bound(tmp_path: Path) -> None:
+    """#8688 review r2 F2: the binding holds the block owner's per-issue gate
+    across the GitHub read, so the owner cannot end the generation and open
+    a new one between the read and the bind (and bind it to an old event)."""
+    config = Config()
+    labels = LabelManager(config)
+    github = _GitHub()
+    store = SqlitePendingWorkClaimStore.for_repo(tmp_path)
+    block = NeedsHumanBlock(
+        needs_human_label=labels.needs_human, tech_lead_marker=labels.tech_lead_needs_human,
+        labels=github, read_labels=lambda number: sorted(github.live.get(number, set())),
+        quarantined_issue_numbers=frozenset, causes=store,
+    )
+    question = HumanBlockRequest(
+        target=ITEM, cause=NeedsHumanCause.AGENT_COMPLETION, reason="Agent requested human input",
+    )
+    assert block.acquire(question) is BlockOutcome.HELD
+    [opened] = store.needs_human_episodes([ITEM]).values()
+    during: list[BlockOutcome] = []
+
+    def read_then_race(number: int, label: str) -> StandingLabel | None:
+        standing = github.standing_label(number, label)
+        during.append(block.release(question))  # the owner tries to lift it now
+        return standing
+
+    episodes = NeedsHumanEpisodes(
+        store=store, label_applications=read_then_race, labels=labels,
+        clock=lambda: 0.0, recheck_seconds=0,
+    )
+    assert episodes.verified({ITEM: (labels.needs_human,)}) == {ITEM: opened}
+    assert during == [BlockOutcome.FAILED]  # the owner was held off
+    assert labels.needs_human in github.live[ITEM]
 
 
 def test_a_self_recording_cause_still_dates_its_generation(tmp_path: Path) -> None:

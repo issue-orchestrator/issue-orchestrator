@@ -528,6 +528,13 @@ class NeedsHumanEpisodeReader(Protocol):
     person, and unique even for two generations opened in the same instant.
     """
 
+    def mutate_needs_human(
+        self, issue_number: int
+    ) -> AbstractContextManager[IssueDispositionGateStatus]:
+        """The block owner's per-issue gate (see :class:`NeedsHumanCauseStore`):
+        a binding holds it so the owner cannot open a generation in between."""
+        ...
+
     def needs_human_episodes(self, issue_numbers: Sequence[int]) -> dict[int, str]:
         """The recorded episode of each issue that has one (read only)."""
         ...
