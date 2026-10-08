@@ -328,14 +328,16 @@ def test_a_refused_rerun_is_never_asked_twice_and_goes_to_a_person() -> None:
     assert "ci_rerun_unconfirmed" in escalation.escalation_reason
     engine.host.rerun_failed_check_jobs.assert_called_once_with(900)
 
-    # Once the person holds it, the engine neither re-escalates nor reworks it.
-    engine.workflow.fact_gatherer.human_gates = None
-    pr = engine.host.get_pr.return_value
-    engine.host.get_pr.return_value = replace(pr, labels=[*pr.labels, LabelManager(engine.config).needs_human])
-    reworks, reruns, plan = engine.tick()
-    assert (reworks, reruns) == ([], [])
-    assert plan.actions_of_type(ActionType.ESCALATE_TO_HUMAN) == []
-    assert plan.actions_of_type(ActionType.QUEUE_REWORK) == []
+    # The escalation's comment is on the PR: whichever path rediscovers the
+    # failed check (the merge queue's carries no human-hold flag), the engine
+    # neither re-escalates nor reworks it, nor asks GitHub again.
+    engine.comments.append((318, escalation.comment_override))
+    for _ in range(2):
+        reworks, reruns, plan = engine.tick()
+        assert (reworks, reruns) == ([], [])
+        assert plan.actions_of_type(ActionType.ESCALATE_TO_HUMAN) == []
+        assert plan.actions_of_type(ActionType.QUEUE_REWORK) == []
+    engine.host.rerun_failed_check_jobs.assert_called_once_with(900)
 
 
 def test_an_accepted_rerun_github_does_not_show_is_never_asked_again() -> None:

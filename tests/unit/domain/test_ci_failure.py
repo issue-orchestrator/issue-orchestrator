@@ -18,7 +18,9 @@ from issue_orchestrator.domain.ci_failure import (
     log_excerpt,
     normalize_log,
     overall_kind,
+    escalated_heads,
     parse_rerun_records,
+    rerun_escalated_marker,
     rerun_marker,
 )
 from issue_orchestrator.infra.config_models import CiFailureTriageConfig
@@ -126,3 +128,10 @@ def test_rerun_marker_round_trips_and_rejects_a_malformed_one() -> None:
     assert record.requested_at == at
     with pytest.raises(ValueError, match="malformed"):
         parse_rerun_records(["<!-- io:ci-rerun head=zz -->"])
+
+
+def test_escalated_heads_are_read_back_from_the_escalation_comment() -> None:
+    body = f"**Diagnosis:** io asked GitHub ... {rerun_escalated_marker('a' * 40)}"
+    assert escalated_heads([body, "nothing"]) == frozenset({"a" * 40})
+    # An escalation marker is not a malformed re-run record.
+    assert parse_rerun_records([body]) == ()

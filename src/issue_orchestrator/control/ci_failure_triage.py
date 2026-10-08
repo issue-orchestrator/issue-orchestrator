@@ -31,7 +31,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from ..domain.ci_failure import (
-    RERUN_MARKER_PREFIX,
+    CI_RERUN_MARKER_STEM,
     CiFailureKind,
     CiFailureSignatures,
     CiJobAssessment,
@@ -40,7 +40,9 @@ from ..domain.ci_failure import (
     log_excerpt,
     normalize_log,
     overall_kind,
+    escalated_heads,
     parse_rerun_records,
+    rerun_escalated_marker,
     rerun_marker,
 )
 from ..domain.models import DiscoveredAwaitingMergeEscalation, DiscoveredCiRerun, DiscoveredRework
@@ -173,7 +175,8 @@ class CiFailureTriage:
         """
         runs = sorted({a.run_id for a in assessments if a.run_id is not None})
         try:
-            records = self._head_records(rework.pr_number, head_sha)
+            bodies = self.host.issue_comment_bodies_containing(rework.pr_number, CI_RERUN_MARKER_STEM)
+            records = tuple(r for r in parse_rerun_records(bodies) if r.head_sha == head_sha)
             attempts = {run: self.host.read_check_run_latest_attempt(run) for run in runs}
         except (RepositoryHostError, ValueError) as error:
             logger.warning("CI triage: re-run state of PR #%d unreadable: %s", rework.pr_number, error)
@@ -193,7 +196,7 @@ class CiFailureTriage:
             return None
         if records:
             latest = max(records, key=lambda record: record.requested_at)
-            if self.clock() - latest.requested_at < RERUN_START_GRACE or rework.clear_needs_human:
+            if self.clock() - latest.requested_at < RERUN_START_GRACE or head_sha in escalated_heads(bodies):
                 return None  # in flight, or already handed to a person
             return self._unconfirmed(state, rework, head_sha, latest.requested_at)
         state.ci_triage_deferrals.pop(rework.pr_number, None)
@@ -212,7 +215,7 @@ class CiFailureTriage:
                 f"io asked GitHub at {asked_at.isoformat()} to re-run this PR's transient CI failure "
                 f"on head {head_sha[:12]} (its one re-run for this head), and GitHub has not re-run "
                 "it. Check that the engine's GitHub credential can write Actions, then re-run the "
-                "failed jobs; io follows the new attempt from there."
+                f"failed jobs; io follows the new attempt from there. {rerun_escalated_marker(head_sha)}"
             ),
         )
 
@@ -299,10 +302,6 @@ class CiFailureTriage:
         memo[assessment.job_id] = assessment
         while len(memo) > ASSESSMENT_MEMO_LIMIT:
             memo.popitem(last=False)
-
-    def _head_records(self, pr_number: int, head_sha: str) -> tuple[CiRerunRecord, ...]:
-        bodies = self.host.issue_comment_bodies_containing(pr_number, RERUN_MARKER_PREFIX)
-        return tuple(r for r in parse_rerun_records(bodies) if r.head_sha == head_sha)
 
 
 def _unreadable(check: "FailedCheck", why: str) -> CiJobAssessment:

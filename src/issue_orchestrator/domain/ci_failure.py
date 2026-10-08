@@ -153,7 +153,10 @@ def overall_kind(assessments: Sequence[CiJobAssessment]) -> CiFailureKind:
 # The durable re-run record
 # --------------------------------------------------------------------------- #
 
+#: Every io CI re-run comment marker starts with this (records and escalations).
+CI_RERUN_MARKER_STEM = "<!-- io:ci-rerun"
 RERUN_MARKER_PREFIX = "<!-- io:ci-rerun "
+_ESCALATED_MARKER = re.compile(r"<!-- io:ci-rerun-escalated head=(?P<head>[0-9a-f]{7,64}) -->")
 _RERUN_MARKER = re.compile(
     r"<!-- io:ci-rerun head=(?P<head>[0-9a-f]{7,64}) jobs=(?P<jobs>[\d,]*) "
     r"at=(?P<at>\S+) -->"
@@ -192,3 +195,13 @@ def parse_rerun_records(bodies: Sequence[str]) -> tuple[CiRerunRecord, ...]:
                 )
             )
     return tuple(records)
+
+
+def rerun_escalated_marker(head_sha: str) -> str:
+    """Marks the person-facing escalation of a head's unconfirmed re-run."""
+    return f"<!-- io:ci-rerun-escalated head={head_sha} -->"
+
+
+def escalated_heads(bodies: Sequence[str]) -> frozenset[str]:
+    """The heads whose unconfirmed re-run io already handed to a person."""
+    return frozenset(m["head"] for body in bodies for m in _ESCALATED_MARKER.finditer(body))
