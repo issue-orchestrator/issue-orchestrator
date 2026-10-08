@@ -27,6 +27,12 @@ type here, the grant at completion, and records it on the charter decision with
 the item's :func:`block_fingerprint` at launch. That record is the watermark: an
 item whose blocking state is unchanged since a triage that took effect (or is
 awaiting the operator) is not triaged again.
+
+"Unchanged" means the same block EPISODE, not only the same labels (#8688): a
+block lifted and later re-raised under the same label and cause is a new
+episode and owes a new triage. The fingerprint of a needs-human block carries
+the episode (its generation's onset, recorded by the block's one owner), and a
+block whose episode cannot be determined is never covered by a prior triage.
 """
 
 from __future__ import annotations
@@ -50,20 +56,35 @@ TRIAGE_IN_FORCE_EFFECTS = frozenset({"applied", "approved_applied", "declined"})
 MAX_TRIAGE_ITEMS_PER_RUN = 8
 
 
+#: The episode of a needs-human block whose generation is not recorded. A
+#: fingerprint carrying it is never covered by a prior triage (#8688): without
+#: an onset a re-block cannot be told from the block that was triaged, so the
+#: rule fails toward triaging again rather than toward silence.
+UNKNOWN_EPISODE = "unknown"
+
+
 def block_fingerprint(
-    blocking_labels: Iterable[str], *, tech_lead_marker: bool, needs_human_label: str
+    blocking_labels: Iterable[str],
+    *,
+    tech_lead_marker: bool,
+    needs_human_label: str,
+    episode: str | None,
 ) -> str:
-    """What is blocking an item, as a stable comparable string.
+    """What is blocking an item, and since when, as a stable comparable string.
 
     The casefolded, sorted blocking labels. The shared ``needs-human`` label is
     left out while the tech-lead hand-over marker is on the item: that block is
     the tech lead's own hand-over, so placing it is not a change that calls for
-    another triage.
+    another triage. ``episode`` is the needs-human block's generation
+    (``@<episode>``, :data:`UNKNOWN_EPISODE` when unrecorded) when the block
+    holds that label or the marker, else None: a lift and re-block changes it
+    even when the labels come back the same (#8688).
     """
     folded = {label.casefold() for label in blocking_labels}
     if tech_lead_marker:
         folded.discard(needs_human_label.casefold())
-    return ",".join(sorted(folded))
+    labels = ",".join(sorted(folded))
+    return labels if episode is None else f"{labels}@{episode}"
 
 
 @dataclass(frozen=True)
@@ -111,6 +132,18 @@ class PriorTriage:
         if self.effect == "awaiting_approval":
             return self.proposal_issue_number is not None
         return self.effect in TRIAGE_IN_FORCE_EFFECTS
+
+    def covers(self, fingerprint: str) -> bool:
+        """THE watermark rule: this triage disposes of the block now observed.
+
+        It is in force and was decided on this very block episode. A block
+        whose episode is unknown is never covered (#8688).
+        """
+        return (
+            self.in_force
+            and self.fingerprint == fingerprint
+            and not fingerprint.endswith(f"@{UNKNOWN_EPISODE}")
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {

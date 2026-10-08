@@ -1355,6 +1355,7 @@ def build_test_orchestrator_deps(
             needs_human_block=needs_human_block,
         ),
         needs_human_block=needs_human_block,
+        needs_human_episodes=pending_work_claims,
         standing_rulings=standing_rulings,
         launch_prompt=IssueLaunchPrompt(NO_CODER_PROMPT_ADDENDUM, standing_rulings),
         # The same endpoint the completion processor got, mirroring how

@@ -20,6 +20,14 @@ proposal of its kind for the item is OPEN, read from the durable op ledger (the
 proposal's own record), so a best-effort link of the issue number onto the
 charter record never decides it. An item whose blocking state changed, or whose
 last triage did not take effect, is owed another.
+
+The blocking state includes the block's EPISODE (#8688): a needs-human block
+lifted and later re-raised under the same label and cause is a new episode,
+read from the generation its one owner records when it puts the label on
+afresh (:class:`~..ports.pending_work_claim_store.NeedsHumanEpisodeReader`),
+not from the best-effort timeline (#8697). A block with no recorded generation
+is owed a triage; the agenda then adopts one dated at that grant, so the triage
+it is granted covers it until the label next comes off.
 """
 
 from __future__ import annotations
@@ -32,6 +40,7 @@ from typing import TYPE_CHECKING
 from ..domain.standing_ruling import ruling_in_full
 from ..domain.blocked_item_triage import (
     MAX_TRIAGE_ITEMS_PER_RUN,
+    UNKNOWN_EPISODE,
     PriorTriage,
     TriageAgenda,
     TriageAgendaItem,
@@ -53,6 +62,7 @@ if TYPE_CHECKING:
     from ..domain.tech_lead_session import TechLeadLaunchAuthority
     from ..infra.config import Config
     from ..ports.issue import Issue
+    from ..ports.pending_work_claim_store import NeedsHumanEpisodeReader
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from ..ports.tech_lead_charter_ledger import TechLeadCharterDecisionReader
     from ..ports.timeline_store import TimelineRecord
@@ -85,6 +95,7 @@ class StateBlockedItemTriage:
         open_proposals: Callable[[], "OpenProposals"],
         timeline_reader: Callable[[int, int], Sequence["TimelineRecord"]],
         standing_rulings: Callable[[int], Sequence["StandingRuling"]],
+        episodes: "NeedsHumanEpisodeReader",
     ) -> None:
         self._config = config
         self._state = state
@@ -94,6 +105,7 @@ class StateBlockedItemTriage:
         self._open_proposals = open_proposals
         self._timeline = timeline_reader
         self._standing_rulings = standing_rulings
+        self._episodes = episodes
 
     def agenda(self, *, anchor_issue_number: int) -> TriageAgenda:
         """Every blocked item owed a triage, oldest first, capped per run.
@@ -105,6 +117,9 @@ class StateBlockedItemTriage:
         owed, in_force = owed_triages(
             self._config, self._state(), self._labels, self._ledger,
             open_proposals=self._open_proposals(), exclude=frozenset({anchor_issue_number}),
+            # A grant pins the episode it was decided on, so one is adopted
+            # for a block whose generation was never recorded (#8688).
+            episodes=self._episodes.adopt_needs_human_episodes,
         )
         causes = self._needs_human_causes([item.issue.number for item in owed])
         items = [
@@ -189,6 +204,7 @@ def owed_triages(
     ledger: "TechLeadCharterDecisionReader",
     *,
     open_proposals: "OpenProposals",
+    episodes: Callable[[Sequence[int]], Mapping[int, str]],
     exclude: frozenset[int] = frozenset(),
 ) -> tuple[list[OwedTriage], tuple[int, ...]]:
     """``(owed, in force)``: every blocked work item in scope, oldest first,
@@ -196,38 +212,70 @@ def owed_triages(
 
     THE one rule both the agenda (who is granted) and the health-review
     trigger (is a review owed) read, so an item deferred by the per-run cap or
-    whose triage did not take effect keeps a review due.
+    whose triage did not take effect keeps a review due. ``episodes`` reads
+    the needs-human generation of the items whose block holds that label or
+    the hand-over marker (#8688).
     """
+    blocked = [
+        (issue, blocking)
+        for issue in sorted(scope_issues(state), key=lambda item: item.number)
+        if issue.number not in exclude
+        and (blocking := blocked_work_item(issue, labels, config.tech_lead_review_agent)) is not None
+    ]
+    held = {issue.number for issue, blocking in blocked if _holds_needs_human(blocking, labels)}
+    recorded = episodes(sorted(held)) if held else {}
     owed: list[OwedTriage] = []
     in_force: list[int] = []
-    for issue in sorted(scope_issues(state), key=lambda item: item.number):
-        if issue.number in exclude:
-            continue
-        blocking = blocked_work_item(issue, labels, config.tech_lead_review_agent)
-        if blocking is None:
-            continue
+    for issue, (names, marker) in blocked:
         fingerprint = block_fingerprint(
-            blocking[0], tech_lead_marker=blocking[1], needs_human_label=labels.needs_human
+            names, tech_lead_marker=marker, needs_human_label=labels.needs_human,
+            episode=recorded.get(issue.number, UNKNOWN_EPISODE) if issue.number in held else None,
         )
         prior = prior_triage(ledger, issue.number, open_proposals)
-        if prior is not None and prior.fingerprint == fingerprint and prior.in_force:
+        if prior is not None and prior.covers(fingerprint):
             in_force.append(issue.number)
         else:
-            owed.append(OwedTriage(issue, blocking[0], fingerprint, prior))
+            owed.append(OwedTriage(issue, names, fingerprint, prior))
     return owed, tuple(in_force)
 
 
+def _holds_needs_human(blocking: tuple[tuple[str, ...], bool], labels: "LabelManager") -> bool:
+    """The block is (in part) the shared needs-human block, whose episodes are recorded."""
+    names, marker = blocking
+    return marker or labels.needs_human.casefold() in {name.casefold() for name in names}
+
+
 def triage_owed(
-    config: "Config", state: "OrchestratorState", authority: "TechLeadAuthorityStore"
+    config: "Config",
+    state: "OrchestratorState",
+    authority: "TechLeadAuthorityStore",
+    episodes: "NeedsHumanEpisodeReader",
 ) -> bool:
-    """Whether any blocked work item in scope is owed a triage (#7593)."""
+    """Whether any blocked work item in scope is owed a triage (#7593).
+
+    Reads the recorded episodes without adopting any: a block with none is
+    owed, and the agenda that grants it adopts one (#8688).
+    """
     from .label_manager import LabelManager
 
     owed, _ = owed_triages(
         config, state, LabelManager(config), authority.charter_ledger,
-        open_proposals=open_proposal_index(authority),
+        open_proposals=open_proposal_index(authority), episodes=episodes.needs_human_episodes,
     )
     return bool(owed)
+
+
+class _UnwiredEpisodes:
+    """Stands in until the composition binds the real reader: reading raises."""
+
+    def needs_human_episodes(self, issue_numbers: Sequence[int]) -> dict[int, str]:
+        raise RuntimeError("needs-human episodes are not wired (#8688)")
+
+    def adopt_needs_human_episodes(self, issue_numbers: Sequence[int]) -> dict[int, str]:
+        raise RuntimeError("needs-human episodes are not wired (#8688)")
+
+
+UNWIRED_EPISODES: "NeedsHumanEpisodeReader" = _UnwiredEpisodes()
 
 
 @dataclass(frozen=True)
@@ -321,7 +369,9 @@ def label_blocked_work_items(
     """Every label-blocked work item in scope with its block fingerprint (#7593).
 
     The health-review trigger folds these into its board fingerprint, so a new
-    or changed block makes the board worth reviewing again.
+    or changed block makes the board worth reviewing again. Labels only: a
+    re-block under the same labels keeps a review due through
+    :func:`triage_owed`, which reads its episode (#8688).
     """
     from .label_manager import LabelManager
 
@@ -332,6 +382,7 @@ def label_blocked_work_items(
         if blocking is not None:
             found.append((issue.number, block_fingerprint(
                 blocking[0], tech_lead_marker=blocking[1], needs_human_label=labels.needs_human,
+                episode=None,
             )))
     return tuple(sorted(found))
 
@@ -339,6 +390,18 @@ def label_blocked_work_items(
 def _owed_reason(prior: PriorTriage | None, fingerprint: str) -> str:
     if prior is None:
         return "never triaged"
+    if fingerprint.endswith(f"@{UNKNOWN_EPISODE}"):
+        return (
+            f"its block's onset is not recorded, so its {prior.triage_class.value}"
+            " triage cannot be shown to cover this block"
+        )
+    if prior.fingerprint != fingerprint and (
+        prior.fingerprint.partition("@")[0] == fingerprint.partition("@")[0]
+    ):
+        return (
+            f"it was blocked again, under the same labels, since it was triaged"
+            f" {prior.triage_class.value} ({prior.fingerprint} -> {fingerprint})"
+        )
     if prior.fingerprint != fingerprint:
         return (
             f"its block changed since it was triaged {prior.triage_class.value}"

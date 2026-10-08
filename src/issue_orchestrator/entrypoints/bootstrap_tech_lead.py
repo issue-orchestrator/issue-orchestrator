@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from ..control.retry_history_state import ExpediteEligibility, ExpediteLane
     from ..control.tech_lead_run_activity import TechLeadRunActivity
     from ..ports import Issue
+    from ..ports.pending_work_claim_store import NeedsHumanEpisodeReader
     from ..control.tech_lead_board import TechLeadBoardPublisher
     from ..domain.board_snapshot import (
         BoardE2EHealth,
@@ -136,12 +137,17 @@ def create_open_issue_corpus_store(config: "Config") -> "OpenIssueCorpusStore":
 
 
 def wire_tech_lead_approvals(
-    fact_gatherer: "FactGatherer", applier: "ActionApplier", scheduler: "Scheduler"
+    fact_gatherer: "FactGatherer",
+    applier: "ActionApplier",
+    scheduler: "Scheduler",
+    episodes: "NeedsHumanEpisodeReader",
 ) -> None:
     """ONE approval owner (#7763) for verification (the fact scan), the
     apply-time consent re-check and settlement writes (the applier), and the
     scheduler's admission rule. Every composition calls this, so no build can
-    verify an approval with one owner and admit it with another."""
+    verify an approval with one owner and admit it with another. It also binds
+    the needs-human episodes the fact scan's triage check reads (#8688)."""
+    fact_gatherer.needs_human_episodes = episodes
     approvals = fact_gatherer.approvals
     applier.tech_lead_approvals = approvals
     if approvals is not None:
@@ -167,7 +173,10 @@ def wire_tech_lead_act_executors(orchestrator: "Orchestrator") -> None:
     )
 
     applier = orchestrator.deps.action_applier
-    wire_tech_lead_approvals(orchestrator.deps.fact_gatherer, applier, orchestrator.deps.planner.scheduler)
+    wire_tech_lead_approvals(
+        orchestrator.deps.fact_gatherer, applier, orchestrator.deps.planner.scheduler,
+        orchestrator.deps.needs_human_episodes,
+    )
     applier.tech_lead_reset_retry = build_tech_lead_reset_retry_executor(orchestrator)
     applier.tech_lead_kill_session = build_tech_lead_kill_session_executor(orchestrator)
     applier.recover_validated_work = (
