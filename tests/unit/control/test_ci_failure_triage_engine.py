@@ -290,3 +290,18 @@ def test_a_new_head_without_a_failed_check_is_not_reworked() -> None:
     reworks, reruns, plan = engine.tick()
     assert (reworks, reruns) == ([], [])
     assert plan.actions_of_type(ActionType.QUEUE_REWORK) == []
+
+
+def test_an_unreadable_attempt_keeps_the_log_for_the_brief() -> None:
+    from issue_orchestrator.control.ci_failure_triage import MAX_READ_DEFERRALS
+    from issue_orchestrator.ports.repository_host import RepositoryHostError
+
+    engine = _Engine()
+    engine.fail(11, RUNNER_LOST)
+    engine.host.read_check_job_attempt.side_effect = RepositoryHostError("502 Bad Gateway")
+    for _ in range(MAX_READ_DEFERRALS):
+        assert engine.tick()[:2] == ([], [])
+    (rework,), reruns, _ = engine.tick()
+    assert reruns == []
+    assert "lost communication with the server" in (rework.feedback or "")
+    assert engine.host.read_check_job_log_tail.call_count == 1  # the log is not re-read

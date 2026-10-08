@@ -139,3 +139,15 @@ def test_job_attempt_is_read_and_a_missing_one_fails_loudly(make_client) -> None
     assert client.get_actions_job_attempt(77) == 2
     with pytest.raises(GitHubHttpError, match="no run_attempt"):
         client.get_actions_job_attempt(77)
+
+
+def test_checks_of_a_commit_that_is_not_the_head_are_refused(make_client) -> None:
+    from issue_orchestrator.adapters.github.errors import GitHubScanIncompleteError
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"repository": {"pullRequest": {
+            "headRefOid": "bbbbbbb", "commits": {"nodes": [{"commit": {"oid": "aaaaaaa",
+                "statusCheckRollup": {"contexts": {"pageInfo": {"hasNextPage": False}, "nodes": []}}}}]}}}}})
+
+    with pytest.raises(GitHubScanIncompleteError, match="not its head"):
+        make_client(handler).get_failed_check_contexts(318)

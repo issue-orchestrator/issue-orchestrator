@@ -2820,6 +2820,10 @@ class GitHubHttpClient:
             head = pr_data["headRefOid"]
             nodes = (pr_data.get("commits") or {}).get("nodes") or []
             commit = nodes[0].get("commit") if nodes and isinstance(nodes[0], dict) else None
+            if (commit or {}).get("oid") != head:
+                raise GitHubScanIncompleteError(
+                    f"PR #{pr_number}'s last commit is not its head {head}", method="POST", url="/graphql"
+                )
             connection = ((commit or {}).get("statusCheckRollup") or {}).get("contexts") or {}
             contexts.extend(connection.get("nodes") or [])
             page = connection.get("pageInfo") or {}

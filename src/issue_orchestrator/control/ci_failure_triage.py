@@ -237,7 +237,7 @@ class CiFailureTriage:
                 continue
             if known is None:
                 reads += 1
-            assessment = known or self._assess(state, check, signatures)
+            assessment = self._assess(state, check, signatures)
             if assessment.unreadable is not None:
                 unread[check.name] = f"`{check.name}`: {assessment.unreadable}"
             assessments.append(assessment)
@@ -246,34 +246,42 @@ class CiFailureTriage:
     def _assess(
         self, state: "OrchestratorState", check: "FailedCheck", signatures: CiFailureSignatures
     ) -> CiJobAssessment:
+        """One job's assessment: its log read once, and for a transient job its
+        run attempt, read until it is known. A failed attempt read keeps the log."""
         assert check.job_id is not None
         memo = state.ci_job_assessments
-        if check.job_id in memo:
-            return memo[check.job_id]
-        try:
-            raw = self.host.read_check_job_log_tail(check.job_id, max_bytes=self.config.log_tail_bytes)
-        except RepositoryHostError as error:
-            logger.warning("CI triage: log of job %d unreadable: %s", check.job_id, error)
-            return _unreadable(check, f"log unreadable: {error}")
-        log = normalize_log(raw)
-        kind, signature = classify_job_log(check.conclusion, log, signatures)
-        attempt = None
-        if kind is CiFailureKind.TRANSIENT:
+        assessment = memo.get(check.job_id)
+        if assessment is None:
+            try:
+                raw = self.host.read_check_job_log_tail(check.job_id, max_bytes=self.config.log_tail_bytes)
+            except RepositoryHostError as error:
+                logger.warning("CI triage: log of job %d unreadable: %s", check.job_id, error)
+                return _unreadable(check, f"log unreadable: {error}")
+            log = normalize_log(raw)
+            kind, signature = classify_job_log(check.conclusion, log, signatures)
+            assessment = CiJobAssessment(
+                name=check.name, conclusion=check.conclusion, job_id=check.job_id,
+                run_id=check.run_id, kind=kind, signature=signature, excerpt=log_excerpt(log),
+            )
+            self._remember(state, assessment)
+        if assessment.kind is CiFailureKind.TRANSIENT and assessment.run_attempt is None:
             # Only a transient failure asks whether it already is a re-run.
             try:
                 attempt = self.host.read_check_job_attempt(check.job_id)
             except RepositoryHostError as error:
                 logger.warning("CI triage: attempt of job %d unreadable: %s", check.job_id, error)
-                return _unreadable(check, f"run attempt unreadable: {error}")
-        assessment = CiJobAssessment(
-            name=check.name, conclusion=check.conclusion, job_id=check.job_id,
-            run_id=check.run_id, kind=kind, signature=signature, excerpt=log_excerpt(log),
-            run_attempt=attempt,
-        )
-        memo[check.job_id] = assessment
+                return replace(assessment, unreadable=f"run attempt unreadable: {error}")
+            assessment = replace(assessment, run_attempt=attempt)
+            self._remember(state, assessment)
+        return assessment
+
+    @staticmethod
+    def _remember(state: "OrchestratorState", assessment: CiJobAssessment) -> None:
+        assert assessment.job_id is not None
+        memo = state.ci_job_assessments
+        memo[assessment.job_id] = assessment
         while len(memo) > ASSESSMENT_MEMO_LIMIT:
             memo.popitem(last=False)
-        return assessment
 
     def _head_records(self, pr_number: int, head_sha: str) -> tuple[CiRerunRecord, ...]:
         bodies = self.host.issue_comment_bodies_containing(pr_number, RERUN_MARKER_PREFIX)
