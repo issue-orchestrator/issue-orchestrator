@@ -20,10 +20,17 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from ..domain.issue_delivery import DeliveryBasis, IssueDelivery, delivery_from_history, stated_delivery
+from ..domain.issue_delivery import (
+    DeliveryBasis,
+    IssueDelivery,
+    MergedPullRequest,
+    delivery_from_history,
+    stated_delivery,
+)
 from ..domain.pr_issue_reference import (
     declares_partial_delivery,
     honors_partial_claim,
@@ -95,7 +102,8 @@ class PartialDeliveryGuard:
                 # Nothing merged: no slug is needed to know the issue is whole.
                 return IssueDelivery(DeliveryBasis.WHOLE)
             return delivery_from_history(
-                issue_number, merged, self._merged_body, repo_slug=self._repo_slug()
+                issue_number, [self._merged(number) for number in sorted(merged)],
+                repo_slug=self._repo_slug(),
             )
         except Exception as exc:
             return PartialDeliveryRefusal(
@@ -105,11 +113,16 @@ class PartialDeliveryGuard:
                 host_rate_limit=host_rate_limit_of(exc),
             )
 
-    def _merged_body(self, pr_number: int) -> str:
+    def _merged(self, pr_number: int) -> MergedPullRequest:
+        """One merged PR of the history; unreadable or undated is a failed read."""
         pr = self._prs.get_pr(pr_number)
         if pr is None:
             raise LookupError(f"merged PR #{pr_number} could not be read")
-        return pr.body
+        if not pr.merged_at:
+            raise LookupError(f"merged PR #{pr_number} has no merge time")
+        return MergedPullRequest(
+            pr_number, pr.body, datetime.fromisoformat(pr.merged_at.replace("Z", "+00:00"))
+        )
 
     def refusal(
         self,

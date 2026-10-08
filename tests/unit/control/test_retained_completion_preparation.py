@@ -328,6 +328,7 @@ def test_recovery_publishes_refs_for_an_unclaimed_record_on_an_issue_delivered_i
     rig.prs.get_pr.return_value = PRInfo(
         number=7, title="#42: slice 1", url="https://github.com/owner/repo/pull/7",
         branch="42-slice-1", body="Refs #42\n\nSlice 1", state="merged", labels=[],
+        merged_at="2026-10-05T04:13:20Z",
     )
 
     result = rig.owner.prepare(rig.row, rig.workspace, "Retained feature")

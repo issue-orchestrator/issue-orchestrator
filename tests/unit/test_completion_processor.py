@@ -810,6 +810,7 @@ class TestPartialPRReference:
         mock_pr_adapter.merged_prs_referencing_issues.return_value = frozenset({98})
         mock_pr_adapter.get_pr.return_value = dataclasses.replace(
             self._pr("Refs #123\n\nSlice 1"), number=98, state="merged",
+            merged_at="2026-10-05T04:13:20Z",
         )
         mock_pr_adapter.create_pr.side_effect = lambda **kwargs: self._pr(kwargs["body"])
 

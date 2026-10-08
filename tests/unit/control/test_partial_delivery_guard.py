@@ -36,10 +36,17 @@ ISSUE = 327
 BRANCH = "327-slice-3a"
 
 
-def _pr(number: int, body: str, *, state: str = "merged", branch: str | None = None) -> PRInfo:
+def _pr(
+    number: int, body: str, *, state: str = "merged", branch: str | None = None,
+    merged_at: str | None = None,
+) -> PRInfo:
+    """A PR; a merged one merges in number order unless ``merged_at`` says otherwise."""
+    if state == "merged" and merged_at is None:
+        merged_at = f"2026-10-01T{number // 60 % 24:02d}:{number % 60:02d}:00Z"
     return PRInfo(
         number=number, title=f"#{ISSUE}: slice", url=f"https://github.com/{REPO}/pull/{number}",
         branch=branch or f"{ISSUE}-slice-{number}", body=body, state=state, labels=[],
+        merged_at=merged_at,
     )
 
 
@@ -255,6 +262,31 @@ def test_a_finishing_completion_may_publish_through_an_open_closing_pr() -> None
 
     assert isinstance(prepared, PreparedPullRequest)
     assert prepared.body.splitlines()[0] == f"Closes #{ISSUE}"
+
+
+def test_merge_time_not_pr_number_orders_the_history() -> None:
+    """Codex r1 F1: #515 closed the issue and merged first; the issue was
+    reopened and the older #511 then merged as a slice. #511 is the latest
+    delivery, so the issue is mid-delivery."""
+    host = FakeGitHubHost([
+        _pr(511, f"Refs #{ISSUE}", merged_at="2026-10-07T12:00:00Z"),
+        _pr(515, f"Closes #{ISSUE}", merged_at="2026-10-05T12:00:00Z"),
+    ])
+
+    prepared = _prepare(host, _record())
+
+    assert isinstance(prepared, PreparedPullRequest)
+    assert prepared.delivery == IssueDelivery(DeliveryBasis.INFERRED_PARTIAL, evidence_pr=511)
+
+
+def test_a_merged_pr_without_a_merge_time_is_a_refusal() -> None:
+    host = FakeGitHubHost([_pr(515, f"Refs #{ISSUE}", state="closed")])
+    host.merged[515].state = "merged"
+
+    prepared = _prepare(host, _record())
+
+    assert isinstance(prepared, PullRequestPreparationRefusal)
+    assert "merged PR #515 has no merge time" in prepared.message
 
 
 def test_a_delivery_cannot_be_both_partial_and_finished() -> None:

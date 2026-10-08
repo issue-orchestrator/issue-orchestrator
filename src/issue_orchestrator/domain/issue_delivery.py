@@ -12,8 +12,9 @@ open is recoverable; closing it with work still owed is not.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 
 from .pr_issue_reference import body_links_issue, declares_partial_delivery
@@ -76,27 +77,41 @@ def stated_delivery(*, partial_pr: bool, finishes_issue: bool) -> IssueDelivery 
     return None
 
 
+@dataclass(frozen=True)
+class MergedPullRequest:
+    """A merged PR as the delivery history reads it: its body and merge time."""
+
+    number: int
+    body: str
+    merged_at: datetime
+
+    def __post_init__(self) -> None:
+        if self.merged_at.tzinfo is None:
+            raise ValueError(f"merged PR #{self.number} needs a timezone-aware merge time")
+
+
 def delivery_from_history(
     issue_number: int,
-    merged_pr_numbers: Iterable[int],
-    body_of: Callable[[int], str],
+    merged: Iterable[MergedPullRequest],
     *,
     repo_slug: str,
 ) -> IssueDelivery:
     """The delivery an unstated completion makes, from the issue's merged PRs.
 
-    The latest merged PR (by number) whose body links the issue decides: one
-    that only refs it leaves the issue mid-delivery, so this publication is
-    partial too; one that closed it means the issue was reopened as new work,
-    a whole delivery. A merged PR that merely mentions the issue is not part
-    of its delivery. Bodies are read newest first, and only until one links
-    the issue.
+    The most recently MERGED PR whose body links the issue decides (merge
+    time, then PR number for a tie; PR numbers alone are opening order, not
+    merge order): one that only refs it leaves the issue mid-delivery, so this
+    publication is partial too; one that closed it means the issue was
+    reopened as new work, a whole delivery. A merged PR that merely mentions
+    the issue is not part of its delivery.
     """
-    for number in sorted(set(merged_pr_numbers), reverse=True):
-        body = body_of(number)
-        if not body_links_issue(body, (issue_number,), repo_slug=repo_slug):
-            continue
-        if declares_partial_delivery(body, issue_number, repo_slug=repo_slug):
-            return IssueDelivery(DeliveryBasis.INFERRED_PARTIAL, evidence_pr=number)
+    linked = [
+        pr for pr in merged
+        if body_links_issue(pr.body, (issue_number,), repo_slug=repo_slug)
+    ]
+    if not linked:
         return IssueDelivery(DeliveryBasis.WHOLE)
+    latest = max(linked, key=lambda pr: (pr.merged_at, pr.number))
+    if declares_partial_delivery(latest.body, issue_number, repo_slug=repo_slug):
+        return IssueDelivery(DeliveryBasis.INFERRED_PARTIAL, evidence_pr=latest.number)
     return IssueDelivery(DeliveryBasis.WHOLE)
