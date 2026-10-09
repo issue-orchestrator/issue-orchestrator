@@ -187,6 +187,7 @@ def test_tables_indexes_and_registry_are_durable(tmp_path):
             "validated_work_publish_attempts",
             "validated_work_lineage",
             "validated_work_lineage_landings",
+            "validated_work_lineage_carriers",
             "validated_work_block_cleanup",
             "validated_work_block_cleanup_intent",
         }

@@ -30,6 +30,7 @@ from ..domain.validated_work_store import (
     ValidatedWorkRecord,
 )
 from ..domain.validated_work_remote_authority import (
+    CarriedByIssuePullRequest,
     RemoteAuthorityDecision,
     RemoteAuthorityRefreshRequest,
 )
@@ -38,7 +39,9 @@ from typing import Protocol
 
 class ValidatedWorkStore(Protocol):
     def retained_evidence(self, issue_number: int) -> tuple[EvidenceRow, ...]: ...
-    def admit(self, admission: EvidenceAdmission) -> AdmissionOutcome: ...
+    def admit(
+        self, admission: EvidenceAdmission, *, carried: CarriedByIssuePullRequest | None = None,
+    ) -> AdmissionOutcome: ...
 
     def get(self, record_id: str) -> ValidatedWorkDisposition: ...
 

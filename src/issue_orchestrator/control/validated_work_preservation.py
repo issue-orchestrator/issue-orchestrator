@@ -17,10 +17,10 @@ from ..domain.validated_work_capture import (
     AutomaticCaptureDecision, ValidatedWorkRemoteFacts, ValidatedWorkRemoteRequest,
     candidate_evidence, candidate_key, newest_per_work,
 )
-from ..domain.validated_work_remote_authority import classify_remote_pr
+from ..domain.validated_work_remote_authority import CarriedByIssuePullRequest, classify_remote_pr
 from ..domain.validated_work_scope import outside_scope_reason, recovery_owns
 from ..domain.validated_work_escrow import EscrowArtifacts
-from ..domain.validated_work_store import AncestryRelation
+from ..domain.validated_work_store import AncestryRelation, PrPublicationStatus
 from ..ports.completion_intake import CompletionIntakeRuntime
 from ..ports.validated_work_preservation import ValidatedWorkAdmissionStore
 from ..ports.validated_work_capture_observer import ValidatedWorkCaptureObserver
@@ -168,7 +168,7 @@ class ValidatedWorkPreservationService:
     def _record_publication(
         self, candidate: PreparedCompletionEvidence, command: AutomaticCaptureCommand,
         observed: ValidatedWorkRemoteFacts, evidence: ValidatedWorkEvidence,
-    ) -> None:
+    ) -> CarriedByIssuePullRequest | None:
         """Before admission: record the head a PR already publishes.
 
         When the completion's own push put this validated head on its open PR
@@ -182,6 +182,11 @@ class ValidatedWorkPreservationService:
 
         An in-flight recovery publication keeps the lineage, and then recovery
         holds the capture like any other.
+
+        Returns the open proof of another branch's PR (#8137) the store just
+        recorded: an open PR can move after any proof, so only this capture's
+        own proof - handed to its admission - may resolve the capture against
+        it. A lineage fact or a merged carrier is durable and needs no hand-off.
         """
         key = evidence.identity.key
         published = self._carriage.proof(
@@ -190,7 +195,7 @@ class ValidatedWorkPreservationService:
             repository=self._repository, facts=observed,
         )
         if published is None:
-            return
+            return None
         status = self._store.record_pr_publication(
             key, published=published, observed_at=command.run_evidence.observed_at,
         )
@@ -199,6 +204,10 @@ class ValidatedWorkPreservationService:
             command.issue_number, candidate.run.run.run_id,
             published.describe(key.validated_head_sha), status.value,
         )
+        if (isinstance(published, CarriedByIssuePullRequest) and not published.merged
+                and status is PrPublicationStatus.ADVANCED):
+            return published
+        return None
 
     def _pull_request_base(
         self, candidate: PreparedCompletionEvidence, command: AutomaticCaptureCommand,
@@ -302,8 +311,8 @@ class ValidatedWorkPreservationService:
             head=head, branch_verified=bound, captured_at=command.run_evidence.observed_at,
             remote_baseline_status=remote_status,
             expected_remote_head_sha=expected_remote_head_sha, pr_number=pr_number)
-        if isinstance(observed, ValidatedWorkRemoteFacts):
-            self._record_publication(candidate, command, observed, evidence)
+        carried = (self._record_publication(candidate, command, observed, evidence)
+                   if isinstance(observed, ValidatedWorkRemoteFacts) else None)
         failure = (ValidatedWorkFailure.WORKTREE_AHEAD_OF_VALIDATION
                    if head != candidate.validation.head_sha else
                    ValidatedWorkFailure.WORKSPACE_INTEGRITY if not bound else remote_failure)
@@ -316,7 +325,7 @@ class ValidatedWorkPreservationService:
                 command.reason + ("; queued for automatic recovery" if failure is None
                                   else "; worktree removed before capture, preserved pending recovery approval"
                                   if removed else "; preserved pending recovery approval"),
-            ))
+            ), carried=carried)
 
 
 @dataclass(frozen=True, slots=True)

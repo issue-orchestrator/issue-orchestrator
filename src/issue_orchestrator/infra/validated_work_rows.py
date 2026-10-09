@@ -26,6 +26,7 @@ from ..domain.validated_work_store import (
     EvidenceAdmission,
     EvidenceRole,
     EvidenceRow,
+    LineageCarrier,
     LineageLanding,
     LineagePublication,
     PublicationProvenance,
@@ -38,6 +39,7 @@ from .validated_work_schema import SCHEMA
 from .validated_work_migrations import (
     migrate_attempt_rate_limit,
     migrate_evidence_base_gate,
+    migrate_published_branch,
     migrate_published_pr_number,
     migrate_remote_baseline_authority,
 )
@@ -59,6 +61,7 @@ class DispositionDatabase:
                 migrate_evidence_base_gate(conn)
                 migrate_attempt_rate_limit(conn)
                 migrate_published_pr_number(conn)
+                migrate_published_branch(conn)
             migrate_remote_baseline_authority(conn)
             if conn.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 raise sqlite3.DatabaseError(
@@ -169,6 +172,7 @@ def disposition(conn: sqlite3.Connection, record_id: str) -> ValidatedWorkDispos
         row["published_head_sha"] or None,
         resolution,
         published_by_its_pr=row["published_pr_number"] > 0,  # stamped only on RECOVERED
+        published_branch=row["published_branch"],
     )
 
 
@@ -196,6 +200,17 @@ def landings(conn: sqlite3.Connection, lineage_key: str) -> tuple[LineageLanding
         LineageLanding(row["lineage_key"], row["pr_number"], row["head_sha"], row["landed_at"])
         for row in conn.execute(
             "SELECT * FROM validated_work_lineage_landings WHERE lineage_key=? ORDER BY pr_number DESC",
+            (lineage_key,),
+        )
+    )
+
+
+def carriers(conn: sqlite3.Connection, lineage_key: str) -> tuple[LineageCarrier, ...]:
+    return tuple(
+        LineageCarrier(row["lineage_key"], row["pr_number"], row["branch_name"], row["head_sha"],
+                       bool(row["merged"]), row["observed_at"])
+        for row in conn.execute(
+            "SELECT * FROM validated_work_lineage_carriers WHERE lineage_key=? ORDER BY pr_number DESC",
             (lineage_key,),
         )
     )

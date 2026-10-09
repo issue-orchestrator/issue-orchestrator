@@ -56,6 +56,7 @@ from ..domain.validated_work_store import (
     ValidatedWorkRecord,
 )
 from ..domain.validated_work_remote_authority import (
+    CarriedByIssuePullRequest,
     PullRequestPublication,
     RemoteAuthorityDecision,
     RemoteAuthorityRefreshRequest,
@@ -117,9 +118,11 @@ class SqliteValidatedWorkStore:
         self._attempts = PublishAttemptWriter(self._claims, self._lineage)
         self._resolution = PublicationResolver(self._claims, self._lineage)
 
-    def admit(self, admission: EvidenceAdmission) -> AdmissionOutcome:
+    def admit(
+        self, admission: EvidenceAdmission, *, carried: CarriedByIssuePullRequest | None = None,
+    ) -> AdmissionOutcome:
         with self._db.transaction(write=True) as conn:
-            status = self._admission.admit(conn, admission)
+            status = self._admission.admit(conn, admission, carried=carried)
             return AdmissionOutcome(
                 status, disposition(conn, admission.evidence.record_id)
             )
@@ -137,11 +140,13 @@ class SqliteValidatedWorkStore:
         admission: EvidenceAdmission,
         expected_current: str | None,
         selection: EvidenceAdmissionSelection,
+        *,
+        carried: CarriedByIssuePullRequest | None = None,
     ) -> AdmissionOutcome | None:
         """Apply the receipt owner's selection in the claim store transaction."""
         with self._db.transaction(write=True) as conn:
             status = self._admission.admit_selected(
-                conn, admission, expected_current, selection
+                conn, admission, expected_current, selection, carried=carried,
             )
             return (
                 None

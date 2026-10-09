@@ -15,17 +15,22 @@ from ..domain.validated_work import (
 from ..domain.validated_work_store import (
     AncestryRelation as Relation,
     CommitReference,
+    carrier_ref,
     EvidenceRow,
+    LineageCarrier,
     LineageLanding,
     LineagePublication,
     PublicationProvenance,
 )
 from ..domain.validated_work_gate import DispositionGate
+from ..domain.validated_work_remote_authority import CarriedByIssuePullRequest
 from ..ports.validated_work_verification import (
     ValidatedWorkAncestry,
     ValidatedWorkArtifactVerifier,
 )
-from .validated_work_rows import current_evidence, landings, publication, refresh_observations
+from .validated_work_rows import (
+    carriers, current_evidence, landings, publication, refresh_observations,
+)
 
 
 @dataclass
@@ -41,6 +46,8 @@ class LineageDecision:
     # The open PR the containing head was observed on (OBSERVED_OPEN_PR), else 0.
     contained_pr: int = 0
     contained_kind: ResolutionKind = ResolutionKind.CONTAINED_IN_PUBLISHED_HEAD
+    # The containing PR's branch when it is not the record's own (#8137), else ''.
+    contained_branch: str = ""
     reachable: bool = True
 
     @property
@@ -93,7 +100,18 @@ class LineageClassifier:
         at: str,
         *,
         reconsider: frozenset[str] = frozenset(),
+        carried: CarriedByIssuePullRequest | None = None,
     ) -> None:
+        """Reclassify the lineage's unresolved records.
+
+        A merged carrier is final and always counts. An open PR can be
+        force-pushed or closed after it was proven (#8137 review r1/r2), so an
+        open carrier counts only when the caller hands in that very proof as
+        ``carried``: the proof's own reclassification, and the admission of
+        the capture whose remote observation just made it. No stored row or
+        timestamp alone authorizes it - a replayed or later admission is
+        resolved only by a proof of its own.
+        """
         rows = conn.execute(
             "SELECT * FROM validated_work_records WHERE lineage_key=? "
             "AND state IN ('queued','parked','failed','publishing') ORDER BY created_at, record_id",
@@ -105,7 +123,15 @@ class LineageClassifier:
             return
         fact = publication(conn, lineage_key)
         decisions = [self._restore_gate(conn, row, reconsider) for row in rows]
-        readable = self._classify_publication(conn, decisions, fact, landings(conn, lineage_key))
+        readable = self._classify_publication(
+            conn, decisions, fact, landings(conn, lineage_key), tuple(
+                carrier for carrier in carriers(conn, lineage_key)
+                if carrier.merged or (
+                    carried is not None and not carried.merged
+                    and (carrier.pr_number, carrier.head_sha) == (carried.pr_number, carried.head_sha)
+                )
+            ),
+        )
         self._classify_peers(readable)
         # Vacate the unique drainable slot before installing a descendant. The
         # intermediate state is private to this IMMEDIATE transaction.
@@ -196,6 +222,7 @@ class LineageClassifier:
         decisions: list[LineageDecision],
         fact: LineagePublication | None,
         landed: tuple[LineageLanding, ...],
+        carried: tuple[LineageCarrier, ...],
     ) -> list[LineageDecision]:
         readable: list[LineageDecision] = []
         for decision in decisions:
@@ -205,7 +232,7 @@ class LineageClassifier:
             ):
                 self._unreachable(decision)
                 continue
-            if self._within_landing(decision, landed):
+            if self._within_landing(decision, landed) or self._within_carrier(decision, carried):
                 continue
             if fact is not None and self._against_publication(conn, decision, fact):
                 continue
@@ -233,13 +260,40 @@ class LineageClassifier:
             return True
         return False
 
+    def _within_carrier(
+        self, decision: LineageDecision, carried: tuple[LineageCarrier, ...]
+    ) -> bool:
+        """Resolve a record another branch's PR of its issue carries (#8137).
+
+        Checked before the lineage fact, like a landing: the work is published
+        under that PR whatever this branch publishes now. Only containment
+        counts, and only through the carrier's pin.
+        """
+        for carrier in carried:
+            head = CommitReference(
+                replace(decision.reference.key, validated_head_sha=carrier.head_sha),
+                carrier_ref(carrier.lineage_key, carrier.pr_number, carrier.head_sha),
+            )
+            if self.compare(decision.reference, head) not in {Relation.EQUAL, Relation.ANCESTOR}:
+                continue
+            kind = (
+                ResolutionKind.LANDED_VIA_MERGED_PR if carrier.merged
+                else ResolutionKind.CONTAINED_IN_PUBLISHED_HEAD
+            )
+            self._contained(decision, carrier.head_sha, carrier.pr_number, kind,
+                            branch=carrier.branch_name)
+            return True
+        return False
+
     def _contained(
-        self, decision: LineageDecision, head_sha: str, pr_number: int, kind: ResolutionKind
+        self, decision: LineageDecision, head_sha: str, pr_number: int, kind: ResolutionKind,
+        *, branch: str = "",
     ) -> None:
         if self.verifies(decision.evidence):
             decision.state, decision.failure = State.RECOVERED, None
             decision.reason, decision.contained_at = kind.value, head_sha
             decision.contained_pr, decision.contained_kind = pr_number, kind
+            decision.contained_branch = branch
         else:
             decision.state, decision.failure, decision.reason = (
                 State.FAILED,
@@ -417,13 +471,14 @@ class LineageClassifier:
         if decision.contained_at:
             conn.execute(
                 "UPDATE validated_work_records SET published_head_sha=?, resolution_kind=?, resolved_at=?, terminal_at=?, "
-                "finalization_phase='complete', published_pr_number=? WHERE record_id=?",
+                "finalization_phase='complete', published_pr_number=?, published_branch=? WHERE record_id=?",
                 (
                     decision.contained_at,
                     decision.contained_kind.value,
                     at,
                     at,
                     decision.contained_pr,
+                    decision.contained_branch,
                     decision.record_id,
                 ),
             )

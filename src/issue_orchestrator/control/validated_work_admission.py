@@ -1,7 +1,7 @@
 """One admission owner orders immutable receipts, including orphan replay."""
 
 from ..domain.validated_work import ValidatedWorkKey
-from ..domain.validated_work_remote_authority import PullRequestPublication
+from ..domain.validated_work_remote_authority import CarriedByIssuePullRequest, PullRequestPublication
 from ..domain.validated_work_store import (EvidenceAdmission, EvidenceAdmissionSelection, AdmissionOutcome, EvidenceLookup, EvidenceRow, PrPublicationStatus)
 from ..domain.validated_work_commands import ValidatedWorkDispositionBatch
 from ..ports.completion_intake import CompletionIntakeLedger
@@ -13,7 +13,9 @@ class RankedEvidenceAdmission:
         self._store = store
         self._intake = intake
 
-    def admit(self, admission: EvidenceAdmission) -> AdmissionOutcome:
+    def admit(
+        self, admission: EvidenceAdmission, *, carried: CarriedByIssuePullRequest | None = None,
+    ) -> AdmissionOutcome:
         incoming = admission.evidence
         incoming_order = self._intake.evidence_receive_sequence(incoming)
         while True:
@@ -28,7 +30,7 @@ class RankedEvidenceAdmission:
                 retained_order = self._intake.evidence_receive_sequence(retained.evidence.admission.evidence)
                 if incoming_order <= retained_order:
                     selection = EvidenceAdmissionSelection.RETAIN
-            outcome = self._store.admit_selected(admission, current_id, selection)
+            outcome = self._store.admit_selected(admission, current_id, selection, carried=carried)
             if outcome is not None:
                 return outcome
 

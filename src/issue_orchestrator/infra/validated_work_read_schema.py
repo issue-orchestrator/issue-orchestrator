@@ -40,6 +40,7 @@ _REQUIRED_COLUMNS = {
             "finalization_phase",
             "published_head_sha",
             "published_pr_number",
+            "published_branch",
             "resolved_by",
             "resolution_reason",
             "resolved_at",

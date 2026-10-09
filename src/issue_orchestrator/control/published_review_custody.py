@@ -16,11 +16,14 @@ risk?" answers no. That is correct for the store, and wrong for the issue:
 This module is the one owner of the question those paths got wrong: *does an
 open pull request for this issue carry its published validated work?* It is
 answered from the durable validated-work record (never inferred from labels)
-and one authoritative, uncached read of the open PRs on each published
-record's branch, which is made only when a published record exists.
+and one authoritative, uncached read of the open PRs on the branch each
+published record's work is published on, which is made only when a published
+record exists.
 
-A PR carries the work when it is open, on the record's branch, and is either the
-PR the work was published into or points at the exact published head. A later
+A PR carries the work when it is open, on the branch the work was published on
+- the record's own, or the other branch its issue's PR republished it on
+(#8137) - and is either the PR the work was published into or points at the
+exact published head. A later
 push to that PR (a rework, a base update) does not release it: the validated
 work is still underneath, and closing the PR or deleting its branch destroys it
 just the same. Closing the PR is the operator's explicit abandonment; nothing
@@ -118,7 +121,7 @@ def published_review_holds(
             holds[pr.number] = PublishedReviewHold(
                 issue_number=batch.issue_number,
                 pr_number=pr.number,
-                branch_name=record.key.branch_name,
+                branch_name=record.publication_branch,
                 record_id=record.record_id,
                 published_head_sha=record.published_head_sha,
                 pr_labels=tuple(pr.labels),
@@ -137,7 +140,7 @@ def _published(
 
 
 def _carries(pr: "PRInfo", record: "ValidatedWorkDisposition") -> bool:
-    if pr.branch != record.key.branch_name:
+    if pr.branch != record.publication_branch:
         return False
     return pr.number == record.pr_number or pr.head_sha == record.published_head_sha
 
@@ -155,9 +158,10 @@ class PublishedReviewCustody:
         if not published:
             # No published record: nothing to protect, and no GitHub read spent.
             return ()
-        # Read by the records' own branches - uncached and complete, so a PR
-        # cannot hide behind a capped issue search or a stale cache entry.
-        branches = sorted({record.key.branch_name for record in published})
+        # Read by the branches the work is published on - uncached and
+        # complete, so a PR cannot hide behind a capped issue search or a
+        # stale cache entry.
+        branches = sorted({record.publication_branch for record in published})
         return published_review_holds(batch, [
             pr for branch in branches
             for pr in self.pull_requests.get_open_prs_for_branch_complete(branch)
