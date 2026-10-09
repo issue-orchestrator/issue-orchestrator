@@ -67,9 +67,14 @@ def issues_with_open_prs(prs: Iterable[PRInfo], *, repo_slug: str) -> frozenset[
 
 def issues_of_pr(pr: PRInfo, *, repo_slug: str) -> frozenset[int]:
     """The issues one orchestrator PR belongs to (see :func:`issues_with_open_prs`)."""
-    from_branch = extract_issue_number_from_branch(pr.branch) if pr.branch else None
-    linked = linked_issue_numbers(pr.body or "", repo_slug=repo_slug)
-    return linked | ({from_branch} if from_branch is not None else frozenset())
+    return issues_linked(branch=pr.branch, body=pr.body, repo_slug=repo_slug)
+
+
+def issues_linked(*, branch: str | None, body: str | None, repo_slug: str) -> frozenset[int]:
+    """The issues a PR's branch and body tie it to; never #0, which no issue is."""
+    from_branch = extract_issue_number_from_branch(branch) if branch else None
+    linked = linked_issue_numbers(body or "", repo_slug=repo_slug)
+    return frozenset(n for n in linked | ({from_branch} if from_branch is not None else frozenset()) if n > 0)
 
 
 def pr_fields_reference_issue(

@@ -6,6 +6,8 @@ import pytest
 
 from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.standing_ruling import (
+    BINDING_BEGIN,
+    BINDING_END,
     GITHUB_BODY_MAX_CHARS,
     REFUSED_APPROVAL_MARKER,
     REWORK_BRIEF_OPENING,
@@ -205,7 +207,8 @@ class TestPromptFraming:
     def test_every_framing_carries_the_full_ruling(self) -> None:
         for audience in RulingsAudience:
             section = rulings_prompt(7, (self.RULING,), audience)
-            assert section is not None and section.startswith(f"{RULINGS_PROMPT_HEADING}7")
+            assert section is not None and section.startswith(f"{BINDING_BEGIN}\n{RULINGS_PROMPT_HEADING}7")
+            assert section.endswith(BINDING_END)
             assert self.RULING.text in section and "`tools/walk`" in section
             assert "the walk checker is retired" in section
 
@@ -218,3 +221,52 @@ class TestPromptFraming:
 
     def test_no_rulings_is_no_section(self) -> None:
         assert rulings_prompt(7, (), RulingsAudience.CODER) is None
+
+
+class TestARetryIsBoundOnlyByTheRulingsReadForIt:
+    """#8347: a validation retry embeds its original prompt; the binding sections
+    that prompt carried were read then, so the retry drops them."""
+
+    RULING = TestPromptFraming.RULING
+
+    def test_every_binding_section_and_its_separator_is_dropped(self) -> None:
+        from issue_orchestrator.domain.launch_prompt import RULINGS_SEPARATOR
+        from issue_orchestrator.domain.standing_ruling import covered_rulings_prompt, without_binding_sections
+
+        anchor = rulings_prompt(7, (self.RULING,), RulingsAudience.CODER)
+        covered = covered_rulings_prompt({8: (12,)}, {8: (self.RULING,)})
+        prompt = f"{anchor}{RULINGS_SEPARATOR}Work on issue #7.\n\n{covered}\n\n## Triage duty"
+
+        stripped = without_binding_sections(prompt)
+
+        assert stripped == "Work on issue #7.\n\n\n\n## Triage duty"
+        assert self.RULING.text not in stripped and BINDING_BEGIN not in stripped
+
+    def test_a_prompt_without_sections_or_with_a_lone_marker_is_untouched(self) -> None:
+        from issue_orchestrator.domain.standing_ruling import without_binding_sections
+
+        assert without_binding_sections("Work on issue #7.") == "Work on issue #7."
+        assert without_binding_sections(f"{BINDING_BEGIN} tail") == f"{BINDING_BEGIN} tail"
+
+    def test_only_a_generated_section_is_dropped_and_task_text_stays_whole(self) -> None:
+        """codex r4 F1: an issue title is one line, so marker text it brings
+        cannot take a generated section's shape and is kept."""
+        from issue_orchestrator.domain.standing_ruling import without_binding_sections
+
+        title = f"Fix {BINDING_BEGIN} parsing {BINDING_END} for good"
+        section = rulings_prompt(7, (self.RULING,), RulingsAudience.CODER)
+
+        assert without_binding_sections(f"Work on: {title}\n\n{section}") == f"Work on: {title}\n\n"
+
+    def test_a_prompt_persisted_before_the_markers_drops_its_unmarked_section(self) -> None:
+        """codex r4 F3: a retry recovered from a #8141 run carries its issue's
+        section unmarked; a ruling retired since must not bind it."""
+        from issue_orchestrator.domain.launch_prompt import RULINGS_SEPARATOR
+        from issue_orchestrator.domain.standing_ruling import without_binding_sections
+
+        marked = rulings_prompt(7, (self.RULING,), RulingsAudience.CODER)
+        legacy = marked.removeprefix(f"{BINDING_BEGIN}\n").removesuffix(f"\n{BINDING_END}")
+
+        assert without_binding_sections(f"{legacy}{RULINGS_SEPARATOR}Work on issue #7.") == "Work on issue #7."
+        embedded = f"# Validation Retry\n\n{legacy}{RULINGS_SEPARATOR}Work on issue #7."
+        assert without_binding_sections(embedded) == "# Validation Retry\n\nWork on issue #7."

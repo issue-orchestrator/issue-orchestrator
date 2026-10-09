@@ -194,6 +194,10 @@ def resolve_tech_lead_launch_authority(
         worktree_prs = frozenset(pr.number for pr in manifest.prs) if manifest else frozenset()
         if worktree_prs != frozenset(authority.manifest_pr_numbers):
             return authority, (f"worktree manifest PR set {sorted(worktree_prs)} does not match the launch authority set {sorted(authority.manifest_pr_numbers)}")
+        # Whose rulings bind each PR (#8347): the links recorded at launch.
+        linked = {n: prs for n, prs in (manifest.covered_issues() if manifest else {}).items() if n != authority.anchor_issue_number}
+        if linked != dict(authority.covered_work):
+            return authority, f"worktree manifest PR issue links {sorted(linked.items())} do not match the launch authority's {list(authority.covered_work)}"
     if authority.flavor is TechLeadSessionFlavor.HEALTH_REVIEW:
         if error := _health_snapshot_scope_error(run_dir, authority):
             return authority, error

@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from ..ports.label_store import LabelStore
     from ..ports.queue_cache_store import QueueCacheStore
     from ..ports.pending_work_claim_store import PendingWorkClaimStore
+    from ..ports.standing_rulings import StandingRulingsBackfill
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from .label_manager import LabelManager
     from .label_store_reconciler import FreshLabelSnapshot
@@ -106,6 +107,7 @@ class StartupManager:
         issue_run_ledger: "IssueRunLedger | None" = None,
         *,
         pending_work_claims: "PendingWorkClaimStore",
+        standing_rulings: "StandingRulingsBackfill",
         needs_human_block: "SharedNeedsHumanBlock" = NO_OTHER_NEEDS_HUMAN_CAUSES,
     ):
         """Initialize the startup manager.
@@ -153,6 +155,7 @@ class StartupManager:
         # Anchor recovery can fold individual investigations into a storm
         # review; ending them must retire their durable claims too (#7348).
         self._pending_work_claims = pending_work_claims
+        self._standing_rulings = standing_rulings
         # The owner of which issue blocks a review may run over (#7593).
         self._needs_human_block = needs_human_block
         self._human_gates = HumanGates.over(needs_human_block, self._lm)
@@ -269,6 +272,7 @@ class StartupManager:
         # Step 5: Restore + sync queue cache (moved early so Steps 6/8 use cache)
         with self._phase("restore_and_sync_queue", timings):
             self._restore_and_sync_queue(state)
+            self._standing_rulings.backfill((*state.cached_scope_issues, *state.cached_queue_issues) if self._queue_labels_fresh else ())  # the page's rulings index, from the bodies just synced (#8347)
 
         # Step 6: Check in-progress issues and determine action
         state.startup_message = "Scanning local branches..."

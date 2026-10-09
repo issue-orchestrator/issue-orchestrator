@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from ..domain.standing_ruling import without_binding_sections
 from .validation_state import DEFAULT_RETRY_TEMPLATE, _truncate_with_tail
 
 if TYPE_CHECKING:
@@ -28,12 +29,16 @@ def render_validation_retry_prompt(
     The retry template's owner renders it: an agent's own
     ``retry_prompt_template`` wins over the configured one, which wins over
     :data:`DEFAULT_RETRY_TEMPLATE`. A prompt that already IS a retry prompt is
-    reused verbatim rather than wrapped again.
+    reused rather than wrapped again. Either way the earlier prompt's binding
+    sections of standing rulings are dropped: they were read for that launch.
     """
-    if retry.original_prompt and retry.original_prompt.lstrip().startswith("# Validation Retry"):
-        return retry.original_prompt
+    # The rulings the earlier prompt carried were read then: the caller binds
+    # the retry with the rulings read now (#8347).
+    original = without_binding_sections(retry.original_prompt) if retry.original_prompt else None
+    if original and original.lstrip().startswith("# Validation Retry"):
+        return original
     validation_cmd = retry.validation_cmd or config.validation.quick.cmd or ""
-    original_task = retry.original_prompt or f"Work on issue #{issue_number}: {issue_title}"
+    original_task = original or f"Work on issue #{issue_number}: {issue_title}"
     template = DEFAULT_RETRY_TEMPLATE
     template_path = agent_template or config.retry.retry_prompt_template
     if template_path:

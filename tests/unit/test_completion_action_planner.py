@@ -1854,6 +1854,40 @@ class TestLaunchScopeTamperResistance:
         )
         assert "missing" in error
 
+    @pytest.mark.parametrize(("planted_links", "tampered"), [((365,), False), ((999,), True)])
+    def test_a_manifest_must_keep_the_pr_issue_links_recorded_at_launch(
+        self, tmp_path: Path, planted_links: tuple[int, ...], tampered: bool
+    ) -> None:
+        """#8347 (codex r5 F1): the links name whose standing rulings bind each
+        PR; the agent-visible copy must mirror the launch authority's record."""
+        config = make_tech_lead_config(tmp_path)
+        session = make_tech_lead_session(tmp_path)
+        plant_tech_lead_assignment(session, TechLeadAssignment(flavor=TechLeadSessionFlavor.BATCH_REVIEW))
+        manifest_path = session.run_dir / TECH_LEAD_DATA_DIRNAME / "manifest.json"
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        TechLeadManifest(prs=[
+            PRToReview(number=101, title="PR 101", url="https://example/pr/101", branch="b1",
+                       issue_numbers=planted_links),
+        ]).write(manifest_path)
+        record_authority(config, session, TechLeadLaunchAuthority(
+            flavor=TechLeadSessionFlavor.BATCH_REVIEW, anchor_issue_number=session.issue.number,
+            manifest_pr_numbers=(101,), covered_work=((365, (101,)),),
+        ))
+
+        error = tech_lead_decision_processing_error(
+            config,
+            tech_lead_authority=SqliteTechLeadAuthorityStore.for_repo(config.repo_root),
+            run_dir=session.run_dir,
+            run_id=session.run_assets.run_id,
+            session_name=session.run_assets.session_name,
+        )
+
+        if tampered:
+            assert error is not None and error.startswith("tech_lead_authority: scope_tampered")
+            assert "issue links [(999, (101,))]" in error
+        else:
+            assert error is None or "scope_tampered" not in error
+
     def test_tampered_manifest_prs_never_get_labels(self, tmp_path: Path) -> None:
         """Substituted PR numbers in the worktree manifest must not be
         labeled — labels come from the authority set, and the divergence
