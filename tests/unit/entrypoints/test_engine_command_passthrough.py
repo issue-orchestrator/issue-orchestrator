@@ -452,3 +452,101 @@ def test_tech_lead_command_transport_names_its_cause(live_engine: _LiveEngine) -
     assert not isinstance(answer, tuple)
     assert answer.kind == "no_answer"
     assert "ReadTimeout" in answer.detail and "0.3s" in answer.detail
+
+
+def test_tech_lead_refusal_off_the_outcome_contract_names_status_and_body(
+    live_engine: _LiveEngine, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """r1 F2: an engine refusal that is not a proposal outcome keeps its cause."""
+    from issue_orchestrator.contracts.ui_openapi_models import TechLeadProposalCommandPayload
+    from issue_orchestrator.entrypoints import web
+    from issue_orchestrator.execution.control_center_tech_lead import (
+        ControlCenterTechLead,
+        HttpEngineTechLeadTransport,
+    )
+    from issue_orchestrator.infra.repo_identity import configured_repository_key
+    from issue_orchestrator.infra.repo_registry import RegisteredRepo
+    from issue_orchestrator.infra.supervisor import MultiInstanceStatus
+
+    monkeypatch.setattr(web, "_orchestrator", None)  # engine answers 503 {"detail": ...}
+    repo = RegisteredRepo(path=str(tmp_path), name="a")
+    supervisor = MagicMock()
+    supervisor.status_all_instances.return_value = MultiInstanceStatus(
+        repo_root=str(tmp_path),
+        instances=[SupervisorStatus(state="running", port=live_engine.port)],
+    )
+    owner = ControlCenterTechLead(supervisor, lambda: [repo], HttpEngineTechLeadTransport())
+
+    result = owner.command(
+        configured_repository_key(str(tmp_path)),
+        TechLeadProposalCommandPayload(proposal_issue_number=10, decision="approve"),
+    )
+
+    assert result.status_code == 503
+    assert "HTTP 503" in result.outcome.detail
+    assert "Repository Engine is not running" in result.outcome.detail
+
+
+def test_a_non_json_refusal_keeps_its_http_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    """r1 F2: an HTML 401 is a refusal with its status, not an undecodable 200."""
+    from issue_orchestrator.execution import orchestrator_http_api
+
+    url = "http://127.0.0.1:9/api/tech-lead/proposals"
+    monkeypatch.setattr(
+        orchestrator_http_api.httpx,
+        "post",
+        lambda *a, **k: httpx.Response(401, text="<html>login</html>", request=httpx.Request("POST", url)),
+    )
+
+    answer = post_orchestrator_json(url, {}, command="tech-lead proposal decision", timeout_seconds=1)
+
+    assert not isinstance(answer, tuple)
+    assert answer.kind == "upstream_error"
+    assert answer.upstream_status == 401
+    assert "HTTP 401" in answer.detail and "<html>login</html>" in answer.detail
+
+
+def test_a_caller_giving_up_on_shutdown_does_not_strand_the_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """r1 F3: cancelling /api/shutdown mid-wait still finishes the whole sequence."""
+    from starlette.requests import Request
+
+    from issue_orchestrator.entrypoints import web_operator_routes
+
+    engine = _TickingEngine()
+    manager = MagicMock()
+    monkeypatch.setattr(web_operator_routes, "shutdown_manager", manager)
+    deps = MagicMock()
+
+    async def broadcast(*_args: Any) -> None:
+        return None
+
+    deps.broadcast_event = broadcast
+    body = b'{"reason": "test #8222", "actor": "unit-test"}'
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    async def scenario() -> None:
+        request = Request({"type": "http", "method": "POST", "headers": [], "query_string": b""}, receive)
+        with engine.tick_in_progress() as finish:
+            route = asyncio.ensure_future(
+                web_operator_routes.shutdown(request, engine, deps, force=False)
+            )
+            await asyncio.sleep(0.3)  # the sequence is waiting on the tick
+            route.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await route
+            assert engine.shutdowns == []
+            finish.set()
+            deadline = time.monotonic() + 5
+            while not deps.trigger_server_shutdown.called:
+                assert time.monotonic() < deadline, "the shutdown sequence was abandoned"
+                await asyncio.sleep(0.02)
+
+    asyncio.run(scenario())
+
+    assert engine.shutdowns == [False]
+    manager.request_shutdown.assert_called_once()
+    deps.trigger_server_shutdown.assert_called_once()

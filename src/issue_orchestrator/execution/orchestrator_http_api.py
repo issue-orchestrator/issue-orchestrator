@@ -13,6 +13,7 @@ from ..domain.pause_state import PauseActor
 from .engine_command_failure import (
     EngineCommandFailure,
     exception_text,
+    interrupted_failure,
     non_object_body_failure,
     refused_failure,
     unanswered_failure,
@@ -102,20 +103,27 @@ def _unanswered(exc: Any, command: str, url: str, timeout_seconds: float) -> Eng
     )
 
 
+def _interrupted(exc: Any, command: str, url: str, timeout_seconds: float) -> EngineCommandFailure:
+    return interrupted_failure(command=command, url=url, cause=exception_text(exc))
+
+
 def _undecodable(exc: Any, command: str, url: str, timeout_seconds: float) -> EngineCommandFailure:
     return undecodable_failure(command=command, url=url, reason=exc.msg, body_text=exc.doc)
 
 
-# First match wins, so the specific httpx classes precede their bases: a
-# connect timeout means nothing answered, not that the engine was slow.
+# First match wins. What the operator may conclude depends on how far the
+# exchange got: nothing sent (connect/pool), all sent and no answer yet (read
+# timeout — the engine is waiting for its tick and will still apply it), or
+# broken off mid-way (write timeout/error, read error, dropped connection —
+# delivery unknown).
 _FAILURE_CLASSIFIERS: tuple[
     tuple[tuple[type[Exception], ...], Callable[[Any, str, str, float], EngineCommandFailure]], ...
 ] = (
     ((httpx.HTTPStatusError,), _refused),
-    ((httpx.ConnectError, httpx.ConnectTimeout), _unreachable),
-    ((httpx.TimeoutException,), _unanswered),
+    ((httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, httpx.UnsupportedProtocol), _unreachable),
+    ((httpx.ReadTimeout,), _unanswered),
     ((json.JSONDecodeError,), _undecodable),
-    ((httpx.HTTPError,), _unreachable),
+    ((httpx.HTTPError,), _interrupted),
 )
 
 
@@ -168,8 +176,20 @@ def post_orchestrator_json(
     headers = _auth_headers(token_provider)
     try:
         response = httpx.post(url, json=body, timeout=timeout_seconds, headers=headers)
+    except httpx.HTTPError as exc:
+        return describe_engine_command_failure(
+            exc, command=command, url=url, timeout_seconds=timeout_seconds
+        )
+    try:
         data = response.json()
-    except (httpx.HTTPError, json.JSONDecodeError) as exc:
+    except json.JSONDecodeError as exc:
+        if response.is_error:
+            return refused_failure(
+                command=command,
+                url=url,
+                upstream_status=response.status_code,
+                body_text=response.text,
+            )
         return describe_engine_command_failure(
             exc, command=command, url=url, timeout_seconds=timeout_seconds
         )

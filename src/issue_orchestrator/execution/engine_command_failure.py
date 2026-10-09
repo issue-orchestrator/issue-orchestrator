@@ -36,14 +36,22 @@ ENGINE_COMMAND_TIMEOUT_SECONDS = 120.0
 #: traceback cannot bloat the operator-facing payload.
 UPSTREAM_BODY_EXCERPT_CHARS = 2000
 
+#: How much of an upstream body the operator-facing ``detail`` quotes. The
+#: detail lands in a toast, so it names the cause in a sentence; the longer
+#: ``upstream_body`` field keeps the rest for diagnosis.
+DETAIL_BODY_EXCERPT_CHARS = 300
+
 
 class EngineCommandFailureKind(StrEnum):
     """The distinguishable ways a forwarded engine command can fail."""
 
-    #: Nothing answered: connection refused, DNS, or a connect timeout.
+    #: Nothing was sent: connection refused, DNS, a connect or pool timeout.
     UNREACHABLE = "unreachable"
-    #: The engine accepted the request but did not answer in time.
+    #: The whole request was sent and the engine did not answer in time.
     NO_ANSWER = "no_answer"
+    #: The exchange broke off mid-way (write timeout, read error, dropped
+    #: connection): the engine may or may not have received the command.
+    INTERRUPTED = "interrupted"
     #: The engine answered with a non-success HTTP status.
     UPSTREAM_ERROR = "upstream_error"
     #: The engine answered success with a body that is not a JSON object.
@@ -53,6 +61,7 @@ class EngineCommandFailureKind(StrEnum):
 _HTTP_STATUS_BY_KIND: dict[EngineCommandFailureKind, int] = {
     EngineCommandFailureKind.UNREACHABLE: 502,
     EngineCommandFailureKind.NO_ANSWER: 504,
+    EngineCommandFailureKind.INTERRUPTED: 502,
     EngineCommandFailureKind.UPSTREAM_ERROR: 502,
     EngineCommandFailureKind.INVALID_BODY: 502,
 }
@@ -90,10 +99,15 @@ class EngineCommandFailure:
         }
 
 
-def _excerpt(text: str) -> str:
-    if len(text) <= UPSTREAM_BODY_EXCERPT_CHARS:
+def _excerpt(text: str, limit: int = UPSTREAM_BODY_EXCERPT_CHARS) -> str:
+    if len(text) <= limit:
         return text
-    return text[:UPSTREAM_BODY_EXCERPT_CHARS] + "…[truncated]"
+    return text[:limit] + "…[truncated]"
+
+
+def _quoted(text: str) -> str:
+    """A body as the detail sentence quotes it."""
+    return _excerpt(text, DETAIL_BODY_EXCERPT_CHARS) or "(empty body)"
 
 
 def exception_text(exc: BaseException) -> str:
@@ -118,7 +132,7 @@ def refused_failure(
         url=url,
         detail=(
             f"Engine refused {command} at {url} with HTTP "
-            f"{upstream_status}: {body or '(empty body)'}"
+            f"{upstream_status}: {_quoted(body_text)}"
         ),
         upstream_status=upstream_status,
         upstream_body=body,
@@ -152,6 +166,20 @@ def unanswered_failure(
     )
 
 
+def interrupted_failure(*, command: str, url: str, cause: str) -> EngineCommandFailure:
+    """The exchange broke off after it started; delivery is unknown."""
+    return EngineCommandFailure(
+        kind=EngineCommandFailureKind.INTERRUPTED,
+        command=command,
+        url=url,
+        detail=(
+            f"The exchange with the engine at {url} for {command} broke off ({cause}). "
+            f"The engine may or may not have received {command}; read the engine "
+            "state before retrying."
+        ),
+    )
+
+
 def undecodable_failure(
     *, command: str, url: str, reason: str, body_text: str
 ) -> EngineCommandFailure:
@@ -163,7 +191,7 @@ def undecodable_failure(
         url=url,
         detail=(
             f"Engine answered {command} at {url} with a body that is not JSON "
-            f"({reason}): {body or '(empty body)'}"
+            f"({reason}): {_quoted(body_text)}"
         ),
         upstream_body=body,
     )
@@ -180,7 +208,7 @@ def non_object_body_failure(
         url=url,
         detail=(
             f"Engine answered {command} at {url} (HTTP {upstream_status}) with JSON "
-            f"that is not an object: {text}"
+            f"that is not an object: {_quoted(text)}"
         ),
         upstream_status=upstream_status,
         upstream_body=text,
@@ -192,6 +220,7 @@ __all__ = [
     "EngineCommandFailure",
     "EngineCommandFailureKind",
     "exception_text",
+    "interrupted_failure",
     "non_object_body_failure",
     "refused_failure",
     "unanswered_failure",

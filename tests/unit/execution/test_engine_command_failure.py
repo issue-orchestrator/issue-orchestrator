@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from issue_orchestrator.execution.engine_command_failure import (
+    DETAIL_BODY_EXCERPT_CHARS,
     UPSTREAM_BODY_EXCERPT_CHARS,
     EngineCommandFailure,
     EngineCommandFailureKind,
@@ -27,10 +28,12 @@ def _describe(exc: httpx.HTTPError | json.JSONDecodeError) -> EngineCommandFailu
     ("exc", "kind", "status"),
     [
         (httpx.ReadTimeout(""), EngineCommandFailureKind.NO_ANSWER, 504),
-        (httpx.WriteTimeout(""), EngineCommandFailureKind.NO_ANSWER, 504),
+        (httpx.WriteTimeout(""), EngineCommandFailureKind.INTERRUPTED, 502),
+        (httpx.ReadError(""), EngineCommandFailureKind.INTERRUPTED, 502),
+        (httpx.RemoteProtocolError(""), EngineCommandFailureKind.INTERRUPTED, 502),
         (httpx.ConnectTimeout(""), EngineCommandFailureKind.UNREACHABLE, 502),
+        (httpx.PoolTimeout(""), EngineCommandFailureKind.UNREACHABLE, 502),
         (httpx.ConnectError(""), EngineCommandFailureKind.UNREACHABLE, 502),
-        (httpx.RemoteProtocolError(""), EngineCommandFailureKind.UNREACHABLE, 502),
     ],
 )
 def test_messageless_transport_errors_still_get_a_cause(
@@ -43,6 +46,17 @@ def test_messageless_transport_errors_still_get_a_cause(
     assert failure.http_status == status
     assert type(exc).__name__ in failure.detail
     assert URL in failure.detail and "pause" in failure.detail
+
+
+@pytest.mark.parametrize(
+    "exc", [httpx.WriteTimeout(""), httpx.ReadError(""), httpx.ConnectTimeout(""), httpx.PoolTimeout("")]
+)
+def test_only_an_unanswered_but_delivered_command_promises_it_may_still_apply(
+    exc: httpx.HTTPError,
+) -> None:
+    """r1 F4: a write timeout may not have delivered the command at all."""
+    assert "may still take effect" not in _describe(exc).detail
+    assert "may still take effect" in _describe(httpx.ReadTimeout("")).detail
 
 
 def test_upstream_status_carries_status_and_bounded_body() -> None:
@@ -59,6 +73,8 @@ def test_upstream_status_carries_status_and_bounded_body() -> None:
     assert failure.upstream_body.endswith("…[truncated]")
     assert len(failure.upstream_body) < len(body)
     assert "HTTP 401" in failure.detail
+    # The detail is a sentence for a toast; the full excerpt stays in upstream_body.
+    assert len(failure.detail) < DETAIL_BODY_EXCERPT_CHARS + 200
     payload = failure.to_payload()
     assert payload["error"] == "passthrough_failed"
     assert payload["failure"] == "upstream_error"

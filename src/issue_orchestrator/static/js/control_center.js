@@ -2717,17 +2717,42 @@ function setupShutdownHudDraggable() {
 // ============================================
 // Toasts
 // ============================================
+function dismissToast(toast) {
+    toast.style.opacity = '0';
+    setTimeout(() => toast.remove(), 300);
+}
+
+// Errors and warnings carry a cause the operator may need to read, copy or
+// hear in full — an engine's refusal, a timeout explanation (#8222) — so they
+// stay until dismissed. The message is height-bounded and keyboard-scrollable
+// so a long cause never runs off a small screen. Info/success auto-dismiss.
 function showToast(message, type = 'info') {
     const container = document.getElementById('toastContainer');
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
-    toast.textContent = message;
+    const text = document.createElement('div');
+    text.className = 'toast-message';
+    text.textContent = message;
+    toast.appendChild(text);
+    const sticky = type === 'error' || type === 'warning';
+    if (sticky) {
+        toast.classList.add('sticky');
+        text.tabIndex = 0;
+        text.setAttribute('role', 'note');
+        text.setAttribute('aria-label', type === 'error' ? 'Error details' : 'Warning details');
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'toast-close';
+        close.setAttribute('aria-label', 'Dismiss notification');
+        close.textContent = '×';
+        close.addEventListener('click', () => dismissToast(toast));
+        toast.appendChild(close);
+    }
     container.appendChild(toast);
 
-    setTimeout(() => {
-        toast.style.opacity = '0';
-        setTimeout(() => toast.remove(), 300);
-    }, 4000);
+    if (!sticky) {
+        setTimeout(() => dismissToast(toast), 4000);
+    }
 }
 
 // ============================================

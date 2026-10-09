@@ -1956,6 +1956,36 @@ body.maximized .maximize-exit-btn { display: flex; }
     pointer-events: auto;
 }
 
+.toast-message {
+    flex: 1 1 auto;
+    min-width: 0;
+    /* A long cause (an engine's refusal body, #8222) scrolls inside the toast
+       instead of running off a small screen. */
+    max-height: min(40vh, 240px);
+    overflow-y: auto;
+    user-select: text;
+}
+
+.toast-message:focus-visible,
+.toast-close:focus-visible {
+    outline: 2px solid var(--accent-blue, currentColor);
+    outline-offset: 2px;
+}
+
+.toast-close {
+    flex: 0 0 auto;
+    align-self: flex-start;
+    min-width: 32px;
+    min-height: 32px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+}
+
 .toast.success { border-color: var(--accent-green); }
 .toast.error { border-color: var(--accent-red); }
 .toast.warning { border-color: var(--accent-yellow); }

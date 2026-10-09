@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 import re
 import threading
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -29,6 +29,9 @@ from ..execution.client_host import ClientHost
 from ..execution.label_ops import LabelOperation, apply_label_operations
 from .shutdown_reason_support import parse_shutdown_reason
 from .web_session_context import WebOrchestratorDependency
+
+if TYPE_CHECKING:
+    from ..infra.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -360,6 +363,43 @@ async def open_agent_prompt(
     return JSONResponse({"status": result.action, **result.to_dict()}, status_code=status_code)
 
 
+_SHUTDOWN_SEQUENCES: set[asyncio.Future[int]] = set()
+
+
+async def _commence_shutdown(
+    orchestrator: "Orchestrator",
+    operator_deps: WebOperatorDependencies,
+    *,
+    force: bool,
+    reason: str,
+    actor: str,
+) -> int:
+    """Request shutdown end to end; returns the active-session count."""
+    await asyncio.to_thread(orchestrator.request_shutdown, force=force)
+    active_count = len(orchestrator.state.active_sessions)
+    shutdown_log_reason = (
+        f"API /api/shutdown reason={reason!r}"
+        + (f" actor={actor!r}" if actor else "")
+        + (" force=true" if force else "")
+    )
+    shutdown_manager.request_shutdown(reason=shutdown_log_reason)
+    await operator_deps.broadcast_event(
+        "shutdown_requested",
+        {
+            "force": force,
+            "active_sessions": active_count,
+            "reason": reason,
+            "actor": actor or None,
+        },
+    )
+    operator_deps.trigger_server_shutdown()
+
+    timer = threading.Timer(0.2, shutdown_manager.exit)
+    timer.daemon = False
+    timer.start()
+    return active_count
+
+
 @web_operator_router.post("/api/shutdown")
 async def shutdown(
     request: Request,
@@ -399,31 +439,17 @@ async def shutdown(
     reason = parsed.reason
     actor_str = parsed.actor  # "" when caller didn't supply one
 
-    # Reads sessions under the state lock a running tick holds; a worker thread
-    # keeps the event loop serving meanwhile (see pause_response, #8222).
-    await asyncio.to_thread(orchestrator.request_shutdown, force=force)
-    active_count = len(orchestrator.state.active_sessions)
-
-    shutdown_log_reason = (
-        f"API /api/shutdown reason={reason!r}"
-        + (f" actor={actor_str!r}" if actor_str else "")
-        + (" force=true" if force else "")
+    # The sequence runs as its own task, shielded from this route: it waits for
+    # the state lock a running tick holds (in a worker thread, so the event loop
+    # keeps serving — #8222), and a caller that gives up meanwhile (the
+    # supervisor's short HTTP timeout) must not leave the engine flagged for
+    # shutdown with its server still up.
+    sequence = asyncio.ensure_future(
+        _commence_shutdown(orchestrator, operator_deps, force=force, reason=reason, actor=actor_str)
     )
-    shutdown_manager.request_shutdown(reason=shutdown_log_reason)
-    await operator_deps.broadcast_event(
-        "shutdown_requested",
-        {
-            "force": force,
-            "active_sessions": active_count,
-            "reason": reason,
-            "actor": actor_str or None,
-        },
-    )
-    operator_deps.trigger_server_shutdown()
-
-    timer = threading.Timer(0.2, shutdown_manager.exit)
-    timer.daemon = False
-    timer.start()
+    _SHUTDOWN_SEQUENCES.add(sequence)
+    sequence.add_done_callback(_SHUTDOWN_SEQUENCES.discard)
+    active_count = await asyncio.shield(sequence)
 
     return JSONResponse({
         "status": "force_shutdown" if force else "shutdown_requested",
