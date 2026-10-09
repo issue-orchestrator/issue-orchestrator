@@ -663,7 +663,7 @@ async def refresh(request: Request) -> JSONResponse:
     except (json.JSONDecodeError, ValueError):
         pass  # Ignore malformed body, proceed with empty set
 
-    _orchestrator.request_refresh(inflight_stable_ids=inflight_stable_ids)
+    await asyncio.to_thread(_orchestrator.request_refresh, inflight_stable_ids=inflight_stable_ids)  # #8222
     return JSONResponse({"status": "refresh_requested"})
 
 

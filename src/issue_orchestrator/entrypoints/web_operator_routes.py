@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import asyncio
 import logging
 from pathlib import Path
 import re
@@ -398,7 +399,9 @@ async def shutdown(
     reason = parsed.reason
     actor_str = parsed.actor  # "" when caller didn't supply one
 
-    orchestrator.request_shutdown(force=force)
+    # Reads sessions under the state lock a running tick holds; a worker thread
+    # keeps the event loop serving meanwhile (see pause_response, #8222).
+    await asyncio.to_thread(orchestrator.request_shutdown, force=force)
     active_count = len(orchestrator.state.active_sessions)
 
     shutdown_log_reason = (

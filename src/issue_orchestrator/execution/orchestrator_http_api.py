@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Callable
 import threading
@@ -9,6 +10,11 @@ import threading
 import httpx
 
 from ..domain.pause_state import PauseActor
+from .engine_command_failure import (
+    EngineCommandFailure,
+    describe_engine_command_failure,
+    non_object_body_failure,
+)
 from ..ports.orchestrator_api import OrchestratorApi
 
 
@@ -75,22 +81,30 @@ def post_orchestrator_json(
     url: str,
     body: dict[str, Any],
     *,
+    command: str,
     timeout_seconds: float,
     token_provider: Callable[[], str | None] = _default_token_provider,
-) -> tuple[int, dict[str, Any]] | None:
-    """POST JSON to an engine endpoint; ``(status, object body)`` or ``None``.
+) -> tuple[int, dict[str, Any]] | EngineCommandFailure:
+    """POST a command to an engine; ``(status, object body)`` or why it failed.
 
-    ``None`` means the engine could not be reached or answered with something
-    other than a JSON object; any HTTP status is returned as-is so the caller
-    maps refusals itself.
+    Any HTTP status that carries a JSON object is returned as-is so the caller
+    maps refusals itself. A transport failure, an unanswered request or a body
+    that is not a JSON object becomes an ``EngineCommandFailure`` whose detail
+    names the cause (#8222) — never a bare ``None``.
     """
     headers = _auth_headers(token_provider)
     try:
         response = httpx.post(url, json=body, timeout=timeout_seconds, headers=headers)
         data = response.json()
-    except Exception:
-        return None
-    return (response.status_code, data) if isinstance(data, dict) else None
+    except (httpx.HTTPError, json.JSONDecodeError) as exc:
+        return describe_engine_command_failure(
+            exc, command=command, url=url, timeout_seconds=timeout_seconds
+        )
+    if not isinstance(data, dict):
+        return non_object_body_failure(
+            data, command=command, url=url, upstream_status=response.status_code
+        )
+    return response.status_code, data
 
 
 class OrchestratorHttpApi(OrchestratorApi):

@@ -32,6 +32,7 @@ from ..contracts.ui_openapi_models import (
     TechLeadProposalOutcomePayload,
 )
 from ..infra.repo_identity import configured_repository_key
+from .engine_command_failure import ENGINE_COMMAND_TIMEOUT_SECONDS, EngineCommandFailure
 from .orchestrator_http_api import post_orchestrator_json, probe_orchestrator_json
 
 if TYPE_CHECKING:
@@ -42,7 +43,9 @@ logger = logging.getLogger(__name__)
 
 #: Per-engine read budget: one slow engine must not stall the page.
 SECTION_TIMEOUT_SECONDS = 3.0
-COMMAND_TIMEOUT_SECONDS = 30.0
+#: The engine decides a proposal under its state lock, which a running tick
+#: holds for the whole tick — the shared engine-command budget covers that wait.
+COMMAND_TIMEOUT_SECONDS = ENGINE_COMMAND_TIMEOUT_SECONDS
 
 
 class EngineTechLeadTransport(Protocol):
@@ -54,8 +57,8 @@ class EngineTechLeadTransport(Protocol):
 
     def send_command(
         self, port: int, body: dict[str, Any]
-    ) -> tuple[int, dict[str, Any]] | None:
-        """``(HTTP status, JSON object)`` from the engine, or ``None``."""
+    ) -> tuple[int, dict[str, Any]] | EngineCommandFailure:
+        """``(HTTP status, JSON object)`` from the engine, or why it failed."""
         ...
 
 
@@ -70,10 +73,11 @@ class HttpEngineTechLeadTransport:
 
     def send_command(
         self, port: int, body: dict[str, Any]
-    ) -> tuple[int, dict[str, Any]] | None:
+    ) -> tuple[int, dict[str, Any]] | EngineCommandFailure:
         return post_orchestrator_json(
             f"http://127.0.0.1:{port}/api/tech-lead/proposals",
             body,
+            command="tech-lead proposal decision",
             timeout_seconds=COMMAND_TIMEOUT_SECONDS,
         )
 
@@ -120,8 +124,9 @@ class ControlCenterTechLead:
         if port is None:
             return _refused(503, number, "The repository's engine is not running; approve on GitHub instead")
         answer = self.transport.send_command(port, payload.model_dump(mode="json"))
-        if answer is None:
-            return _refused(503, number, "The repository's engine did not answer")
+        if isinstance(answer, EngineCommandFailure):
+            logger.warning("[tech-lead] engine command failed: %s", answer.detail)
+            return _refused(503, number, f"The repository's engine did not take the decision: {answer.detail}")
         status, body = answer
         try:
             outcome = TechLeadProposalOutcomePayload.model_validate(body)

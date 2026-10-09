@@ -9,16 +9,62 @@ routers one answer shape and one place where the lifecycle vocabulary is typed.
 
 from __future__ import annotations
 
+import asyncio
 import json
+from functools import partial
+from typing import Protocol
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from ..domain.pause_state import (
     PauseActor,
+    PauseReason,
     PauseTransitionOutcome,
     PauseTransitionStatus,
 )
+
+
+class PausableEngine(Protocol):
+    """The facade methods a pause/resume route drives."""
+
+    def pause(
+        self, *, reason: PauseReason, actor: PauseActor, detail: str = ""
+    ) -> PauseTransitionOutcome: ...
+
+    def resume(
+        self, *, actor: PauseActor, detail: str = ""
+    ) -> PauseTransitionOutcome: ...
+
+
+# Why the transitions run in a worker thread (#8222): the engine applies a
+# pause or resume under its state lock, and a running tick holds that lock for
+# the whole tick — tens of seconds routinely, minutes at worst. Called inline
+# from an async route, that wait froze the engine's event loop: every other
+# route and SSE stream stalled, and the Control Center's forward timed out
+# with an empty error. In a worker thread the loop keeps serving, and the
+# transition still commits when the tick releases the lock even if the caller
+# has given up waiting.
+
+
+async def pause_engine(
+    request: Request, engine: PausableEngine, default_actor: PauseActor
+) -> JSONResponse:
+    """Operator pause, reported as what the owner committed."""
+    actor = await requested_actor(request, default_actor)
+    outcome = await asyncio.to_thread(
+        partial(engine.pause, reason=PauseReason.OPERATOR, actor=actor)
+    )
+    return transition_response(PauseTransitionStatus.PAUSED, outcome)
+
+
+async def resume_engine(
+    request: Request, engine: PausableEngine, default_actor: PauseActor
+) -> JSONResponse:
+    """Operator resume, reported as what the owner committed."""
+    actor = await requested_actor(request, default_actor)
+    outcome = await asyncio.to_thread(partial(engine.resume, actor=actor))
+    return transition_response(PauseTransitionStatus.RESUMED, outcome)
 
 
 def transition_response(
