@@ -316,6 +316,10 @@ def test_read_commit_check_rollup_reads_exactly_that_commit(make_host, monkeypat
         ({}, {"state": "success", "statuses": [{"state": "success"}]}),  # no check_runs list
         ({"check_runs": "nope"}, {"state": "success", "statuses": [{"state": "success"}]}),
         ({"check_runs": []}, {"statuses": "nope"}),  # malformed combined status
+        # review r5 F2: an answer that leaves runs out, or an unknown state
+        ({"total_count": 1, "check_runs": []}, {"state": "success", "statuses": [{"state": "success"}]}),
+        ({"total_count": 0, "check_runs": []}, {"state": "mystery", "statuses": [{"state": "success"}]}),
+        ({"total_count": 1, "check_runs": [{"status": "unheard_of"}]}, {"state": "pending", "statuses": []}),
     ],
 )
 def test_a_malformed_check_answer_is_never_green(make_host, check_runs, status) -> None:
@@ -333,7 +337,8 @@ def test_a_malformed_check_answer_is_never_green(make_host, check_runs, status) 
 def test_a_well_formed_green_check_answer_is_green(make_host) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/check-runs"):
-            return httpx.Response(200, json={"check_runs": [{"status": "completed", "conclusion": "success"}]})
+            return httpx.Response(200, json={"total_count": 1,
+                                             "check_runs": [{"status": "completed", "conclusion": "success"}]})
         return httpx.Response(200, json={"state": "pending", "statuses": []})
 
     result = make_host(handler).read_commit_check_rollup(SHA_A)

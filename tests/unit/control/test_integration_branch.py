@@ -830,3 +830,19 @@ def test_a_rulings_read_the_host_refuses_merges_nothing_and_keeps_the_scan() -> 
 
     assert owner.discovered_steps() == []
     assert result.escalations == () and result.reworks == ()
+
+
+def test_the_tech_lead_gate_adds_to_reviewer_approval_never_replaces_it() -> None:
+    """Review r5 F1: with merge_after tech-lead-reviewed, a PR that lost
+    code-reviewed is not merged on the tech-lead label alone."""
+    world = _World(merge_after="tech-lead-reviewed")
+    world.approved_pr(228, 318, HEAD_A, labels=[world.labels.tech_lead_reviewed])
+    owner = world.owner()
+    world.discover(owner)  # the reconciler's own filter also wants code-reviewed
+
+    gate = owner.gatekeeper.person_or_gate(
+        issue_labels=[], pr_labels=[world.labels.tech_lead_reviewed], gate_label=world.labels.tech_lead_reviewed,
+    )
+
+    assert owner.discovered_steps() == []
+    assert gate.value == "gate_not_passed"

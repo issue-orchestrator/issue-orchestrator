@@ -232,21 +232,35 @@ def _aggregate_check_runs(payload: object) -> _RollupSignal:
     return failure, pending, present
 
 
-def _well_formed_check_runs(payload: object) -> bool:
-    """A `/check-runs` page GitHub actually answered: a list of run objects."""
+_CHECK_RUN_STATUSES = frozenset({"queued", "in_progress", "completed", "waiting", "requested", "pending"})
+_COMMIT_STATUS_STATES = frozenset({"success", "pending", "failure", "error"})
+
+
+def _well_formed_check_runs(payload: object, *, page: int) -> bool:
+    """A `/check-runs` page GitHub actually answered (#8144 review r4/r5).
+
+    A list of run objects each with a known status, and - on a short (last)
+    page - as many runs in all as ``total_count`` says: fewer means runs the
+    answer left out, any of which could be a failure.
+    """
     runs = payload.get("check_runs") if isinstance(payload, dict) else None
-    return isinstance(runs, list) and all(isinstance(run, dict) for run in runs)
+    total = payload.get("total_count") if isinstance(payload, dict) else None
+    if not isinstance(runs, list) or type(total) is not int:
+        return False
+    if not all(isinstance(run, dict) and run.get("status") in _CHECK_RUN_STATUSES for run in runs):
+        return False
+    return len(runs) == 100 or total == (page - 1) * 100 + len(runs)
 
 
 def _well_formed_combined_status(payload: object) -> bool:
-    """A `/status` answer: a state string and a list of status objects."""
+    """A `/status` answer: a known state and status objects with known states."""
     if not isinstance(payload, dict):
         return False
     statuses = payload.get("statuses")
     return (
-        isinstance(payload.get("state"), str)
+        payload.get("state") in _COMMIT_STATUS_STATES
         and isinstance(statuses, list)
-        and all(isinstance(status, dict) for status in statuses)
+        and all(isinstance(status, dict) and status.get("state") in _COMMIT_STATUS_STATES for status in statuses)
     )
 
 
@@ -2417,7 +2431,7 @@ class GitHubHttpClient:
                     exc,
                 )
                 return _SourceReadout((False, False, False), outcome=outcome)
-            if not _well_formed_check_runs(payload):
+            if not _well_formed_check_runs(payload, page=page):
                 # A 200 without a list of run objects is not "no runs": an
                 # unread failure could hide behind it (#8144 review r4 F1).
                 logger.warning("check-runs payload for %s (page %d) is malformed; unreadable", encoded_sha, page)

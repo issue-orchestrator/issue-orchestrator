@@ -153,7 +153,8 @@ class MergeGatekeeper:
         either item (the review-validity rule, review r4 F2), then the gate label."""
         held = holds_merge(self.label_manager, issue_labels, pr_labels)
         rework = self.label_manager.needs_rework in (*issue_labels, *pr_labels)
-        gated = gate_label in pr_labels
+        # The tech-lead gate is ON TOP of reviewer approval, never instead of it (review r5 F1).
+        gated = gate_label in pr_labels and self.label_manager.code_reviewed in pr_labels
         if held or rework:
             return MergeGate.HELD if held else MergeGate.REWORK_REQUESTED
         return MergeGate.OPEN if gated else MergeGate.GATE_NOT_PASSED
