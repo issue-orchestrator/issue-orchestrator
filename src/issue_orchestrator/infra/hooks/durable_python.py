@@ -89,6 +89,13 @@ def resolve_durable_orchestrator_python(
         raise UnstableInterpreterError(
             f"Interpreter from {source.describe()} must be an absolute path: {candidate}"
         )
+    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in str(candidate)):
+        # The committed script and doctor's reader are line-oriented; a path
+        # that needs a quoted newline cannot be read back reliably.
+        raise UnstableInterpreterError(
+            f"Interpreter from {source.describe()} contains a control character: "
+            f"{candidate!r}"
+        )
     if not (candidate.is_file() and os.access(candidate, os.X_OK)):
         raise UnstableInterpreterError(
             f"Interpreter from {source.describe()} is not an executable file: {candidate}"
@@ -106,15 +113,18 @@ def unstable_interpreter_reason(
 ) -> str | None:
     """Return why *path* will not outlive this run, or None when it should.
 
-    *path* is judged as written AND as its symlinks resolve. As written,
-    because a venv's ``bin/python`` usually links to a stable system
-    interpreter while the venv itself is what ``git worktree remove`` deletes.
-    As resolved, because a stable-looking symlink into a worktree dangles once
-    the worktree goes. The containing directory is also resolved on its own so
-    ``/tmp`` → ``/private/tmp`` style aliases match a temp root.
+    *path* is judged at every location opening it visits (see
+    ``_path_forms``): the venv's own ``bin/python`` (usually a link to a stable
+    system interpreter, while the venv is what ``git worktree remove``
+    deletes), every intermediate link, and the final target, so a
+    stable-looking link through a worktree is caught and ``/tmp`` →
+    ``/private/tmp`` style aliases match a temp root.
     """
     roots = default_temp_roots() if temp_roots is None else temp_roots
-    forms = _path_forms(path)
+    try:
+        forms = _path_forms(path)
+    except _SymlinkLoopError as exc:
+        return str(exc)
     for form in forms:
         worktree = _enclosing_linked_worktree(form)
         if worktree is not None:
@@ -154,30 +164,49 @@ def _first_candidate(
 _MAX_SYMLINK_HOPS = 40
 
 
+class _SymlinkLoopError(RuntimeError):
+    pass
+
+
 def _path_forms(path: Path) -> tuple[Path, ...]:
-    """Every location the interpreter path passes through.
+    """Every location the filesystem visits while opening *path*.
 
-    The path as written, each link of its symlink chain (an intermediate link
-    inside a worktree dangles once the worktree goes, even when the chain ends
-    somewhere stable), each of those with its directory resolved, and the
-    final target.
+    Walks the path component by component the way the kernel does: each
+    symlink met (a directory link mid-path, or the venv's ``bin/python``
+    itself) is recorded where it sits, then its target is spliced in, and
+    ``..`` applies to the directory actually reached, never lexically. Any of
+    those locations disappearing breaks the path, so each one is judged.
     """
-    forms: list[Path] = []
-
-    def add(form: Path) -> None:
-        if form not in forms:
-            forms.append(form)
-
-    hop = path.absolute()
-    for _ in range(_MAX_SYMLINK_HOPS):
-        add(hop)
-        add(hop.parent.resolve() / hop.name)
-        if not hop.is_symlink():
-            break
-        target = Path(os.readlink(hop))
-        hop = Path(os.path.normpath(hop.parent / target))
-    add(path.absolute().resolve())
-    return tuple(forms)
+    absolute = path.absolute()
+    pending = list(absolute.parts[1:])
+    current = Path(absolute.anchor)
+    visited: list[Path] = []
+    hops = 0
+    while pending:
+        part = pending.pop(0)
+        if part in ("", "."):
+            continue
+        if part == "..":
+            current = current.parent
+            continue
+        location = current / part
+        if location not in visited:
+            visited.append(location)
+        if not location.is_symlink():
+            current = location
+            continue
+        hops += 1
+        if hops > _MAX_SYMLINK_HOPS:
+            raise _SymlinkLoopError(f"too many symbolic links resolving {path}")
+        target = Path(os.readlink(location))
+        if target.is_absolute():
+            current = Path(target.anchor)
+            pending = list(target.parts[1:]) + pending
+        else:
+            pending = list(target.parts) + pending
+    if current not in visited:
+        visited.append(current)
+    return tuple(visited)
 
 
 def _enclosing_linked_worktree(path: Path) -> Path | None:
@@ -242,7 +271,11 @@ def _refusal_message(
         f"Pass {EXPLICIT_PYTHON_FLAG} <interpreter> or export {ORCHESTRATOR_PYTHON_ENV} "
         "naming a stable issue-orchestrator installation.",
     ]
-    worktrees = (_enclosing_linked_worktree(form) for form in _path_forms(candidate))
+    try:
+        forms = _path_forms(candidate)
+    except _SymlinkLoopError:
+        forms = ()
+    worktrees = (_enclosing_linked_worktree(form) for form in forms)
     worktree = next((found for found in worktrees if found is not None), None)
     suggestion = None if worktree is None else _main_checkout_python(worktree)
     if suggestion is not None:

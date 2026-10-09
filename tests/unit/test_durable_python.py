@@ -372,3 +372,43 @@ def test_symlink_chain_through_a_linked_worktree_is_refused(
     with pytest.raises(RepoGuardrailsError, match="linked git worktree"):
         setup_repo_guardrails(config, python=outer)
     assert not (repo / VERIFY_PR_RELATIVE_PATH).exists()
+
+
+def test_dotdot_through_a_directory_link_into_a_worktree_is_refused(
+    io_checkouts, tmp_path
+):
+    """Round 3 F1: ``alias/..`` is applied after following ``alias``, as the kernel does.
+
+    ``outer -> stable/alias/../middle`` where ``alias`` points into a linked
+    worktree: opening ``outer`` traverses the worktree, so it must be refused
+    even though a lexical normalisation would drop ``alias/..``.
+    """
+    _main, linked = io_checkouts
+    inner = linked / "inner"
+    inner.mkdir()
+    (linked / "middle").symlink_to(Path(sys.executable).resolve())
+    stable = tmp_path / "stable"
+    stable.mkdir()
+    (stable / "alias").symlink_to(inner)
+    outer = tmp_path / "outer-python"
+    outer.symlink_to(stable / "alias" / ".." / "middle")
+    assert outer.resolve() == Path(sys.executable).resolve()
+
+    reason = unstable_interpreter_reason(outer, temp_roots=NO_TEMP_ROOTS)
+
+    assert reason == f"it is inside the linked git worktree {linked}"
+
+
+def test_symlink_loop_is_unstable_not_a_crash(tmp_path):
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+    reason = unstable_interpreter_reason(loop, temp_roots=NO_TEMP_ROOTS)
+    assert reason is not None and "too many symbolic links" in reason
+
+
+def test_interpreter_path_with_a_newline_is_refused(io_checkouts):
+    """Round 3 F2: a quoted multi-line path could not be read back by doctor."""
+    main, _linked = io_checkouts
+    odd = _fake_python(main / "odd\ndir" / "python")
+    with pytest.raises(UnstableInterpreterError, match="control character"):
+        resolve_durable_orchestrator_python(odd, environ={}, temp_roots=NO_TEMP_ROOTS)
