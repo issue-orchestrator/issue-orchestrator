@@ -68,6 +68,7 @@ from issue_orchestrator.ports.operator_issue_commands import (
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
 from tests.standing_ruling_helpers import InMemoryStandingRulingsIndex
+from tests.label_application_helpers import standing_while_present
 
 REPO = "porchpin/porchpin"
 ITEM, PR, PROPOSAL, ANCHOR = 327, 525, 530, 900
@@ -160,7 +161,7 @@ class World:
         self.labels = LabelManager(self.config)
         self.causes = SqlitePendingWorkClaimStore(self.tmp / "causes.sqlite")
         self.block = NeedsHumanBlock("needs-human", "tech-lead-needs-human", self.github, self.github.read,
-                                     frozenset, self.causes)
+                                     frozenset, self.causes, standing_while_present(self.github.read))
         self.authority = InMemoryTechLeadAuthorityStore()
         self.rework = RequestReworkExecutor(
             self.github, self.authority, self.labels, self.block, MagicMock(), lambda _n: False,  # type: ignore[arg-type]

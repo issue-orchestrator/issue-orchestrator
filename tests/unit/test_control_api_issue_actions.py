@@ -24,6 +24,7 @@ from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import Issue
 from issue_orchestrator.domain.session_run import SessionRunAssets
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+from tests.label_application_helpers import standing_while_present
 
 globals().update(
     {name: value for name, value in vars(_support).items() if not name.startswith("__")}
@@ -897,6 +898,7 @@ class TestOperatorCommandsRespectTheSharedBlockOwner:
             tech_lead_marker=lm.tech_lead_needs_human,
             labels=_Labels(),
             read_labels=lambda number: sorted(live.get(number, set())),
+            label_application=standing_while_present(lambda number: sorted(live.get(number, set()))),
             quarantined_issue_numbers=lambda: frozenset(quarantined),
             causes=SqlitePendingWorkClaimStore.for_repo(tmp_path),
         )
