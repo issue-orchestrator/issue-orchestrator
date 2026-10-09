@@ -539,6 +539,9 @@ def test_a_caller_giving_up_on_shutdown_does_not_strand_the_server(
             with pytest.raises(asyncio.CancelledError):
                 await route
             assert engine.shutdowns == []
+            # r3 F1: the server is not stopped while the tick still runs.
+            assert not deps.trigger_server_shutdown.called
+            assert not manager.request_shutdown.called
             finish.set()
             deadline = time.monotonic() + 5
             while not deps.trigger_server_shutdown.called:
@@ -597,3 +600,82 @@ def test_a_200_that_is_not_the_commands_answer_is_not_success(
     assert result.status_code == 502
     assert result.payload["failure"] == "invalid_body"
     assert '"error": "unavailable"' in result.payload["detail"]
+
+
+def test_a_cancelled_refresh_still_reaches_the_engine_when_workers_are_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """r3 F3: cancelling the route before a worker picks the refresh up must
+    not drop it — the Control Center's timeout detail promises it applies."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from starlette.requests import Request
+
+    from issue_orchestrator.entrypoints.refresh_request import request_refresh
+
+    engine = _TickingEngine()
+    body = b'{"inflight_stable_ids": ["I_9"]}'
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        executor = ThreadPoolExecutor(max_workers=1)
+        loop.set_default_executor(executor)
+        busy = threading.Event()
+        loop.run_in_executor(None, busy.wait, 5)  # occupies the only worker
+        request = Request({"type": "http", "method": "POST", "headers": [], "query_string": b""}, receive)
+        route = asyncio.ensure_future(request_refresh(request, engine))
+        await asyncio.sleep(0.2)
+        route.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await route
+        busy.set()
+        deadline = time.monotonic() + 5
+        while not engine.refreshes:
+            assert time.monotonic() < deadline, "the cancelled refresh was dropped"
+            await asyncio.sleep(0.02)
+
+    asyncio.run(scenario())
+
+    assert engine.refreshes == [{"I_9"}]
+
+
+def test_a_shutdown_signal_waits_for_the_tick_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The SIGTERM path (supervisor stop fallback) must neither freeze the
+    engine's loop during a tick nor stop the server before the tick ends."""
+    from issue_orchestrator.entrypoints.run_orchestrator import (
+        _install_shutdown_signal_handlers as install_handlers,
+    )
+    from issue_orchestrator.infra import shutdown_signals
+
+    engine = _TickingEngine()
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        shutdown_signals,
+        "install_attributed_shutdown",
+        lambda *, loop, on_shutdown: captured.update(on_shutdown=on_shutdown),
+    )
+    triggered = threading.Event()
+
+    async def scenario() -> None:
+        install_handlers(engine, triggered.set)
+        with engine.tick_in_progress() as finish:
+            captured["on_shutdown"]()  # what the signal consumer calls, on the loop
+            started = time.monotonic()
+            await asyncio.sleep(0.2)
+            assert time.monotonic() - started < 1.0, "the event loop froze"
+            assert not triggered.is_set(), "server stopped before the tick ended"
+            finish.set()
+            deadline = time.monotonic() + 5
+            while not triggered.is_set():
+                assert time.monotonic() < deadline, "shutdown never completed"
+                await asyncio.sleep(0.02)
+
+    asyncio.run(scenario())
+
+    assert engine.shutdowns == [False]
+    assert engine.waited_on_event_loop == []

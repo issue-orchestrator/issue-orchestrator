@@ -719,11 +719,12 @@ async def run_loop_one_tick(orchestrator: Orchestrator) -> None:
         await orchestrator.run_loop()
 
 
-def test_a_graceful_shutdown_request_does_not_wait_for_the_running_tick(
+def test_shutdown_is_flagged_at_once_but_sessions_are_chosen_after_the_tick(
     sample_config, mock_repository_host
 ):
-    """#8222 r2: SIGTERM runs this on the event loop, and the supervisor's
-    /api/shutdown gives it 2s; a tick holds the state lock for minutes."""
+    """#8222 r3: the shutdown flag lands immediately, but which sessions a
+    (forced) shutdown stops is decided under state custody, after the running
+    tick — a session the tick launches meanwhile is not missed."""
     orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
     holding = threading.Event()
     finish = threading.Event()
@@ -739,13 +740,14 @@ def test_a_graceful_shutdown_request_does_not_wait_for_the_running_tick(
     requester = threading.Thread(target=orchestrator.request_shutdown, daemon=True)
     try:
         requester.start()
-        requester.join(timeout=2)
-        assert not requester.is_alive(), "request_shutdown waited for the tick"
+        requester.join(timeout=0.5)
         assert orchestrator.shutdown_requested is True
+        assert requester.is_alive(), "sessions must be chosen after the tick, under the lock"
     finally:
         finish.set()
         ticker.join(timeout=5)
         requester.join(timeout=5)
+    assert not requester.is_alive()
 
 
 # Helper functions

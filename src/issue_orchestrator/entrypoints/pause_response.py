@@ -9,16 +9,14 @@ routers one answer shape and one place where the lifecycle vocabulary is typed.
 
 from __future__ import annotations
 
-import asyncio
 import json
-from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from typing import Protocol
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+from .engine_custody import in_arrival_order
 from ..domain.pause_state import (
     PauseActor,
     PauseReason,
@@ -39,29 +37,8 @@ class PausableEngine(Protocol):
     ) -> PauseTransitionOutcome: ...
 
 
-# Why the transitions run off the event loop (#8222): the engine applies a
-# pause or resume under its state lock, and a running tick holds that lock for
-# the whole tick — tens of seconds routinely, minutes at worst. Called inline
-# from an async route, that wait froze the engine's event loop: every other
-# route and SSE stream stalled, and the Control Center's forward timed out
-# with an empty error.
-#
-# The inline wait did give one guarantee for free: a second transition could
-# not even be read until the first committed, so transitions committed in
-# arrival order. Waiting in independent threads would lose that — two waiters
-# on the state lock wake in no defined order, so "pause, then resume" during a
-# long tick could commit as resume-then-pause and leave the engine paused. One
-# worker thread keeps the order. The awaiting route is shielded from
-# cancellation, so a caller that gives up (the Control Center's budget, a
-# closed browser tab) never drops a queued transition: it commits when the
-# tick releases the lock, as the Control Center's timeout detail promises.
-_TRANSITIONS = ThreadPoolExecutor(max_workers=1, thread_name_prefix="engine-pause-transition")
-
-
-async def _commit_in_arrival_order(
-    commit: Callable[[], PauseTransitionOutcome],
-) -> PauseTransitionOutcome:
-    return await asyncio.shield(asyncio.wrap_future(_TRANSITIONS.submit(commit)))
+# Pause and resume wait for the state lock a running tick holds; they commit
+# off the event loop, uncancellable, in arrival order (see engine_custody).
 
 
 async def pause_engine(
@@ -69,7 +46,7 @@ async def pause_engine(
 ) -> JSONResponse:
     """Operator pause, reported as what the owner committed."""
     actor = await requested_actor(request, default_actor)
-    outcome = await _commit_in_arrival_order(
+    outcome = await in_arrival_order(
         partial(engine.pause, reason=PauseReason.OPERATOR, actor=actor)
     )
     return transition_response(PauseTransitionStatus.PAUSED, outcome)
@@ -80,7 +57,7 @@ async def resume_engine(
 ) -> JSONResponse:
     """Operator resume, reported as what the owner committed."""
     actor = await requested_actor(request, default_actor)
-    outcome = await _commit_in_arrival_order(partial(engine.resume, actor=actor))
+    outcome = await in_arrival_order(partial(engine.resume, actor=actor))
     return transition_response(PauseTransitionStatus.RESUMED, outcome)
 
 

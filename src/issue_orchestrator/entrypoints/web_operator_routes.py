@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 import asyncio
 import logging
 from pathlib import Path
@@ -28,6 +29,7 @@ from ..control.shutdown_manager import shutdown_manager
 from ..execution.client_host import ClientHost
 from ..execution.label_ops import LabelOperation, apply_label_operations
 from .shutdown_reason_support import parse_shutdown_reason
+from .engine_custody import await_detached
 from .web_session_context import WebOrchestratorDependency
 
 if TYPE_CHECKING:
@@ -363,9 +365,6 @@ async def open_agent_prompt(
     return JSONResponse({"status": result.action, **result.to_dict()}, status_code=status_code)
 
 
-_SHUTDOWN_SEQUENCES: set[asyncio.Future[int]] = set()
-
-
 async def _commence_shutdown(
     orchestrator: "Orchestrator",
     operator_deps: WebOperatorDependencies,
@@ -374,8 +373,14 @@ async def _commence_shutdown(
     reason: str,
     actor: str,
 ) -> int:
-    """Request shutdown end to end; returns the active-session count."""
-    await asyncio.to_thread(orchestrator.request_shutdown, force=force)
+    """Request shutdown end to end; returns the active-session count.
+
+    ``request_shutdown`` sets the flag at once, then waits for the state lock a
+    running tick holds before it reads (and, when forced, stops) sessions; the
+    server trigger and the exit timer run only after that, so a shutdown never
+    cuts a tick off mid-way.
+    """
+    await asyncio.to_thread(partial(orchestrator.request_shutdown, force=force))
     active_count = len(orchestrator.state.active_sessions)
     shutdown_log_reason = (
         f"API /api/shutdown reason={reason!r}"
@@ -444,12 +449,9 @@ async def shutdown(
     # keeps serving — #8222), and a caller that gives up meanwhile (the
     # supervisor's short HTTP timeout) must not leave the engine flagged for
     # shutdown with its server still up.
-    sequence = asyncio.ensure_future(
+    active_count = await await_detached(
         _commence_shutdown(orchestrator, operator_deps, force=force, reason=reason, actor=actor_str)
     )
-    _SHUTDOWN_SEQUENCES.add(sequence)
-    sequence.add_done_callback(_SHUTDOWN_SEQUENCES.discard)
-    active_count = await asyncio.shield(sequence)
 
     return JSONResponse({
         "status": "force_shutdown" if force else "shutdown_requested",

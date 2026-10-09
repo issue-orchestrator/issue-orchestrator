@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
-from functools import partial
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from ..domain.pause_state import PauseActor
 from .pause_response import pause_engine, resume_engine
+from .refresh_request import request_refresh
 from ..control.queue_cache import QueueCache, QueueMutationStatus, clear_issue_refresh, record_issue_refreshes
 from ..control.session_history import (
     CLOSED_ISSUE_HISTORY_STATUS_REASON,
@@ -73,21 +72,7 @@ async def refresh(
     if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    # Parse optional inflight_stable_ids from request body
-    inflight_stable_ids: set[str] = set()
-    try:
-        body = await request.body()
-        if body:
-            data = json.loads(body)
-            if isinstance(data, dict) and "inflight_stable_ids" in data:
-                ids = data["inflight_stable_ids"]
-                if isinstance(ids, list):
-                    inflight_stable_ids = set(str(i) for i in ids)
-    except (json.JSONDecodeError, ValueError):
-        pass  # Ignore malformed body, proceed with empty set
-
-    # Takes the state lock a running tick holds; see pause_response (#8222).
-    await asyncio.to_thread(partial(orchestrator.request_refresh, inflight_stable_ids=inflight_stable_ids))
+    await request_refresh(request, orchestrator)
     return JSONResponse({
         "status": "refresh_requested",
         "refresh": {

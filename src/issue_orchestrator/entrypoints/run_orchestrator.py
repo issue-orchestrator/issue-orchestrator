@@ -217,10 +217,16 @@ def _install_shutdown_signal_handlers(
     ``infra.shutdown_signals``.
     """
     from ..infra.shutdown_signals import install_attributed_shutdown
+    from .engine_custody import detach
+
+    async def _shutdown() -> None:
+        # request_shutdown waits for the state lock a running tick holds; off
+        # the loop and detached, so the engine keeps serving meanwhile (#8222).
+        await asyncio.to_thread(orchestrator.request_shutdown)
+        trigger_server_shutdown()
 
     def _on_shutdown() -> None:
-        orchestrator.request_shutdown()
-        trigger_server_shutdown()
+        detach(_shutdown())
 
     install_attributed_shutdown(
         loop=asyncio.get_running_loop(),

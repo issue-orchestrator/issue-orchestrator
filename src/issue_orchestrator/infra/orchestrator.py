@@ -982,7 +982,8 @@ class Orchestrator:
     def request_shutdown(self, force: bool = False) -> None:
         """Request graceful or forced shutdown."""
         self._shutdown_requested = True
-        active = list(self.state.active_sessions)  # snapshot; a tick holds state_lock for minutes (#8222)
+        with self.state_lock:
+            active = self.state.active_sessions
         self.deps.events.publish(
             TraceEvent(
                 EventName.ORCHESTRATOR_SHUTDOWN_REQUESTED,
