@@ -18,6 +18,7 @@ from ...domain.integration_branch import (
     MergedIntoBranchListing,
     OpenPullRequestRef,
 )
+from ...ports.pull_request_tracker import StatusCheckRollupRead
 from .errors import GitHubHttpError
 
 if TYPE_CHECKING:
@@ -97,9 +98,24 @@ class GitHubIntegrationBranchMixin:
         )
         merged = _sha(commit.get("sha"), what="merge commit")
         # force=false: GitHub refuses unless the merge commit descends from the
-        # branch's CURRENT head, i.e. unless the branch is still at tip_sha.
+        # branch's CURRENT head. That admits exactly one race besides "still at
+        # tip_sha": the branch fast-forwarded to a commit the head already
+        # contains. Then the tree is still the head's own tree (the head
+        # contains the new tip too) and the checks that passed on the head
+        # still cover it, so the merge stays correct (#8144 review r3 F3).
         self._client.update_git_ref(ref=f"refs/heads/{branch}", sha=merged, force=False)
         return merged
+
+    def read_commit_check_rollup(self, sha: str) -> StatusCheckRollupRead:
+        rollup = self._client.get_commit_check_rollup(sha)
+        if rollup.capability != "ok":
+            # An unread source may hide a failed check: never a green answer.
+            denied = rollup.capability == "permission_denied"
+            return StatusCheckRollupRead(state=None, capability=rollup.capability, primary_source_denied=denied)
+        state = rollup.state
+        if state not in (None, "SUCCESS", "FAILURE", "PENDING", "EXPECTED", "ERROR"):
+            raise GitHubHttpError(f"GitHub reported an unknown check state {state!r} for {sha[:12]}")
+        return StatusCheckRollupRead(state=state, capability="ok")
 
     def find_open_pull_request(self, *, head: str, base: str) -> OpenPullRequestRef | None:
         pulls = self._client.list_pulls(state="open", base=base, head=head)

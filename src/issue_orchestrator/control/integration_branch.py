@@ -156,12 +156,14 @@ class MergeGatekeeper:
     def judge(
         self, *, issue_number: int, issue_labels: "Sequence[str]", pr: "PRInfo", gate_label: str,
     ) -> MergeEligibility:
-        """Every gate, the checks on the PR's current head included (one rollup read)."""
+        """Every gate, the checks on exactly ``pr.head_sha`` included (one rollup read)."""
         first = self.person_or_gate(issue_labels=issue_labels, pr_labels=pr.labels, gate_label=gate_label)
         if first is not MergeGate.OPEN:
             return MergeEligibility(first)
+        if not pr.head_sha:
+            raise RepositoryHostError(f"PR #{pr.number} was read without its head commit")
         try:
-            rollup = self.host.read_pr_status_check_rollup(pr.number)
+            rollup = self.host.read_commit_check_rollup(pr.head_sha)
         except RepositoryHostError as error:
             logger.warning("Integration: checks of PR #%d unreadable: %s", pr.number, error)
             return MergeEligibility(MergeGate.CHECKS_UNREADABLE)

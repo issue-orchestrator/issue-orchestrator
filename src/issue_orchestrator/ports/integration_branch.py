@@ -9,7 +9,7 @@ for a read it could not make.
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from ..domain.integration_branch import (
     BranchComparison,
@@ -17,6 +17,9 @@ from ..domain.integration_branch import (
     MergedIntoBranchListing,
     OpenPullRequestRef,
 )
+
+if TYPE_CHECKING:
+    from .pull_request_tracker import StatusCheckRollupRead
 
 
 class IntegrationBranchHost(Protocol):
@@ -67,6 +70,14 @@ class IntegrationBranchHost(Protocol):
 
     def update_pull_request_body(self, pr_number: int, body: str) -> None:
         """Replace the PR's description."""
+        ...
+
+    def read_commit_check_rollup(self, sha: str) -> "StatusCheckRollupRead":
+        """The checks on exactly commit *sha* (not "the PR's current head").
+
+        A merge judged by PR number could read the checks of a head pushed
+        after io's read and merge the earlier head on them (#8144 review r3).
+        """
         ...
 
     def merged_pull_requests_into(self, base: str) -> MergedIntoBranchListing:

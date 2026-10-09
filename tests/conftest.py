@@ -662,6 +662,12 @@ class MockGitHubAdapter:
                     pr.state = "merged"
         return merged
 
+    def read_commit_check_rollup(self, sha: str) -> StatusCheckRollupRead:
+        """The checks of the PR whose head is *sha* (mock): its fixture rollup."""
+        self._integration_failure("read_commit_check_rollup")
+        states = [pr.status_check_rollup for prs in self.prs.values() for pr in prs if pr.head_sha == sha]
+        return StatusCheckRollupRead(state=states[0] if states else None, capability="ok")
+
     def find_open_pull_request(self, *, head: str, base: str) -> OpenPullRequestRef | None:
         self._integration_failure("find_open_pull_request")
         return self.open_pr_refs.get((head, base))

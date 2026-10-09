@@ -48,6 +48,7 @@ from .config_models_tech_lead_charter import (
 from .budgeted_validation_config import budgeted_validation_reference
 from .config_models import (
     INTEGRATION_DELIVER_MODES,
+    IntegrationConfig,
     INTEGRATION_MERGE_METHODS,
     MERGE_QUEUE_PROVIDERS,
     TECH_LEAD_AUTHORITY_MODES,
@@ -2364,8 +2365,8 @@ class IntegrationSettings(BaseModel):
     @field_validator("branch")
     @classmethod
     def _validate_branch(cls, value: str) -> str:
-        if not value.strip() or value != value.strip() or value.startswith(("origin/", "refs/")):
-            raise ValueError("branch must be a plain branch name (no 'origin/' or 'refs/' prefix)")
+        # The config's own rule, so the form and the YAML load agree (#8144).
+        IntegrationConfig(branch=value)
         return value
 
 

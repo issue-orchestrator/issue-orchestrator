@@ -54,6 +54,12 @@ def test_every_field_parses(tmp_path: Path) -> None:
         ("  merge_after: approved\n", "integration.merge_after"),
         ("  branch: origin/integration\n", "integration.branch"),
         ("  branch: ''\n", "integration.branch"),
+        ("  branch: integration..next\n", "integration.branch"),  # review r3 F4: git rejects it
+        ("  branch: 'feature branch'\n", "integration.branch"),
+        ("  branch: integration.lock\n", "integration.branch"),
+        ("  branch: release/.hidden\n", "integration.branch"),
+        ("  branch: 'a@{b'\n", "integration.branch"),
+        ("  branch: trailing/\n", "integration.branch"),
         ("  enabled: 'yes'\n", "integration.enabled"),
         ("  brnach: integration\n", "unknown keys"),
     ],
@@ -139,8 +145,14 @@ def test_settings_tab_round_trips_and_requires_restart() -> None:
 
 @pytest.mark.parametrize(
     "field, value",
-    [("deliver", "cadence"), ("branch", "origin/x"), ("merge_method", "octopus"), ("merge_method", "squash")],
+    [("deliver", "cadence"), ("branch", "origin/x"), ("branch", "a..b"), ("merge_method", "octopus"),
+     ("merge_method", "squash")],
 )
 def test_settings_tab_rejects_unsupported_values(field: str, value: str) -> None:
     with pytest.raises(ValueError):
         IntegrationSettings(**{field: value})
+
+
+@pytest.mark.parametrize("branch", ["integration", "release/2026-10", "io-integration_v2"])
+def test_ordinary_git_branch_names_load(tmp_path: Path, branch: str) -> None:
+    assert _load(tmp_path, f"integration:\n  enabled: true\n  branch: {branch}\n").integration.branch == branch

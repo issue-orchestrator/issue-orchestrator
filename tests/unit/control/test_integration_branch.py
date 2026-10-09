@@ -653,7 +653,7 @@ def test_unreadable_checks_for_lack_of_permission_go_to_a_person() -> None:
 
     world = _World()
     world.approved_pr(228, 318, HEAD_A)
-    world.host.read_pr_status_check_rollup = lambda number, **_: StatusCheckRollupRead(  # type: ignore[method-assign]
+    world.host.read_commit_check_rollup = lambda sha: StatusCheckRollupRead(  # type: ignore[method-assign]
         state=None, capability="permission_denied", primary_source_denied=True,
     )
     owner = world.owner()
@@ -776,3 +776,22 @@ def test_with_the_mode_off_nothing_waits_for_a_branch() -> None:
     world = _World()
     world.config.integration = IntegrationConfig()
     assert integration_branch_missing(world.config, world.state) is None
+
+
+def test_the_checks_judged_are_those_of_the_exact_head_io_merges() -> None:
+    """Review r3 F1: a check read by PR number could answer for a head pushed
+    after io's read; io reads the checks of the head it will merge."""
+    world = _ready_world()
+    read: list[str] = []
+    real = world.host.read_commit_check_rollup
+
+    def spy(sha: str):
+        read.append(sha)
+        return real(sha)
+
+    world.host.read_commit_check_rollup = spy  # type: ignore[method-assign]
+
+    _apply(world, _merge_step())
+
+    assert read == [HEAD_A]
+    assert len(world.host.pr_merges) == 1

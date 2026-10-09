@@ -280,3 +280,31 @@ def test_merged_pull_requests_into_says_when_it_stopped_at_its_cap(make_host) ->
     )).merged_pull_requests_into("integration")
 
     assert (len(listing.pulls), listing.complete) == (100 * MERGED_PULLS_PAGE_CAP, False)
+
+
+@pytest.mark.parametrize(
+    ("rollup", "expected"),
+    [
+        (("SUCCESS", "ok"), ("SUCCESS", "ok")),
+        ((None, "ok"), (None, "ok")),
+        (("PENDING", "transient_error"), (None, "transient_error")),
+        (("SUCCESS", "permission_denied"), (None, "permission_denied")),
+    ],
+)
+def test_read_commit_check_rollup_reads_exactly_that_commit(make_host, monkeypatch, rollup, expected) -> None:
+    """#8144 review r3 F1: the checks of one SHA; an incomplete read is never green."""
+    from issue_orchestrator.adapters.github.http_client import CommitCheckRollup
+
+    host = make_host(lambda request: httpx.Response(500))
+    asked: list[str] = []
+
+    def read(sha: str) -> CommitCheckRollup:
+        asked.append(sha)
+        return CommitCheckRollup(state=rollup[0], capability=rollup[1])
+
+    monkeypatch.setattr(host.http_client, "get_commit_check_rollup", read)
+
+    result = host.read_commit_check_rollup(SHA_A)
+
+    assert asked == [SHA_A]
+    assert (result.state, result.capability) == expected

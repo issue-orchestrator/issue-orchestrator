@@ -480,6 +480,24 @@ INTEGRATION_DELIVER_MODES = ("manual",)
 INTEGRATION_MERGE_METHODS = ("merge",)
 
 
+_REF_FORBIDDEN_CHARS = frozenset(" ~^:?*[\\\x7f")
+
+
+def git_branch_name_problem(name: str) -> str | None:
+    """Why *name* is not a valid git branch name (``git check-ref-format``); None if it is."""
+    if not name or name == "@":
+        return "it is empty or '@'"
+    if any(ord(char) < 32 or char in _REF_FORBIDDEN_CHARS for char in name):
+        return "it contains a space, a control character or one of ~^:?*[\\"
+    if ".." in name or "@{" in name or "//" in name:
+        return "it contains '..', '@{' or '//'"
+    if name.startswith(("/", "-")) or name.endswith(("/", ".", ".lock")):
+        return "it starts with '/' or '-', or ends with '/', '.' or '.lock'"
+    if any(part.startswith(".") or part.endswith(".lock") for part in name.split("/")):
+        return "a path component starts with '.' or ends with '.lock'"
+    return None
+
+
 @dataclass
 class IntegrationConfig:
     """Integration-branch mode (#8144), off by default.
@@ -503,16 +521,15 @@ class IntegrationConfig:
         if type(self.enabled) is not bool:
             raise ValueError("integration.enabled must be true or false")
         branch = self.branch
-        if (
-            not isinstance(branch, str)
-            or not branch.strip()
-            or branch != branch.strip()
-            or branch.startswith(("origin/", "refs/"))
-        ):
-            raise ValueError(
-                "integration.branch must be a plain branch name (no 'origin/' or 'refs/' prefix),"
-                f" got {branch!r}"
-            )
+        problem = (
+            "it is not a string" if not isinstance(branch, str)
+            else "it has an 'origin/' or 'refs/' prefix" if branch.startswith(("origin/", "refs/"))
+            else git_branch_name_problem(branch)
+        )
+        if problem is not None:
+            # A name git rejects would load, then fail every upkeep's create
+            # while every launch waits for the branch (#8144 review r3 F4).
+            raise ValueError(f"integration.branch must be a plain git branch name, got {branch!r}: {problem}")
         for name, allowed in (
             ("deliver", INTEGRATION_DELIVER_MODES),
             ("merge_method", INTEGRATION_MERGE_METHODS),
