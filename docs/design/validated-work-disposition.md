@@ -1652,8 +1652,76 @@ review instead of investigating it as abandoned.
   remain. That is porchpin #262 as it stands today. PR #479's head no longer
   contains the three parked heads, and no ancestry or patch-identity proof
   connects them. Releasing such records is an operator's explicit decision,
-  never an inference.
+  never an inference (§2.10).
 - An unreadable remote, or an incomplete timeline walk.
+
+### 2.10 Releasing work rebuilt with rewritten history (porchpin #262, #9092)
+
+When no proof can connect parked records to the PR that rebuilt their work,
+only the operator can release them. The tech-lead action
+`release_validated_work` carries that decision, and nothing else can.
+
+- **Who sees what.** Every tech-lead launch with act-level scope writes
+  `tech-lead-data/validated-work-release-targets.json`: the current authority
+  snapshot of every PARKED or FAILED record of each in-scope issue, in any
+  lineage role (a rewrite typically strands DIVERGENT heads, which recovery
+  never picks between). The same tuple is recorded in launch authority
+  (`observed_validated_work_releases`).
+- **What the tech lead proposes.** `target_number` (the issue), `body` (the
+  evidence that the PR rebuilt the work) and
+  `release: {record_ids, superseding_pr_number}`
+  (`ValidatedWorkReleaseIntent`, untrusted). The target-scope check refuses a
+  record id that the launch did not grant for that issue.
+- **What the operator approves.** The planner binds each named record to its
+  launch snapshot. `ValidatedWorkRelease`, stored with the op, carries those
+  snapshots, the PR and the rationale, which is written into every record's
+  resolution. The proposal issue lists every record, its head, branch,
+  evidence and observation revision, and the PR. The ledger key and the reuse
+  check compare that whole value, so a different release of the same issue,
+  even one that only revises the rationale, is a different proposal.
+- **It never runs unattended.** The charter row is `destructive`, there is no
+  `tech_lead.authority` key for it, and `ReleaseValidatedWorkAction` cannot
+  be built without a proposal issue.
+- **What approval runs.** `TechLeadValidatedWorkReleaseExecutor` re-verifies,
+  before any fresh write:
+  1. the approval verified for this proposal names its maintainer (or the
+     Control Center operator);
+  2. the PR is a MERGED PR of the issue in this repository. It must reference
+     the issue, as the issue's reference timeline lists it, from one of the
+     issue's own branches, the records' own branch included. That costs one
+     timeline walk and one uncached PR read
+     (`ValidatedWorkCaptureObserver.issue_pull_request`). A merged PR that only
+     shares a branch, or a batch PR, is not the issue's. This check is skipped
+     for a replay (below), which needs no remote answer.
+
+  A PR that fails the check closes the proposal stale with no write. An
+  unreadable remote keeps the approved op and retries. Then
+  `OperatorValidatedWorkAbandonment.abandon_all` takes every record's
+  execution lease and the issue gate, and the store's `abandon_all_if_current`
+  compares every snapshot in ONE write transaction. Either every record
+  becomes `ABANDONED(operator_abandoned)` or none does. `resolved_by` names
+  the approver and the proposal, and `resolution_reason` names the PR. Lineage
+  is classified once per lineage after all records resolve, so releasing
+  divergent siblings never re-promotes one of them mid-batch. A record busy
+  in another owner refuses as `BUSY` (retry). A record that moved since launch
+  refuses the whole release, and the proposal closes stale. Each record emits
+  `VALIDATED_WORK_ABANDONED`, and the issue's aggregate block reprojects once,
+  dropping `recovery-pending` when nothing unresolved remains.
+- **A retry completes, never contradicts.** The approved snapshot and the
+  reason are written in the transaction that resolves each record. The
+  reason names the approved proposal, the PR and the rationale, so it
+  identifies the operation. A batch whose every record was resolved by
+  exactly those commands is a replay:
+  committed, `replayed`, with no write. The executor asks the owner
+  (`committed`) before any remote read. So when reprojection or the
+  proposal's outcome comment fails after the commit, the retried op
+  reprojects again and closes the proposal as executed, whatever GitHub
+  answers by then. It does not read its own write as stale. A replay audits
+  nothing twice, and it reports the actor the store recorded, not whoever
+  re-approved the retry. Another proposal over the same records (a subset, the
+  same PR and rationale) is never taken for that replay. Proposal reuse,
+  which writes nothing, checks the bound snapshots against the current
+  release grants instead.
 
 ## 3. Composition and control flow
 

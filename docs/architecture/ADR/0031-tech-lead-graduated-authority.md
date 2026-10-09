@@ -350,6 +350,18 @@ own anchor and nothing asked it to dispose of each item. Now:
   carrying its evidence and effect, and is posted on the item with one durable
   marker per cause it discharged. A cause that comes back after a resolve is
   the operator's: the tech lead never clears it on that item again.
+- **`release_validated_work`** (#9092) releases retained validated-work
+  records whose work a merged PR of the same issue rebuilt with rewritten
+  history, so no ancestry proof can release them (porchpin #262). Its charter
+  row is FLOW / `workaround` / `destructive`, and it has no authority key: a
+  wrong release loses work for good, so it only ever runs on approval. The
+  tech lead names record ids from the launch's
+  `validated-work-release-targets.json` and the superseding PR; the engine
+  binds every record to the authority snapshot observed at launch and shows
+  them all on the proposal. On approval it re-verifies that the PR is a merged
+  PR of the issue in this repository and that every record is unchanged, then
+  abandons all of them or none in one store transaction, recording the
+  verified approving maintainer and the PR as the resolution.
 - The health-review trigger counts label-blocked items as board content, so a
   board of only parked items is still reviewed.
 

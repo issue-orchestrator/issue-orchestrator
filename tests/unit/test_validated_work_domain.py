@@ -485,6 +485,7 @@ def test_each_abandon_outcome_status_accepts_only_its_payload_family(tmp_path):
                 AbandonStatus.NO_SUCH_RECORD,
                 AbandonStatus.ALREADY_RESOLVED,
                 AbandonStatus.REFUSED_STATE,
+                AbandonStatus.BUSY,
             )
         ),
     )
@@ -501,6 +502,7 @@ def test_each_abandon_outcome_status_accepts_only_its_payload_family(tmp_path):
         (AbandonStatus.NO_SUCH_RECORD, "DISPOSITION", (), None, "x", "no result"),
         (AbandonStatus.REFUSED_STATE, None, ("e",), None, "x", "no result"),
         (AbandonStatus.ALREADY_RESOLVED, None, (), "AUTHORITY", "x", "no result"),
+        (AbandonStatus.BUSY, "DISPOSITION", (), None, "x", "no result"),
     ],
 )
 def test_abandon_outcome_rejects_cross_status_payloads(

@@ -35,6 +35,7 @@ from issue_orchestrator.control.actions import (
     PromoteTechLeadFindingAction,
     RecordTechLeadDispositionAction,
     RecoverValidatedWorkAction,
+    ReleaseValidatedWorkAction,
     ReleaseWithheldReviewAction,
     ApplyOperatorDecisionAction,
     ResolveBlockAction,
@@ -54,6 +55,7 @@ from issue_orchestrator.control.tech_lead_applier_handlers import (
 )
 from issue_orchestrator.domain.tech_lead_findings import PatternObservation
 from issue_orchestrator.domain.scoped_rework import ReworkRequest, ReworkTarget
+from issue_orchestrator.domain.validated_work_release import ValidatedWorkRelease
 from issue_orchestrator.domain.tech_lead_session import (
     StoredTechLeadOp,
     TECH_LEAD_OBSERVATION_LABEL,
@@ -168,6 +170,16 @@ def _mutating_actions() -> dict[ActionType, tuple[Action, int]]:
                 rationale="publish retained validated work",
                 proposal_id="A1",
                 anchor_issue_number=ANCHOR,
+                expected=expected,
+            ),
+            TARGET,
+        ),
+        ActionType.RELEASE_VALIDATED_WORK: (
+            ReleaseValidatedWorkAction(
+                release=ValidatedWorkRelease(479, (_validated_work_authority(),), "rebuilt in PR 479"),
+                proposal_id="A1",
+                anchor_issue_number=ANCHOR,
+                proposal_issue_number=800,
                 expected=expected,
             ),
             TARGET,
@@ -393,6 +405,7 @@ class _Registry:
             kill_hung_session=inert,
             request_rework=inert,
             recover_validated_work=inert,
+            release_validated_work=inert,
             release_withheld_review=inert,
             apply_operator_decision=inert,
             resolve_block=inert,

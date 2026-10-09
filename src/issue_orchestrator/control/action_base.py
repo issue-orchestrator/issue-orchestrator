@@ -79,6 +79,9 @@ class ActionType(Enum):
     KILL_HUNG_SESSION = "kill_hung_session"
     REQUEST_REWORK = "request_rework"
     RECOVER_VALIDATED_WORK = "recover_validated_work"
+    # Release retained records whose work a merged PR rebuilt with rewritten
+    # history; only ever from an approved proposal (#9092)
+    RELEASE_VALIDATED_WORK = "release_validated_work"
     # Release a review withheld only by the issue's own block (#7399)
     RELEASE_WITHHELD_REVIEW = "release_withheld_review"
     # Carry out a decision the operator approved: file its follow-ups, post

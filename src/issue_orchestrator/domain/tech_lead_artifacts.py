@@ -35,6 +35,7 @@ from typing import Any, Literal, cast
 from .block_resolution import BlockResolution, ParentDisposition
 from .decision_steps import DecisionFollowThrough, DecisionStepKind
 from .tech_lead_findings import VALID_FINDING_FIX_CLASSES
+from .validated_work_release_intent import ValidatedWorkReleaseIntent
 
 
 TechLeadActionType = Literal[
@@ -47,6 +48,7 @@ TechLeadActionType = Literal[
     "kill_hung_session",
     "request_rework",
     "recover_validated_work",
+    "release_validated_work",
     "release_withheld_review",
     "propose_decision",
     "resolve_block",
@@ -70,6 +72,7 @@ VALID_TECH_LEAD_ACTION_TYPES: frozenset[str] = frozenset(
         "kill_hung_session",
         "request_rework",
         "recover_validated_work",
+        "release_validated_work",
         "release_withheld_review",
         "propose_decision",
         "resolve_block",
@@ -87,6 +90,9 @@ ACT_LEVEL_TECH_LEAD_ACTIONS: frozenset[str] = frozenset(
         "kill_hung_session",
         "request_rework",
         "recover_validated_work",
+        # Releases records whose work was rebuilt elsewhere with rewritten
+        # history (#9092); destructive, so it only ever runs on approval.
+        "release_validated_work",
         "release_withheld_review",
         # Always a gated proposal: approving it is the operator's decision (#7593).
         "propose_decision",
@@ -227,6 +233,7 @@ _TYPE_SCOPED_ACTION_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("tracker_number", "defer_to_tracker", "#6971"),
     ("follow_up_issues", "propose_decision", "#7593"),
     ("resolution", "resolve_block", "#7658"),
+    ("release", "release_validated_work", "#9092"),
     # A decision's steps beyond its item (#8691): either decision type.
     ("follow_through", "propose_decision|resolve_block", "#8691"),
 )
@@ -335,6 +342,11 @@ class ProposedTechLeadAction:
       block in the operator's stead (answer the agent's question, decide a
       split, or lift a stale block), discharging only the causes it names.
       See :mod:`.block_resolution` for the typed rules it cannot bypass.
+    * ``release_validated_work`` — ``target_number`` (the ISSUE) + ``body``
+      (the rationale) + ``release`` (#9092): the record ids, from
+      ``validated-work-release-targets.json``, whose work was rebuilt in
+      ``superseding_pr_number`` (a merged PR of the same issue) with rewritten
+      history. Destructive: it runs only once the operator approves it.
     """
 
     id: str
@@ -388,6 +400,9 @@ class ProposedTechLeadAction:
     # What a ``resolve_block`` decides (#7658): the work-block causes it
     # discharges, the decision and its evidence, and a split's children.
     resolution: BlockResolution | None = None
+    # What a ``release_validated_work`` proposes releasing (#9092): untrusted
+    # record ids plus the PR that rebuilt their work; bound at planning.
+    release: ValidatedWorkReleaseIntent | None = None
     # What approving a decision executes beyond its item, and the operator's
     # checklist of what io cannot do (#8691): ``steps`` and ``operator_steps``.
     follow_through: DecisionFollowThrough = field(default_factory=DecisionFollowThrough)
@@ -483,6 +498,13 @@ class ProposedTechLeadAction:
                     data["resolution"], context=f"proposed action {action_id}"
                 )
                 if data.get("resolution") is not None
+                else None
+            ),
+            release=(
+                ValidatedWorkReleaseIntent.from_mapping(
+                    data["release"], context=f"proposed action {action_id}"
+                )
+                if data.get("release") is not None
                 else None
             ),
             follow_through=DecisionFollowThrough.from_agent(
@@ -642,22 +664,32 @@ class ProposedTechLeadAction:
                 " ledger key, #6781)",
             )
         elif self.action_type in ACT_LEVEL_TECH_LEAD_ACTIONS:
+            self._validate_act_level_fields(context)
+
+    def _validate_act_level_fields(self, context: str) -> None:
+        """Act-level intents name their target and rationale, plus their own payload."""
+        _require(
+            self.target_number is not None, f"{context} requires target_number"
+        )
+        _require(bool(self.body), f"{context} requires body (rationale)")
+        if self.action_type == "request_rework":
+            _require(self.target_is_pr, f"{context} requires target_is_pr=true")
+            _require(bool(self.finding_ids), f"{context} requires finding_ids")
+        if self.action_type == "propose_decision":
+            _require(bool(self.title), f"{context} requires title (the decision)")
+            _require(not self.target_is_pr, f"{context} targets an issue, not a PR")
+        if self.action_type == "resolve_block":
             _require(
-                self.target_number is not None, f"{context} requires target_number"
+                isinstance(cast(object, self.resolution), BlockResolution),
+                f"{context} requires resolution (the decision it makes, #7658)",
             )
-            _require(bool(self.body), f"{context} requires body (rationale)")
-            if self.action_type == "request_rework":
-                _require(self.target_is_pr, f"{context} requires target_is_pr=true")
-                _require(bool(self.finding_ids), f"{context} requires finding_ids")
-            if self.action_type == "propose_decision":
-                _require(bool(self.title), f"{context} requires title (the decision)")
-                _require(not self.target_is_pr, f"{context} targets an issue, not a PR")
-            if self.action_type == "resolve_block":
-                _require(
-                    isinstance(cast(object, self.resolution), BlockResolution),
-                    f"{context} requires resolution (the decision it makes, #7658)",
-                )
-                _require(not self.target_is_pr, f"{context} resolves an issue's block, not a PR's")
+            _require(not self.target_is_pr, f"{context} resolves an issue's block, not a PR's")
+        if self.action_type == "release_validated_work":
+            _require(
+                isinstance(cast(object, self.release), ValidatedWorkReleaseIntent),
+                f"{context} requires release (the record ids and the superseding PR, #9092)",
+            )
+            _require(not self.target_is_pr, f"{context} releases an issue's records, not a PR's")
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -684,6 +716,7 @@ class ProposedTechLeadAction:
             ("triage_class", self.triage_class.value if self.triage_class else None),
             ("follow_up_issues", [item.to_dict() for item in self.follow_up_issues]),
             ("resolution", self.resolution.to_dict() if self.resolution else None),
+            ("release", self.release.to_dict() if self.release else None),
             ("steps", [step.to_dict() for step in self.follow_through.steps]),
             ("operator_steps", list(self.follow_through.operator_steps)),
         )

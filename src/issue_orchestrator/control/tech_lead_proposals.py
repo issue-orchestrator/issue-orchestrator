@@ -85,6 +85,7 @@ from .actions import (
     DiscardTerminalTechLeadProposalOpsAction,
     KillHungSessionAction,
     RecoverValidatedWorkAction,
+    ReleaseValidatedWorkAction,
     ReleaseWithheldReviewAction,
     RequestReworkAction,
     ResetRetryIssueAction,
@@ -92,6 +93,7 @@ from .actions import (
 )
 from .reconciliation import build_expected_for_mutation
 from .block_resolution_proposal import resolution_proposal_section
+from .validated_work_release_proposal import release_proposal_section
 from .tech_lead_charter_lifecycle import link_declined_proposal
 from .tech_lead_proposal_execution import (
     execute_approved_tech_lead_op as execute_approved_tech_lead_op,
@@ -102,6 +104,7 @@ if TYPE_CHECKING:
     from ..domain.block_resolution import BlockResolution
     from ..domain.tech_lead_artifacts import ProposedTechLeadAction
     from ..domain.validated_work_commands import ValidatedWorkAuthoritySnapshot
+    from ..domain.validated_work_release import ValidatedWorkRelease
     from ..infra.config import Config
     from ..ports import RepositoryHost
     from ..ports.issue import Issue
@@ -130,6 +133,7 @@ _OP_TITLES: dict[str, str] = {
     "reset_retry": "reset & retry issue #{target} from scratch",
     "kill_hung_session": "kill hung session for issue #{target}",
     "recover_validated_work": "recover retained validated work for issue #{target}",
+    "release_validated_work": "release retained validated work of issue #{target} rebuilt elsewhere",
     "release_withheld_review": "release the withheld review of issue #{target}'s PR",
     "propose_decision": "decide for issue #{target}",
     "resolve_block": "resolve the needs-human block of issue #{target}",
@@ -169,6 +173,7 @@ def build_stored_tech_lead_op(
     target_session: TechLeadSessionGeneration | None = None,
     rework_request: ReworkRequest | None = None,
     validated_work_authority: "ValidatedWorkAuthoritySnapshot | None" = None,
+    validated_work_release: "ValidatedWorkRelease | None" = None,
     observed_at: str = "",
     now_iso: str | None = None,
     follow_through: DecisionFollowThrough | None = None,
@@ -187,6 +192,7 @@ def build_stored_tech_lead_op(
         target_issue_number=rework_request.target.issue_number if rework_request else proposed.target_number,
         rework_request=rework_request,
         validated_work_authority=validated_work_authority,
+        validated_work_release=validated_work_release,
         rationale=proposed.body or "",
         source_run_id=source_run_id,
         source_session_name=source_session_name,
@@ -296,6 +302,8 @@ def _proposal_issue_body(
             f"| Approved remote baseline | `{remote_head}`;"
             f" PR `{authority.pr_number if authority.pr_number is not None else 'none'}` |\n"
         )
+    if op.validated_work_release is not None:
+        session_row += release_proposal_section(op.validated_work_release)
     decision = (
         _decision_section(op) if op.decision is not None
         else resolution_proposal_section(op) if op.resolution is not None
@@ -342,6 +350,7 @@ def build_tech_lead_proposal_issue_action(
     target_session: TechLeadSessionGeneration | None = None,
     rework_request: ReworkRequest | None = None,
     validated_work_authority: "ValidatedWorkAuthoritySnapshot | None" = None,
+    validated_work_release: "ValidatedWorkRelease | None" = None,
     observed_at: str = "",
     now_iso: str | None = None,
     follow_through: DecisionFollowThrough | None = None,
@@ -358,6 +367,7 @@ def build_tech_lead_proposal_issue_action(
         target_session=target_session,
         rework_request=rework_request,
         validated_work_authority=validated_work_authority,
+        validated_work_release=validated_work_release,
         observed_at=observed_at,
         now_iso=now_iso,
         follow_through=follow_through,
@@ -394,6 +404,7 @@ def proposal_ledger_key(
     decision: OperatorDecision | None = None,
     resolution: "BlockResolution | None" = None,
     follow_through: DecisionFollowThrough | None = None,
+    release: "ValidatedWorkRelease | None" = None,
 ) -> tuple[str, int | str]:
     """The identity one open proposal owns: the op and what it would do.
 
@@ -401,11 +412,12 @@ def proposal_ledger_key(
     target AND the exact decision (#7593 review F2), because approval executes
     the stored payload: a re-proposal of a DIFFERENT decision for the same item
     must not be recorded as awaiting approval on a proposal that would run the
-    old one. Every other op is keyed by its target issue.
+    old one. A release is keyed by its records and superseding PR (#9092) for
+    the same reason. Every other op is keyed by its target issue.
     """
     if rework_request is not None:
         return (op_type, rework_request.key)
-    payload = decision.to_dict() if decision is not None else resolution.to_dict() if resolution is not None else None
+    payload = next((item.to_dict() for item in (decision, resolution, release) if item is not None), None)
     steps = follow_through.identity() if follow_through is not None else None
     if payload is not None and steps is not None:
         # The steps are part of what approval runs (#8691); none keeps the old key.
@@ -430,7 +442,7 @@ def build_op_ledger(
         proposal_ledger_key(
             op.op_type, op.target_issue_number,
             rework_request=op.rework_request, decision=op.decision, resolution=op.resolution,
-            follow_through=op.follow_through,
+            follow_through=op.follow_through, release=op.validated_work_release,
         ): issue_number
         for issue_number, op in ops
     }
@@ -702,6 +714,9 @@ def plan_approved_tech_lead_op_executions(
                     expected=build_expected_for_mutation(),
                 )
             )
+        elif op.op_type == "release_validated_work":
+            actions.append(ReleaseValidatedWorkAction.approved(
+                op, item.proposal_issue_number, reason=reason, expected=build_expected_for_mutation()))
         elif op.op_type == "release_withheld_review":
             actions.append(
                 ReleaseWithheldReviewAction(

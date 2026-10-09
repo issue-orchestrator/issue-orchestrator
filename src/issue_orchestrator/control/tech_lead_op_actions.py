@@ -11,14 +11,18 @@ depends only on ``action_base``, never on ``actions``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from ..domain.block_resolution import BlockResolution
 from ..domain.decision_steps import DecisionFollowThrough
 from ..domain.scoped_rework import ReworkRequest
-from ..domain.tech_lead_session import OperatorDecision
+from ..domain.tech_lead_session import OperatorDecision, StoredTechLeadOp
 from ..domain.validated_work_commands import ValidatedWorkAuthoritySnapshot
+from ..domain.validated_work_release import ValidatedWorkRelease
 from .action_base import Action, ActionType
+
+if TYPE_CHECKING:
+    from .reconciliation import ExpectedState
 
 
 @dataclass(frozen=True)
@@ -163,6 +167,74 @@ class RecoverValidatedWorkAction(Action):
 
     def reconciliation_subject(self) -> int:
         return self.issue_number
+
+
+@dataclass(frozen=True)
+class ReleaseValidatedWorkAction(Action):
+    """Release the named retained records through the abandonment owner (#9092).
+
+    Only ever planned from an APPROVED gated proposal: the action is
+    destructive, so the charter never lets it run unattended, and a
+    construction without a proposal issue is refused here as well. The
+    executor re-verifies the superseding PR and the store compares every
+    record's authority snapshot before anything resolves.
+    """
+
+    #: The decision's ``action_type`` / stored op this command executes.
+    op_type: ClassVar[str] = "release_validated_work"
+
+    release: ValidatedWorkRelease = field(kw_only=True)
+    proposal_id: str = ""
+    finding_ids: tuple[str, ...] = ()
+    anchor_issue_number: int = 0
+    proposal_issue_number: int = 0
+    action_type: ActionType = field(
+        default=ActionType.RELEASE_VALIDATED_WORK, init=False
+    )
+
+    def __post_init__(self) -> None:
+        if not isinstance(cast(object, self.release), ValidatedWorkRelease):
+            raise ValueError("ReleaseValidatedWorkAction requires a bound release")
+        if not self.proposal_id:
+            raise ValueError("ReleaseValidatedWorkAction requires the proposal id")
+        if self.proposal_issue_number <= 0:
+            raise ValueError(
+                "ReleaseValidatedWorkAction runs only from an approved proposal"
+            )
+
+    @property
+    def issue_number(self) -> int:
+        return self.release.issue_number
+
+    @property
+    def rationale(self) -> str:
+        """The approved rationale, carried by the release it explains."""
+        return self.release.rationale
+
+    def reconciliation_subject(self) -> int:
+        return self.issue_number
+
+    @classmethod
+    def approved(
+        cls,
+        op: StoredTechLeadOp,
+        proposal_issue_number: int,
+        *,
+        reason: str,
+        expected: "ExpectedState",
+    ) -> "ReleaseValidatedWorkAction":
+        """The command an approved proposal's stored op executes, verbatim."""
+        if op.validated_work_release is None:
+            raise ValueError("an approved release op must carry its bound release")
+        return cls(
+            release=op.validated_work_release,
+            proposal_id=op.source_action_id,
+            finding_ids=op.finding_ids,
+            anchor_issue_number=proposal_issue_number,
+            proposal_issue_number=proposal_issue_number,
+            reason=reason,
+            expected=expected,
+        )
 
 
 @dataclass(frozen=True)

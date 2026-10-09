@@ -976,11 +976,14 @@ def test_a_downstream_claim_is_typed_and_stated(tmp_path: Path, change: dict, ru
 # -- resolve_block (#7658) ------------------------------------------------------
 
 
-def _resolution(effect: str, *, proposal: int | None, applied_at: str | None) -> Callable[[dict], None]:
+def _resolution(
+    effect: str, *, proposal: int | None, applied_at: str | None,
+    kind: str = "resolve_block", binding: str = "approvable",
+) -> Callable[[dict], None]:
     """#353's D3 is a resolve_block instead: the tech lead decided the block."""
     def mutate(d: dict) -> None:
         d["items"][0]["decisions"][0].update(
-            action_kind="resolve_block", binding="approvable",
+            action_kind=kind, binding=binding,
             outcome="proposed" if effect == "awaiting_approval" else "executed",
             reason_code="action_authority_propose" if effect == "awaiting_approval" else "within_charter_execute",
             effect=effect, applied_at=applied_at, proposal_issue_number=proposal,
@@ -989,10 +992,17 @@ def _resolution(effect: str, *, proposal: int | None, applied_at: str | None) ->
     return mutate
 
 
-def test_a_filed_resolution_awaiting_approval_hands_the_item_to_the_operator(tmp_path: Path) -> None:
+@pytest.mark.parametrize("kind, binding", [
+    ("resolve_block", "approvable"),
+    # #9092: a filed release of rebuilt validated work waits on the operator alone.
+    ("release_validated_work", "destructive"),
+])
+def test_a_filed_resolution_awaiting_approval_hands_the_item_to_the_operator(
+    tmp_path: Path, kind: str, binding: str,
+) -> None:
     evidence = _with_notice(
         build_improver_data(tmp_path), "blocked-items.json",
-        _resolution("awaiting_approval", proposal=951, applied_at=None),
+        _resolution("awaiting_approval", proposal=951, applied_at=None, kind=kind, binding=binding),
     )
 
     assert validate_findings(json.dumps(example("exam_case")), evidence).blocked_items[0].disposition == (

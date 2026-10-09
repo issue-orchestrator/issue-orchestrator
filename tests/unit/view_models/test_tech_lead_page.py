@@ -144,6 +144,31 @@ def test_rework_proposal_carries_its_detail_and_receipt_locks_the_decision() -> 
     assert not locked.can_approve and not locked.can_decline
 
 
+def test_release_proposal_lists_every_record_it_releases_from_the_stored_op() -> None:
+    """#9092: the inbox shows what approval releases from the engine's own
+    record of it, never from the editable proposal body."""
+    from issue_orchestrator.domain.validated_work import RemoteBaselineStatus, ValidatedWorkKey
+    from issue_orchestrator.domain.validated_work_commands import ValidatedWorkAuthoritySnapshot
+    from issue_orchestrator.domain.validated_work_release import ValidatedWorkRelease
+
+    def grant(head: str) -> ValidatedWorkAuthoritySnapshot:
+        key = ValidatedWorkKey(REPO, 262, "262-work", head)
+        return ValidatedWorkAuthoritySnapshot(key.record_id, f"e-{head[:4]}", 0, head, key.branch_name,
+                                              REPO, 262, None, None, RemoteBaselineStatus.UNOBSERVED)
+
+    grants = tuple(sorted((grant("a" * 40), grant("b" * 40)), key=lambda g: g.record_id))
+    op = _op("release_validated_work", target=262,
+             validated_work_release=ValidatedWorkRelease(479, grants, "PR #479 rebuilt it"))
+    waiting = _section(proposals=((_issue(485), None),), ops={485: op}).waiting[0]
+
+    assert waiting.operation == "release_validated_work"
+    assert "Releases #262's named retained records" in waiting.approval_effect
+    rows = [(row.label, row.value) for row in waiting.details]
+    assert ("Superseding PR", "#479 (must be merged)") in rows
+    released = [value for label, value in rows if label == "Releases record"]
+    assert released == [f"{g.record_id}: head {g.validated_head_sha} on 262-work" for g in grants]
+
+
 def test_receipt_without_an_open_proposal_lists_under_doing() -> None:
     receipt = ReworkReceiptView(31, "k", 5, "executing", "Running")
     doing = _section(rework_receipts=(receipt,)).doing
