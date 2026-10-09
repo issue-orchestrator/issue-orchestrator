@@ -11,15 +11,17 @@ Agent intent, orchestrator authority: the tech lead names records and a PR;
 the orchestrator bound each record to its launch-observed snapshot when the
 proposal was filed, and here re-verifies, before any write, that
 
-1. every snapshot is still the record's current, releasable authority (else
-   the proposal is stale and closes with no change);
-2. the superseding PR is a MERGED PR of the issue in this repository, on one
-   of the issue's own branches (else stale, no change);
-3. a maintainer's approval of this proposal is verified (else a wiring bug).
+1. the superseding PR is a MERGED PR of the issue in this repository, on one
+   of the issue's own branches (else stale: the proposal closes, no change);
+2. a maintainer's approval of this proposal is verified (else a wiring bug).
 
-The store's CAS (``abandon_all_if_current``) re-checks every snapshot inside
-the write transaction, so a record that moves after these reads still
-refuses the whole release.
+The store's CAS (``abandon_all_if_current``) then compares every record's
+snapshot inside the write transaction: a record that moved since launch
+refuses the whole release, and a release these very commands already
+committed is recognized as a replay. A retry after the commit (a failed
+reprojection or proposal finalization) therefore completes the operation
+instead of reading its own write as stale. Proposal reuse, which writes
+nothing, asks :meth:`stale_reason` instead.
 """
 
 from __future__ import annotations
@@ -74,7 +76,8 @@ class TechLeadValidatedWorkReleaseExecutor:
     def stale_reason(self, release: ValidatedWorkRelease) -> str | None:
         """Why the bound snapshots no longer describe the records, or None.
 
-        Read-only: the proposal-reuse check and :meth:`apply` share it.
+        Read-only, for proposal reuse. :meth:`apply` leaves this to the
+        store's CAS, which also recognizes its own committed release.
         """
         current = set(self.grants.release_grants_for((release.issue_number,)))
         moved = [item.record_id for item in release.authorities if item not in current]
@@ -88,9 +91,6 @@ class TechLeadValidatedWorkReleaseExecutor:
 
     def apply(self, action: ReleaseValidatedWorkAction) -> ActionResult:
         release = action.release
-        stale = self.stale_reason(release)
-        if stale is not None:
-            return self._downgrade(action, stale)
         try:
             refusal = self._superseding_refusal(release)
         except PublicationRemoteError as exc:
@@ -117,7 +117,7 @@ class TechLeadValidatedWorkReleaseExecutor:
         ))
         if outcome.refusal is not None:
             return self._refused(action, outcome)
-        self._publish_executed(action, actor)
+        self._publish_executed(action, actor, replayed=outcome.replayed)
         logger.info(
             issue_log(
                 action.issue_number,
@@ -135,6 +135,7 @@ class TechLeadValidatedWorkReleaseExecutor:
             terminal_disposition_satisfied=True,
             released_record_ids=list(release.record_ids),
             pr_number=release.superseding_pr_number,
+            replayed=outcome.replayed,
         )
 
     def _superseding_refusal(self, release: ValidatedWorkRelease) -> str | None:
@@ -194,7 +195,9 @@ class TechLeadValidatedWorkReleaseExecutor:
             )
         return self._downgrade(action, f"{refusal.status.value}: {message}")
 
-    def _publish_executed(self, action: ReleaseValidatedWorkAction, actor: str) -> None:
+    def _publish_executed(
+        self, action: ReleaseValidatedWorkAction, actor: str, *, replayed: bool
+    ) -> None:
         release = action.release
         self.events.publish(
             make_trace_event(
@@ -209,6 +212,7 @@ class TechLeadValidatedWorkReleaseExecutor:
                         "record_ids": list(release.record_ids),
                         "superseding_pr_number": release.superseding_pr_number,
                         "actor": actor,
+                        "replayed": replayed,
                     },
                 },
             )

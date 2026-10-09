@@ -65,6 +65,14 @@ class ValidatedWorkAbandonment:
         classifying between them could promote a still-parked sibling of the
         same lineage (a divergent head whose rivals just resolved), so the
         next command would be refused for a state the release itself caused.
+
+        Replaying a batch that already committed is recognized, not refused:
+        when every record is ABANDONED by exactly these commands (the same
+        approved snapshot and the same reason, recorded in the transaction
+        that resolved it) the outcome is committed and ``replayed``, with no
+        write. A caller whose follow-up effects failed after the commit
+        retries them through that outcome instead of reading its own write
+        as stale.
         """
         if type(commands) is not tuple or not commands or any(
             type(command) is not AbandonValidatedWorkCommand for command in commands
@@ -75,6 +83,11 @@ class ValidatedWorkAbandonment:
             raise ValueError("a batch abandons each record once")
         try:
             with self._db.transaction(write=True) as conn:
+                if all(_already_applied(conn, command) for command in commands):
+                    return AbandonAllOutcome(
+                        tuple(_abandoned(conn, record_id) for record_id in record_ids),
+                        replayed=True,
+                    )
                 resolved_at = self._timestamp()
                 lineages: list[str] = []
                 for command in commands:
@@ -270,6 +283,31 @@ class _BatchRefused(Exception):
         super().__init__(record_id)
         self.record_id = record_id
         self.outcome = outcome
+
+
+def _already_applied(conn: sqlite3.Connection, command: AbandonValidatedWorkCommand) -> bool:
+    """Whether this exact command is what resolved its record (a replay).
+
+    The approved snapshot and the reason are written with the resolution, so
+    together they identify the operation; the actor is not compared, because
+    a re-verified approval may name it differently.
+    """
+    row = conn.execute(
+        "SELECT state,resolution_kind,resolution_reason,abandon_authority_json "
+        "FROM validated_work_records WHERE record_id=?",
+        (command.authority.record_id,),
+    ).fetchone()
+    return row is not None and (
+        row["state"],
+        row["resolution_kind"],
+        row["resolution_reason"],
+        row["abandon_authority_json"],
+    ) == (
+        ValidatedWorkState.ABANDONED.value,
+        ResolutionKind.OPERATOR_ABANDONED.value,
+        command.reason,
+        canonical_json(command.authority.to_dict()),
+    )
 
 
 def _abandoned(conn: sqlite3.Connection, record_id: str) -> AbandonValidatedWorkOutcome:

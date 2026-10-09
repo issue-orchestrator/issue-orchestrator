@@ -138,3 +138,28 @@ def test_a_superseding_pr_still_open_releases_nothing(rig, make_session, monkeyp
     for disposition in parked:
         assert rig.store.get(disposition.record_id).state is ValidatedWorkState.PARKED
     assert RECOVERY_PENDING in rig.labels.labels
+
+
+def test_a_retry_after_a_failed_reprojection_completes_the_release(rig, make_session, monkeypatch):
+    """Review r1 F1 on the real store: the batch committed, the block's
+    reprojection failed, and the retried approved op must complete the
+    release (not close it stale, not leave recovery-pending on)."""
+    parked = _rebuilt_with_rewritten_history(rig, make_session, monkeypatch)
+    executor, grants = _executor(rig)
+    action = _approved_release(grants, parked)
+    real = rig.aggregate.reconcile_issue_block
+    with monkeypatch.context() as broken:
+        broken.setattr(rig.aggregate, "reconcile_issue_block",
+                       lambda _issue: (_ for _ in ()).throw(OSError("label write lost")))
+        with pytest.raises(OSError):
+            executor.apply(action)
+    assert rig.aggregate.reconcile_issue_block == real
+    assert RECOVERY_PENDING in rig.labels.labels
+
+    result = executor.apply(action)
+
+    assert result.success and result.details["replayed"] is True
+    assert result.result_type is not ActionResultType.SKIPPED
+    assert RECOVERY_PENDING not in rig.labels.labels
+    for disposition in parked:
+        assert rig.store.get(disposition.record_id).state is ValidatedWorkState.ABANDONED

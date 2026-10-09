@@ -72,7 +72,9 @@ class OperatorValidatedWorkAbandonment:
 
         Every record's execution lease and the issue's mutation gate are held
         across one store transaction, so either every record resolves or none
-        does, and the aggregate block is reprojected once afterwards.
+        does, and the aggregate block is reprojected once afterwards. A
+        replay of a committed batch audits nothing again but still
+        reprojects: that is what a retry after a failed reprojection needs.
         """
         if not commands:
             raise ValueError("a batch abandonment names at least one record")
@@ -102,7 +104,7 @@ class OperatorValidatedWorkAbandonment:
                 )
             if not outcome.committed:
                 return outcome
-            for command in commands:
+            for command in commands if not outcome.replayed else ():
                 self._publish_abandoned(command)
             self._blocks.reconcile_issue_block(issue_number).require_reconciled()
             return outcome

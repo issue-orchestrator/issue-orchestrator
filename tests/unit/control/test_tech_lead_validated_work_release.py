@@ -477,16 +477,26 @@ def test_a_pr_that_cannot_have_rebuilt_the_work_closes_the_proposal_unchanged(pu
     assert calls == []
 
 
-def test_a_record_that_moved_since_launch_closes_the_proposal_unchanged() -> None:
-    moved = (GRANTS[0], replace(GRANTS[1], observation_revision=1), GRANTS[2])
-    pulls = _Pulls(elsewhere=(_pull(),))
-    executor, calls = _executor(grants=_Grants(moved), pulls=pulls)
+def test_a_retry_after_the_release_committed_completes_it_not_closes_it_stale() -> None:
+    """Review r1 F1: the records are no longer releasable grants once released,
+    so a retry (after a failed reprojection or proposal comment) must not read
+    its own commit as stale. The store recognizes the replay; apply succeeds."""
+    events = Mock()
+
+    def replayed(commands):
+        return replace(_committed(commands), replayed=True)
+
+    executor = TechLeadValidatedWorkReleaseExecutor(
+        events=events, grants=_Grants(()), pull_requests=_Pulls(elsewhere=(_pull(),)),
+        approval=lambda number: ApprovalVerdict(number, ApprovalVerdictKind.MAINTAINER, "operator", 7),
+        abandon_all=replayed,
+    )
 
     result = executor.apply(_action())
 
-    assert result.details["mode"] == STALE_DOWNGRADE_MODE
-    assert GRANTS[1].record_id in result.details["skip_reason"]
-    assert calls == [] and pulls.requests == []
+    assert result.success and result.details["replayed"] is True
+    [event] = [call.args[0] for call in events.publish.call_args_list]
+    assert event.data["boundary"]["replayed"] is True
 
 
 def test_an_unreadable_remote_keeps_the_approved_op_for_a_retry() -> None:

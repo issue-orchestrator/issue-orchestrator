@@ -1682,14 +1682,13 @@ only the operator can release them. The tech-lead action
   be built without a proposal issue.
 - **What approval runs.** `TechLeadValidatedWorkReleaseExecutor` re-verifies,
   before any write:
-  1. every snapshot is still that record's current releasable authority;
-  2. the PR is a MERGED PR of the issue in this repository, found by the
+  1. the PR is a MERGED PR of the issue in this repository, found by the
      uncached #8137 issue-PR walk plus the records' own branches' merged PRs;
-  3. the approval verified for this proposal names its maintainer (or the
+  2. the approval verified for this proposal names its maintainer (or the
      Control Center operator).
 
-  A failed check closes the proposal stale with no write. An unreadable
-  remote keeps the approved op and retries. Then
+  A PR that fails the check closes the proposal stale with no write. An
+  unreadable remote keeps the approved op and retries. Then
   `OperatorValidatedWorkAbandonment.abandon_all` takes every record's
   execution lease and the issue gate, and the store's `abandon_all_if_current`
   compares every snapshot in ONE write transaction. Either every record
@@ -1697,10 +1696,18 @@ only the operator can release them. The tech-lead action
   the approver and the proposal, and `resolution_reason` names the PR. Lineage
   is classified once per lineage after all records resolve, so releasing
   divergent siblings never re-promotes one of them mid-batch. A record busy
-  in another owner refuses as `BUSY` (retry). Any other refusal closes the
-  proposal stale. Each record emits `VALIDATED_WORK_ABANDONED`, and the
-  issue's aggregate block reprojects once, dropping `recovery-pending` when
-  nothing unresolved remains.
+  in another owner refuses as `BUSY` (retry). A record that moved since launch
+  refuses the whole release, and the proposal closes stale. Each record emits
+  `VALIDATED_WORK_ABANDONED`, and the issue's aggregate block reprojects once,
+  dropping `recovery-pending` when nothing unresolved remains.
+- **A retry completes, never contradicts.** The approved snapshot and the
+  reason are written in the transaction that resolves each record. A batch
+  whose every record was resolved by exactly those commands is a replay:
+  committed, `replayed`, with no write. So when reprojection or the proposal's
+  outcome comment fails after the commit, the retried op reprojects again and
+  closes the proposal as executed. It does not read its own write as stale.
+  A replay audits nothing twice. Proposal reuse, which writes nothing, checks
+  the bound snapshots against the current release grants instead.
 
 ## 3. Composition and control flow
 

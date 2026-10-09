@@ -306,12 +306,14 @@ class AbandonAllOutcome:
     Either every command abandoned its record (``abandoned`` holds one
     outcome per command, in command order) or none did: ``refusal`` is the
     first command's refusal, ``refused_record_id`` names its record, and the
-    store wrote nothing.
+    store wrote nothing. ``replayed`` marks a committed batch that these very
+    commands had already applied: nothing was written this time.
     """
 
     abandoned: tuple[AbandonValidatedWorkOutcome, ...]
     refusal: AbandonValidatedWorkOutcome | None = None
     refused_record_id: str = ""
+    replayed: bool = False
 
     def __post_init__(self) -> None:
         if type(self.abandoned) is not tuple or any(
@@ -324,7 +326,7 @@ class AbandonAllOutcome:
             if not self.abandoned or self.refused_record_id:
                 raise ValueError("a committed batch abandons at least one record")
             return
-        if self.abandoned:
+        if self.abandoned or self.replayed:
             raise ValueError("a refused batch abandons nothing")
         if (
             type(self.refusal) is not AbandonValidatedWorkOutcome

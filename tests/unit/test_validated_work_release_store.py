@@ -9,8 +9,10 @@ lineage classifier promote a sibling between two of them.
 from __future__ import annotations
 
 from contextlib import closing
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import Mock
 import sqlite3
 
 import pytest
@@ -91,6 +93,28 @@ def test_every_divergent_sibling_is_abandoned_in_one_transaction(tmp_path):
         assert (row.resolution.actor, row.resolution.reason, row.resolution.resolved_at) == (
             command.actor, command.reason, LATER)
     assert not store.has_unresolved_work(6914)
+
+
+def test_replaying_a_committed_batch_is_recognized_with_no_write(tmp_path):
+    """Review r1 F1: a retry of the very same release finds its own commit."""
+    rig = Rig(tmp_path / "work.sqlite")
+    store = rig.open(clock=_fixed_clock)
+    first, second = _divergent_pair(store)
+    commands = (_command(store, first), _command(store, second))
+    assert store.abandon_all_if_current(commands).committed
+    before = _contents(rig.path)
+
+    replay = store.abandon_all_if_current(commands)
+
+    assert replay.committed and replay.replayed
+    assert [item.disposition.state for item in replay.abandoned] == [State.ABANDONED] * 2
+    assert _contents(rig.path) == before
+    # A different release of the same records is not that operation.
+    other = tuple(replace(command, reason="another release") for command in commands)
+    refused = store.abandon_all_if_current(other)
+    assert refused.refusal is not None
+    assert refused.refusal.status is AbandonStatus.ALREADY_RESOLVED
+    assert _contents(rig.path) == before
 
 
 def test_one_moved_record_refuses_the_whole_batch_with_no_write(tmp_path):
@@ -230,3 +254,25 @@ def test_owner_refuses_a_batch_spanning_issues(tmp_path):
     with pytest.raises(ValueError, match="one issue"):
         rig.abandonment.abandon_all(
             (first, AbandonValidatedWorkCommand(lookup.evidence.authority, "op", "why")))
+
+
+def test_a_replay_reprojects_the_block_again_without_auditing_twice(tmp_path):
+    """Review r1 F1: the commit landed but reprojection failed; the retry
+    reprojects and drops recovery-pending, and audits no record twice."""
+    rig = AggregateRig(tmp_path)
+    commands = _plant_two_failed_records(rig)
+    rig.aggregate.reconcile_issue_block(6914)
+    real = rig.aggregate.reconcile_issue_block
+    rig.aggregate.reconcile_issue_block = Mock(side_effect=OSError("label write lost"))
+
+    with pytest.raises(OSError):
+        rig.abandonment.abandon_all(commands)
+    assert "recovery-pending" in rig.remote.labels
+    audited = len(rig.events.events)
+
+    rig.aggregate.reconcile_issue_block = real
+    outcome = rig.abandonment.abandon_all(commands)
+
+    assert outcome.committed and outcome.replayed
+    assert "recovery-pending" not in rig.remote.labels
+    assert len(rig.events.events) == audited
