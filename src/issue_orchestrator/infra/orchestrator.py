@@ -982,10 +982,7 @@ class Orchestrator:
     def request_shutdown(self, force: bool = False) -> None:
         """Request graceful or forced shutdown."""
         self._shutdown_requested = True
-        # A snapshot, not the state lock: a running tick holds that lock for the
-        # whole tick, and this runs on the engine's event loop (SIGTERM) and
-        # behind the supervisor's short /api/shutdown timeout (#8222 r2).
-        active = list(self.state.active_sessions)
+        active = list(self.state.active_sessions)  # snapshot; a tick holds state_lock for minutes (#8222)
         self.deps.events.publish(
             TraceEvent(
                 EventName.ORCHESTRATOR_SHUTDOWN_REQUESTED,
