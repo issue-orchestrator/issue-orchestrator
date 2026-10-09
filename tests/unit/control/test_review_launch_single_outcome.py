@@ -30,6 +30,7 @@ from issue_orchestrator.control.planner_types import OrchestratorSnapshot, Plan
 from issue_orchestrator.control.issue_fetch_resilience import IssueFetchResilience
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.control.startup_manager import StartupManager
+from issue_orchestrator.ports.standing_rulings import NO_STANDING_RULINGS
 from issue_orchestrator.control.worktree_reconciliation import WorktreeRecoverySummary
 from issue_orchestrator.control.github_workflow import launch_issue_by_number
 from issue_orchestrator.control.session_routing import (
@@ -311,6 +312,7 @@ def _startup_manager(
         issue_fetch_resilience=IssueFetchResilience("test/repo"),
         startup_worktree_reconciler=reconciler,
         pending_work_claims=MagicMock(),
+        standing_rulings=NO_STANDING_RULINGS,
         **({} if needs_human_block is None else {"needs_human_block": needs_human_block}),
     )
 

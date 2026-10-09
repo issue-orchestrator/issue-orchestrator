@@ -42,7 +42,7 @@ class TestTechLeadManifestBuilder:
     def test_build_empty_when_no_prs(self):
         """Returns empty manifest when no PRs have the code-reviewed label."""
         host = MockRepositoryHost(prs=[])
-        builder = TechLeadManifestBuilder(host, candidate_policy=TechLeadCandidatePolicy())
+        builder = TechLeadManifestBuilder(host, repo_slug="org/repo", candidate_policy=TechLeadCandidatePolicy())
 
         manifest = builder.build(data_dir="tech-lead-data")
 
@@ -71,7 +71,7 @@ class TestTechLeadManifestBuilder:
             ),
         ]
         host = MockRepositoryHost(prs=prs)
-        builder = TechLeadManifestBuilder(host, candidate_policy=TechLeadCandidatePolicy())
+        builder = TechLeadManifestBuilder(host, repo_slug="org/repo", candidate_policy=TechLeadCandidatePolicy())
 
         manifest = builder.build(data_dir="session/tech-lead-data")
 
@@ -99,7 +99,7 @@ class TestTechLeadManifestBuilder:
             ),
         ]
         host = MockRepositoryHost(prs=prs)
-        builder = TechLeadManifestBuilder(host, candidate_policy=TechLeadCandidatePolicy())
+        builder = TechLeadManifestBuilder(host, repo_slug="org/repo", candidate_policy=TechLeadCandidatePolicy())
 
         manifest = builder.build(data_dir="data")
 
@@ -126,7 +126,7 @@ class TestTechLeadManifestBuilder:
             ),
         ]
         host = MockRepositoryHost(prs=prs)
-        builder = TechLeadManifestBuilder(host, candidate_policy=TechLeadCandidatePolicy())
+        builder = TechLeadManifestBuilder(host, repo_slug="org/repo", candidate_policy=TechLeadCandidatePolicy())
 
         manifest = builder.build(data_dir="data")
 
@@ -154,6 +154,7 @@ class TestTechLeadManifestBuilder:
         host = MockRepositoryHost(prs=prs)
         builder = TechLeadManifestBuilder(
             host,
+            repo_slug="org/repo",
             watch_label="my-reviewed",
             candidate_policy=TechLeadCandidatePolicy(
                 tech_lead_reviewed_label="my-triaged",
@@ -172,7 +173,7 @@ class TestTechLeadManifestBuilder:
     def test_build_sets_generated_at(self):
         """Sets generated_at timestamp."""
         host = MockRepositoryHost(prs=[])
-        builder = TechLeadManifestBuilder(host, candidate_policy=TechLeadCandidatePolicy())
+        builder = TechLeadManifestBuilder(host, repo_slug="org/repo", candidate_policy=TechLeadCandidatePolicy())
 
         manifest = builder.build(data_dir="data")
 
@@ -193,7 +194,7 @@ class TestTechLeadManifestBuilder:
             ),
         ]
         host = MockRepositoryHost(prs=prs)
-        builder = TechLeadManifestBuilder(host, candidate_policy=TechLeadCandidatePolicy())
+        builder = TechLeadManifestBuilder(host, repo_slug="org/repo", candidate_policy=TechLeadCandidatePolicy())
 
         manifest = builder.build(data_dir="data")
 
@@ -246,7 +247,7 @@ class TestTechLeadManifestBuilder:
             ),
         ]
         host = MockRepositoryHost(prs=prs)
-        builder = TechLeadManifestBuilder(host, candidate_policy=TechLeadCandidatePolicy())
+        builder = TechLeadManifestBuilder(host, repo_slug="org/repo", candidate_policy=TechLeadCandidatePolicy())
 
         manifest = builder.build(data_dir="data")
 
@@ -274,12 +275,66 @@ class TestTechLeadManifestBuilder:
         host = MockRepositoryHost(prs=prs)
         builder = TechLeadManifestBuilder(
             host,
+            repo_slug="org/repo",
             candidate_policy=TechLeadCandidatePolicy(required_label="io:e2e:run-1"),
         )
 
         manifest = builder.build(data_dir="data")
 
         assert [pr.number for pr in manifest.prs] == [1]
+
+    def test_each_pr_names_the_issues_whose_rulings_bind_it(self):
+        """#8347: a batch review must be told each covered PR's rulings, so the
+        manifest records the issues each PR belongs to (its ``N-`` branch, its
+        closing or ``Refs`` links in this repository, never a mere mention)."""
+        prs = [
+            MockPR(number=12, title="Walk", url="u12", branch="364-walk", labels=["code-reviewed"],
+                   body="Closes #364\n\nSee also #9 and other/repo#5."),
+            MockPR(number=13, title="Partial", url="u13", branch="feature", labels=["code-reviewed"],
+                   body="Refs #327"),
+            MockPR(number=14, title="Chore", url="u14", branch="chore", labels=["code-reviewed"]),
+        ]
+        builder = TechLeadManifestBuilder(
+            MockRepositoryHost(prs=prs), repo_slug="org/repo", candidate_policy=TechLeadCandidatePolicy()
+        )
+
+        manifest = builder.build(data_dir="data")
+
+        assert {pr.number: pr.issue_numbers for pr in manifest.prs} == {12: (364,), 13: (327,), 14: ()}
+        assert manifest.covered_issues() == {364: (12,), 327: (13,)}
+        assert manifest.to_dict()["prs"][0]["issue_numbers"] == [364]
+
+
+    def test_no_pr_is_tied_to_issue_zero(self):
+        """codex r6 F2: ``Refs #0`` names no issue; it must not wedge the batch."""
+        prs = [MockPR(number=12, title="W", url="u", branch="0-wip", labels=["code-reviewed"],
+                      body="Refs #0\nCloses #365")]
+        builder = TechLeadManifestBuilder(
+            MockRepositoryHost(prs=prs), repo_slug="org/repo", candidate_policy=TechLeadCandidatePolicy()
+        )
+
+        assert builder.build(data_dir="data").prs[0].issue_numbers == (365,)
+
+    def test_links_are_re_derived_from_the_metadata_snapshot_the_agent_reads(self, tmp_path):
+        """codex r6 F1: the PR text the agent is given decides whose rulings bind it."""
+        import json
+
+        from issue_orchestrator.domain.tech_lead_manifest import PRFiles
+
+        prs = [MockPR(number=n, title="P", url="u", branch="feature", labels=["code-reviewed"], body="Closes #400")
+               for n in (12, 13, 14)]
+        builder = TechLeadManifestBuilder(
+            MockRepositoryHost(prs=prs), repo_slug="org/repo", candidate_policy=TechLeadCandidatePolicy()
+        )
+        manifest = builder.build(data_dir="data")
+        (tmp_path / "pr-12-meta.json").write_text(json.dumps({"branch": "365-walk", "body": "Refs #327"}))
+        (tmp_path / "pr-13-meta.json").write_text(json.dumps({"error": "PR #13 not found"}))
+        manifest.prs[0].files = PRFiles(metadata="pr-12-meta.json")
+        manifest.prs[1].files = PRFiles(metadata="pr-13-meta.json")
+
+        builder.relink_from_metadata(manifest, tmp_path)
+
+        assert [pr.issue_numbers for pr in manifest.prs] == [(327, 365), (), (400,)]
 
 
 class TestTechLeadCandidatePolicy:

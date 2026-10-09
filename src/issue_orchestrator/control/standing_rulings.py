@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -41,11 +41,13 @@ from ..domain.standing_ruling import (
     RulingScope,
     StandingRuling,
     audience_for,
+    covered_rulings_prompt,
     parse_rulings_block,
     rulings_prompt,
     with_rulings_block,
 )
 from ..infra.logging_config import issue_log
+from ..ports.repository_host import RepositoryHostError
 from ..ports.standing_rulings import StandingRulingsIndex, StandingRulingsUnavailable, SyncedRulings
 
 if TYPE_CHECKING:
@@ -69,7 +71,8 @@ class RetireOutcome(StrEnum):
 class StandingRulingsOwner:
     """Records, retires and answers for an issue's standing rulings (module docstring)."""
 
-    #: A FRESH read of the issue (its body); None when it cannot be read.
+    #: A FRESH read of the issue (its body); None when GitHub has no such issue
+    #: (a read that fails raises).
     read_issue: Callable[[int], "Issue | None"]
     #: Replace the issue's body; raises unless GitHub verifiably kept it.
     write_body: Callable[[int, str], None]
@@ -153,6 +156,61 @@ class StandingRulingsOwner:
         if not rulings:
             return None
         return rulings_prompt(issue_number, rulings, audience_for(kind))
+
+    def covered_section(self, covered: Mapping[int, tuple[int, ...]]) -> str | None:
+        """What a tech-lead run over other issues' work is bound by (#8347): each
+        covered issue's rulings, one fresh body read each, synced into the index.
+
+        A covered number GitHub has no issue for (a PR branch named ``2024-...``,
+        a link to a deleted issue) binds nothing: there is no body to hold a
+        ruling. A read that fails, or a damaged block, still raises.
+        """
+        rulings: dict[int, tuple[StandingRuling, ...]] = {}
+        for number in sorted(covered):
+            with self._lock:
+                issue = self.read_issue(number)
+                if issue is None:
+                    logger.warning(issue_log(number, "Covered by a tech-lead run, but GitHub has no such issue"))
+                    rulings[number] = ()
+                    continue
+                rulings[number] = self._parse(number, issue.body)
+                self.index.save(number, rulings[number])
+        return covered_rulings_prompt(covered, rulings)
+
+    def backfill(self, issues: Iterable["Issue"]) -> int:
+        """Bring the index up to the bodies of *issues* (a listing just read);
+        how many issues it re-read (#8347).
+
+        The index was created after rulings were already on issues, and the page
+        reads only the index, so a ruling recorded earlier, or hand-edited on
+        GitHub since the engine last read the issue, never showed. A listed body
+        whose block matches the index costs nothing. One that differs (or is
+        damaged) is never trusted as is: a listing may predate a ruling recorded
+        or retired since, so the issue is read fresh through :meth:`active`,
+        under the writers' lock, and the body read then decides. A body still
+        unreadable or damaged is left to the prompts and reviews that refuse it;
+        a GitHub failure stops the backfill (the next startup resumes it).
+        """
+        refreshed = 0
+        for issue in issues:
+            try:
+                listed: tuple[StandingRuling, ...] | None = parse_rulings_block(issue.body)
+            except RulingsBlockError:
+                listed = None
+            if listed is not None and listed == (self.index.load(issue.number) or ()):
+                continue
+            try:
+                self.active(issue.number)
+            except StandingRulingsUnavailable as error:
+                logger.warning(issue_log(issue.number, "Standing rulings not indexed: %s"), error)
+                continue
+            except RepositoryHostError as error:
+                logger.warning("Standing rulings index backfill stopped: %s", error)
+                break
+            refreshed += 1
+        if refreshed:
+            logger.info("Standing rulings index backfilled from %d fresh read(s)", refreshed)
+        return refreshed
 
     def synced(self) -> dict[int, SyncedRulings]:
         """Every issue the index holds rulings for, as of its last sync (the

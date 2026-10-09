@@ -310,7 +310,9 @@ def render_triage_instructions(agenda: TriageAgenda) -> str:
         if item.agent_question:
             lines.append(f"  - the agent asked: {item.agent_question}")
         if item.standing_rulings:
-            lines.append("  - its standing rulings (binding; never act against one):")
-            lines.extend(f"    {line}" if line else "" for ruling in item.standing_rulings
-                         for line in ruling.splitlines())
+            # The text, read for this launch, is in the binding section of the
+            # rulings on the work this run covers (#8347), never copied here:
+            # a retry's copy of this agenda would go stale.
+            lines.append(f"  - it has standing rulings: see the binding section on issue #{item.issue_number}"
+                         " (never act against one)")
     return "\n".join(lines) + "\n"

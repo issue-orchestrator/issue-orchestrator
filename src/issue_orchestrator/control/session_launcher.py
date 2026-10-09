@@ -61,13 +61,13 @@ from .published_review_launch_gate import refuse_launch_over_published_review
 from ..infra.validation_retry_prompt import render_validation_retry_prompt
 from ..domain.tech_lead_session import TechLeadLaunchScope
 from .tech_lead_session_policy import (
-    carry_launch_authority_forward,
     resumable_retry_identity,
     failure_investigation_scratch_identity,
     TechLeadLaunchInputs,
     prepare_tech_lead_session_data,
     tech_lead_prep_failure,
 )
+from .tech_lead_retry_carry import carry_retry
 from .host_rate_limit_launch_gate import LaunchMutations, apply_launch_mutations, converge_claim
 from ..ports import (
     ManifestDownloader,
@@ -625,6 +625,7 @@ class SessionLauncher:
             ),
             board_snapshot_provider=self._board_snapshot_provider,
             blocked_item_triage=self._blocked_item_triage,
+            launch_prompt=self._launch_prompt,
             issue=issue,
             ctx=ctx,
             tech_lead_scope=tech_lead_scope,
@@ -1303,13 +1304,14 @@ class SessionLauncher:
         # BEFORE the durable hold: this can refuse, and a refusal after the
         # hold returns with the claim still marked actively held -- a phantom
         # in-flight row that settlement can only refresh, never clear, and that
-        # every retry attempt adds another of (round 1 finding 5).
-        carried = carry_launch_authority_forward(
-            self._tech_lead_authority, retry, run
+        # every retry attempt adds another of (round 1 finding 5). With the
+        # authority come the covered work's rulings, read fresh (#8347).
+        carried = carry_retry(
+            tech_lead_authority=self._tech_lead_authority, launch_prompt=self._launch_prompt, retry=retry, run=run,
         )
-        if isinstance(carried, str):
+        if isinstance(carried, LaunchResult):
             self._release_claim_if_held(issue.number, claim)
-            return LaunchResult(None, False, carried)
+            return carried
 
         # Durable before anything irreversible (#6999 A2); a proposal's consent too (#7763 r22).
         if failure := self._refuse_unapproved(issue.number) or work_claim.hold_before_spawn(run, issue_number=issue.number):
@@ -1319,7 +1321,7 @@ class SessionLauncher:
         # The transfer settles on the same spawn decision the claim guard uses,
         # so a new early return cannot split them (#7273 round 2 finding 4).
         with abandon_claim_unless_spawned(work_claim, run) as spawn, (
-            transfer_launch_authority(carried, spawn, work=work_claim, run=run, retry=retry)
+            transfer_launch_authority(carried.transfer, spawn, work=work_claim, run=run, retry=retry)
         ):
             extra_args = self._extra_provider_args_from_labels(issue.labels)
             retry_prompt = render_validation_retry_prompt(
@@ -1330,7 +1332,7 @@ class SessionLauncher:
                 config=self.config,
                 retry_count=retry_count,
             )
-            retry_prompt = prepared_coder_prompt.compose(retry_prompt)
+            retry_prompt = prepared_coder_prompt.compose("\n\n".join(part for part in (carried.covered_rulings, retry_prompt) if part))
 
             ctx.write_worktree_note()
             ctx.write_session_identity({
@@ -1437,7 +1439,7 @@ class SessionLauncher:
                 scratch_worktree=scratch_identity is not None,
                 # A tech lead's retry is the same logical run: it keeps the grant
                 # its carried launch record holds (#7347 review r8, r9).
-                tech_lead_scope=None if carried is None else carried.authority.launch_scope(),
+                tech_lead_scope=None if carried.transfer is None else carried.transfer.authority.launch_scope(),
             )
             log_transition(
                 "issue",

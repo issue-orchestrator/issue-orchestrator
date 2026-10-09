@@ -87,9 +87,21 @@ claims it settles; no files means the whole issue).
   covers coding, validation retry, rework of every kind, review, retrospective
   review, both review-exchange roles (read again before every turn), tech
   lead, and debug sessions. Every rework (conflict, CI, merge queue or review
-  feedback) gets them as its brief. The triage agenda carries each item's
-  rulings in full, and the Tech lead page shows them as of the engine's last
-  read.
+  feedback) gets them as its brief. A tech-lead run is also told the rulings
+  of every other issue whose work it covers, read fresh from each body: a
+  batch review's PRs' issues (the manifest lists each PR's `issue_numbers`), a
+  health review's problem cohort and the blocked items it triages (the triage
+  agenda points at them), again at every validation retry (#8347). Which
+  issues are covered is recorded once, in the run's launch authority. Every
+  binding section sits between `<!-- io:standing-ruling:binding:begin/end -->`
+  markers; a validation retry drops the sections its original prompt carried
+  and is bound only by the rulings read for the retry. A covered issue
+  whose read fails or whose block is damaged refuses the launch; a number
+  GitHub has no issue for binds nothing. The Tech lead page shows rulings as
+  of the engine's last read; at startup the owner compares the bodies the
+  queue sync just read with the index and re-reads, fresh, each issue that
+  differs, so rulings recorded before the index existed (or edited by hand)
+  show without waiting for a launch.
 - **The review rule.** An approval of a diff that touches a ruling's scope must
   attest it: `reviewer-done approved ... --upholds-ruling <id>`, or
   `upheld_rulings` in a review exchange's decision JSON. If it does not, the
