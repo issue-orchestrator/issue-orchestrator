@@ -2748,7 +2748,9 @@ function showToast(message, type = 'info') {
         close.addEventListener('click', () => dismissToast(toast));
         toast.appendChild(close);
     }
-    container.appendChild(toast);
+    // Newest first: sticky errors accumulate, and the latest one (with its
+    // dismiss control) must land in view at the top of the bounded stack.
+    container.prepend(toast);
 
     if (!sticky) {
         setTimeout(() => dismissToast(toast), 4000);

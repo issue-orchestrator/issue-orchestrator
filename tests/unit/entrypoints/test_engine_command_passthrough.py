@@ -550,3 +550,50 @@ def test_a_caller_giving_up_on_shutdown_does_not_strand_the_server(
     assert engine.shutdowns == [False]
     manager.request_shutdown.assert_called_once()
     deps.trigger_server_shutdown.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("command_type", "request_obj"),
+    [
+        (PauseOrchestratorCommand, RepoActionRequest(repo_root=REPO)),
+        (ResumeOrchestratorCommand, RepoActionRequest(repo_root=REPO)),
+        (RefreshOrchestratorCommand, RefreshActionRequest(repo_root=REPO)),
+    ],
+)
+def test_a_200_that_is_not_the_commands_answer_is_not_success(
+    command_type: Any, request_obj: Any
+) -> None:
+    """r2 F2: a stale port served by something else must not read as success."""
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Impostor(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            body = b'{"error": "unavailable"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args: Any) -> None:
+            return None
+
+    server = HTTPServer(("127.0.0.1", 0), Impostor)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        supervisor = MagicMock()
+        supervisor.status.return_value = SupervisorStatus(
+            state="running", port=server.server_address[1]
+        )
+        result = asyncio.run(
+            command_type(EngineCommandForwarder(supervisor)).execute(request_obj)
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result.status_code == 502
+    assert result.payload["failure"] == "invalid_body"
+    assert '"error": "unavailable"' in result.payload["detail"]

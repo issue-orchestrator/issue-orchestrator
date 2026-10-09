@@ -92,6 +92,7 @@ function fakeElement(tag) {
         removed: false,
         set className(value) { value.split(/\s+/).filter(Boolean).forEach((name) => this.classList.add(name)); },
         appendChild(child) { this.children.push(child); return child; },
+        prepend(child) { this.children.unshift(child); return child; },
         setAttribute(name, value) { this.attributes[name] = String(value); },
         addEventListener(type, handler) { this.listeners[type] = handler; },
         remove() { this.removed = true; },
@@ -159,6 +160,18 @@ test('a success toast still dismisses itself', () => {
     assert.strictEqual(toast.removed, true);
 });
 
+test('the newest toast lands first so it is in view atop the stack', () => {
+    const { context, container } = loadToast();
+
+    context.showToast('first failure', 'error');
+    context.showToast('second failure', 'error');
+
+    assert.deepStrictEqual(
+        container.children.map((toast) => toast.children[0].textContent),
+        ['second failure', 'first failure'],
+    );
+});
+
 test('the toast message is height-bounded and scrolls', () => {
     const css = fs.readFileSync(
         path.join(__dirname, '../../src/issue_orchestrator/static/css/control_center.css'),
@@ -169,4 +182,8 @@ test('the toast message is height-bounded and scrolls', () => {
     assert.match(rule[1], /max-height:\s*min\(40vh,\s*240px\)/);
     assert.match(rule[1], /overflow-y:\s*auto/);
     assert.match(css, /\.toast-close:focus-visible/);
+    const stack = css.match(/\.toast-container\s*\{([^}]*)\}/);
+    assert.ok(stack, '.toast-container rule exists');
+    assert.match(stack[1], /max-height:\s*calc\(100vh - 24px\)/);
+    assert.match(stack[1], /overflow-y:\s*auto/);
 });

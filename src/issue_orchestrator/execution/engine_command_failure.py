@@ -197,6 +197,25 @@ def undecodable_failure(
     )
 
 
+def engine_answer_failure(
+    answer: object, *, command: str, url: str, accepted: str
+) -> EngineCommandFailure | None:
+    """Why a 2xx answer is not the command's own answer, or ``None`` if it is.
+
+    Every forwarded engine command answers an object whose ``status`` names
+    what the engine did (``paused``, ``resumed``, ``refresh_requested``). A
+    stale port now served by something else can answer 200 with any object;
+    that must not read as success (#8222 r2 F2).
+    """
+    if not isinstance(answer, dict):
+        return non_object_body_failure(answer, command=command, url=url, upstream_status=200)
+    if answer.get("status") == accepted:
+        return None
+    return off_contract_answer_failure(
+        command=command, url=url, upstream_status=200, body_text=json.dumps(answer)
+    )
+
+
 def off_contract_answer_failure(
     *, command: str, url: str, upstream_status: int, body_text: str
 ) -> EngineCommandFailure:
@@ -245,6 +264,7 @@ __all__ = [
     "ENGINE_COMMAND_TIMEOUT_SECONDS",
     "EngineCommandFailure",
     "EngineCommandFailureKind",
+    "engine_answer_failure",
     "exception_text",
     "interrupted_failure",
     "non_object_body_failure",

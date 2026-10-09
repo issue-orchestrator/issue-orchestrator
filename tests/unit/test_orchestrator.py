@@ -719,6 +719,35 @@ async def run_loop_one_tick(orchestrator: Orchestrator) -> None:
         await orchestrator.run_loop()
 
 
+def test_a_graceful_shutdown_request_does_not_wait_for_the_running_tick(
+    sample_config, mock_repository_host
+):
+    """#8222 r2: SIGTERM runs this on the event loop, and the supervisor's
+    /api/shutdown gives it 2s; a tick holds the state lock for minutes."""
+    orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+    holding = threading.Event()
+    finish = threading.Event()
+
+    def tick() -> None:
+        with orchestrator.state_lock:
+            holding.set()
+            finish.wait(timeout=30)
+
+    ticker = threading.Thread(target=tick, daemon=True)
+    ticker.start()
+    assert holding.wait(timeout=5)
+    requester = threading.Thread(target=orchestrator.request_shutdown, daemon=True)
+    try:
+        requester.start()
+        requester.join(timeout=2)
+        assert not requester.is_alive(), "request_shutdown waited for the tick"
+        assert orchestrator.shutdown_requested is True
+    finally:
+        finish.set()
+        ticker.join(timeout=5)
+        requester.join(timeout=5)
+
+
 # Helper functions
 def create_issue(number, title="Test Issue", labels=None, milestone=None):
     """Helper to create Issue objects for testing."""

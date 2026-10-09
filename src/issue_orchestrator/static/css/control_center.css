@@ -1935,6 +1935,11 @@ body.maximized .maximize-exit-btn { display: flex; }
     flex-direction: column;
     gap: 8px;
     width: min(380px, calc(100vw - 24px));
+    /* Sticky error toasts accumulate (#8222): the stack scrolls instead of
+       pushing later notifications and their dismiss buttons off-screen. */
+    max-height: calc(100vh - 24px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
     pointer-events: none;
 }
 

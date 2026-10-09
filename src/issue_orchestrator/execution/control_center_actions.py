@@ -11,10 +11,10 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional, Protocol
+from typing import Any, Optional, Protocol, cast
 
 
-from ..domain.pause_state import PauseActor
+from ..domain.pause_state import PauseActor, PauseTransitionStatus
 from ..domain.repository_launch_selection import (
     RepositoryConfigurationIdentity,
     RepositoryLaunchSelection,
@@ -23,7 +23,7 @@ from ..ports.repository_engine_supervisor import SupervisorOps
 from .engine_command_failure import (
     ENGINE_COMMAND_TIMEOUT_SECONDS,
     EngineCommandFailure,
-    non_object_body_failure,
+    engine_answer_failure,
 )
 from .orchestrator_http_api import OrchestratorAsyncHttpApi, guarded_engine_command
 from .repository_engine_start import StartRepositoryEngineCommand
@@ -120,7 +120,10 @@ class EngineCommandForwarder:
         repo_root: Path,
         command: str,
         send: Callable[[OrchestratorAsyncHttpApi], Awaitable[object]],
+        *,
+        accepted: str,
     ) -> ActionResult:
+        """Send ``command``; ``accepted`` is the answer ``status`` meaning it worked."""
         status_info = self._supervisor.status(repo_root)
         if status_info.state != "running" or status_info.port is None:
             return ActionResult(
@@ -148,13 +151,10 @@ class EngineCommandForwarder:
             await api.close()
         if isinstance(answer, EngineCommandFailure):
             return self._failed(answer)
-        if not isinstance(answer, dict):
-            return self._failed(
-                non_object_body_failure(
-                    answer, command=command, url=base_url, upstream_status=200
-                )
-            )
-        return ActionResult(answer)
+        refusal = engine_answer_failure(answer, command=command, url=base_url, accepted=accepted)
+        if refusal is not None:
+            return self._failed(refusal)
+        return ActionResult(cast(dict[str, Any], answer))
 
     @staticmethod
     def _failed(failure: EngineCommandFailure) -> ActionResult:
@@ -170,7 +170,7 @@ class PauseOrchestratorCommand:
 
     async def execute(self, request: RepoActionRequest) -> ActionResult:
         return await self._forwarder.forward(
-            request.repo_root, "pause", lambda api: api.pause()
+            request.repo_root, "pause", lambda api: api.pause(), accepted=str(PauseTransitionStatus.PAUSED)
         )
 
 
@@ -182,7 +182,7 @@ class ResumeOrchestratorCommand:
 
     async def execute(self, request: RepoActionRequest) -> ActionResult:
         return await self._forwarder.forward(
-            request.repo_root, "resume", lambda api: api.resume()
+            request.repo_root, "resume", lambda api: api.resume(), accepted=str(PauseTransitionStatus.RESUMED)
         )
 
 
@@ -195,7 +195,10 @@ class RefreshOrchestratorCommand:
     async def execute(self, request: RefreshActionRequest) -> ActionResult:
         inflight = list(request.inflight_stable_ids or [])
         return await self._forwarder.forward(
-            request.repo_root, "refresh", lambda api: api.refresh(inflight)
+            request.repo_root,
+            "refresh",
+            lambda api: api.refresh(inflight),
+            accepted="refresh_requested",
         )
 
 
