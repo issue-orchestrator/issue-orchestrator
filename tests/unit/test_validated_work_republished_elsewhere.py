@@ -291,33 +291,34 @@ def test_a_carrier_follows_an_open_pr_and_freezes_when_it_merges(tmp_path):
         ValidatedWorkState.RECOVERED, ResolutionKind.LANDED_VIA_MERGED_PR, "feature-r1")
 
 
-def test_an_open_carrier_proven_earlier_never_resolves_a_later_admission(tmp_path):
-    """Review r1 F1: PR 91 was proven open at TIP, then force-pushed or closed.
-    A capture of an ancestor of TIP admitted later stays held: only the
-    instant that proved an open PR current resolves against it."""
+@pytest.mark.parametrize("admitted_at", ["2026-10-04T09:00:00+00:00", "2026-10-04T12:00:00+00:00"],
+                         ids=["replay-at-the-proving-instant", "later"])
+def test_an_open_carrier_resolves_an_admission_only_with_its_own_proof(tmp_path, admitted_at):
+    """Review r1 F1 / r2 F1: PR 91 was proven open at TIP, then force-pushed or
+    closed before the capture's evidence was admitted (a crash, then a replay
+    at the same persisted capture instant; or simply a later capture). No
+    stored row or timestamp resolves it: only an admission handed this
+    capture's own fresh proof does."""
     from tests.unit.validated_work_support import L, ROOT, TIP, Rig, capture
 
     store = Rig(tmp_path / "work.sqlite").open()
-    key = capture(TIP).evidence.identity.key
-    proven = "2026-10-04T09:00:00+00:00"
+    proof = CarriedByIssuePullRequest(91, TIP, "feature-r1", merged=False)
     assert store.record_pr_publication(
-        key, published=CarriedByIssuePullRequest(91, TIP, "feature-r1", merged=False), observed_at=proven,
+        capture(TIP).evidence.identity.key, published=proof, observed_at="2026-10-04T09:00:00+00:00",
     ) is PrPublicationStatus.ADVANCED
 
-    later = capture(L, run="run-later", expected=ROOT, state=ValidatedWorkState.PARKED,
+    held = capture(L, run="run-held", expected=ROOT, state=ValidatedWorkState.PARKED,
+                   failure=ValidatedWorkFailure.WORKTREE_AHEAD_OF_VALIDATION, reason="ahead", at=admitted_at)
+    store.admit(held)
+    assert store.get(held.evidence.record_id).state is ValidatedWorkState.PARKED
+
+    fresh = capture(L, run="run-fresh", expected=ROOT, state=ValidatedWorkState.PARKED,
                     failure=ValidatedWorkFailure.WORKTREE_AHEAD_OF_VALIDATION, reason="ahead",
-                    at="2026-10-04T12:00:00+00:00")
-    store.admit(later)
-    assert store.get(later.evidence.record_id).state is ValidatedWorkState.PARKED
-
-    # Proven current again, the PR resolves it.
-    assert store.record_pr_publication(
-        later.evidence.identity.key, published=CarriedByIssuePullRequest(91, TIP, "feature-r1", merged=False),
-        observed_at="2026-10-04T12:30:00+00:00",
-    ) is PrPublicationStatus.ADVANCED
-    resolved = store.record_for_id(later.evidence.record_id)
-    assert (resolved.disposition.state, resolved.resolution_kind) == (
-        ValidatedWorkState.RECOVERED, ResolutionKind.CONTAINED_IN_PUBLISHED_HEAD)
+                    at="2026-10-04T12:30:00+00:00")
+    store.admit(fresh, carried=proof)
+    resolved = store.record_for_id(fresh.evidence.record_id)
+    assert (resolved.disposition.state, resolved.resolution_kind, resolved.disposition.publication_branch) == (
+        ValidatedWorkState.RECOVERED, ResolutionKind.CONTAINED_IN_PUBLISHED_HEAD, "feature-r1")
 
 
 def test_an_existing_store_gains_the_carriers_table_and_published_branch_on_open(tmp_path):

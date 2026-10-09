@@ -172,9 +172,9 @@ def _record_carrier(
     sequences from it. A merged PR's head cannot move, so a second proof of
     it is already recorded, and its row resolves every record it contains
     from then on. An open PR can be force-pushed or closed after any proof,
-    so its row resolves records only at the instant that proved it current
-    (review r1): every proof of an open PR re-stamps the row and reclassifies
-    - ADVANCED - even when its head did not move.
+    so its row resolves records only together with the proof that made it
+    current (review r1/r2): every proof of an open PR re-stamps the row and
+    reclassifies with that proof - ADVANCED - even when its head did not move.
     """
     lineage_key = canonical_lineage_key(key)
     recorded = conn.execute(
@@ -201,5 +201,5 @@ def _record_carrier(
         (lineage_key, carried.pr_number, carried.branch_name, carried.head_sha,
          int(carried.merged), observed_at),
     )
-    lineage.classify(conn, lineage_key, observed_at)
+    lineage.classify(conn, lineage_key, observed_at, carried=carried)
     return Status.ADVANCED

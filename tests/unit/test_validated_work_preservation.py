@@ -522,10 +522,10 @@ def test_independent_instances_reselect_after_atomic_admission_conflict(custody)
     admissions = retained_receipt_pair(custody)
     barrier = Barrier(2)
     class ConcurrentBackend(SqliteValidatedWorkStore):
-        def admit_selected(self, admission, expected_current, selection):
+        def admit_selected(self, admission, expected_current, selection, *, carried=None):
             if expected_current is None:
                 barrier.wait(timeout=10)
-            return super().admit_selected(admission, expected_current, selection)
+            return super().admit_selected(admission, expected_current, selection, carried=carried)
     stores = [independent_ranked_store(custody, "concurrent.sqlite", ConcurrentBackend) for _ in range(2)]
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda pair: pair[0].admit(pair[1]), zip(stores, admissions)))

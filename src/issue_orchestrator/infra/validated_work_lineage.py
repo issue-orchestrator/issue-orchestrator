@@ -23,6 +23,7 @@ from ..domain.validated_work_store import (
     PublicationProvenance,
 )
 from ..domain.validated_work_gate import DispositionGate
+from ..domain.validated_work_remote_authority import CarriedByIssuePullRequest
 from ..ports.validated_work_verification import (
     ValidatedWorkAncestry,
     ValidatedWorkArtifactVerifier,
@@ -99,14 +100,17 @@ class LineageClassifier:
         at: str,
         *,
         reconsider: frozenset[str] = frozenset(),
+        carried: CarriedByIssuePullRequest | None = None,
     ) -> None:
-        """Reclassify the lineage's unresolved records at observation instant ``at``.
+        """Reclassify the lineage's unresolved records.
 
         A merged carrier is final and always counts. An open PR can be
-        force-pushed or closed after it was proven (#8137 review r1), so an
-        open carrier counts only in a classification at the instant that
-        proved it: the proof's own reclassification, and the admission of the
-        capture whose remote observation made that proof just before it.
+        force-pushed or closed after it was proven (#8137 review r1/r2), so an
+        open carrier counts only when the caller hands in that very proof as
+        ``carried``: the proof's own reclassification, and the admission of
+        the capture whose remote observation just made it. No stored row or
+        timestamp alone authorizes it - a replayed or later admission is
+        resolved only by a proof of its own.
         """
         rows = conn.execute(
             "SELECT * FROM validated_work_records WHERE lineage_key=? "
@@ -122,7 +126,10 @@ class LineageClassifier:
         readable = self._classify_publication(
             conn, decisions, fact, landings(conn, lineage_key), tuple(
                 carrier for carrier in carriers(conn, lineage_key)
-                if carrier.merged or carrier.observed_at == at
+                if carrier.merged or (
+                    carried is not None and not carried.merged
+                    and (carrier.pr_number, carrier.head_sha) == (carried.pr_number, carried.head_sha)
+                )
             ),
         )
         self._classify_peers(readable)

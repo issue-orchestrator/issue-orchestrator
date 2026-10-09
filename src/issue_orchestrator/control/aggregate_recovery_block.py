@@ -23,7 +23,7 @@ from ..domain.recovery_block import (
 )
 from ..domain.validated_work import ValidatedWorkKey
 from ..domain.validated_work_commands import ValidatedWorkDispositionBatch
-from ..domain.validated_work_remote_authority import PullRequestPublication
+from ..domain.validated_work_remote_authority import CarriedByIssuePullRequest, PullRequestPublication
 from ..domain.validated_work_store import (
     AdmissionOutcome,
     EvidenceAdmission,
@@ -90,7 +90,9 @@ class AggregateRecoveryBlocks:
         self._cleanup = CapturedRecoveryCleanup(records, self._label_writer)
         self._human = human_block
 
-    def admit(self, admission: EvidenceAdmission) -> AdmissionOutcome:
+    def admit(
+        self, admission: EvidenceAdmission, *, carried: CarriedByIssuePullRequest | None = None,
+    ) -> AdmissionOutcome:
         """Rank/store through the injected owner, then observe the aggregate block.
 
         A busy gate makes no admission write. A failed projection leaves durable
@@ -101,7 +103,7 @@ class AggregateRecoveryBlocks:
         if key.repo_slug != self._repo:
             raise ValueError("admission names another repository")
         with self._hold_issue(key.issue_number):
-            outcome = self._admission.admit(admission)
+            outcome = self._admission.admit(admission, carried=carried)
             try:
                 snapshot = self._records.recovery_block_snapshot(
                     self._repo, key.issue_number

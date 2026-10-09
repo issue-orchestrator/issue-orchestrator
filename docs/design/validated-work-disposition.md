@@ -1617,10 +1617,13 @@ says what THIS branch publishes, and recovery still sequences from it. A
 merged PR's row is final: a second proof with a different head is refused, and
 the row resolves every record it contains from then on. An open PR can be
 force-pushed or closed after any proof. Its row follows its latest proven head
-and is re-stamped by every proof, but it resolves records only in a
-classification at the instant that proved it: the proof's own
-reclassification, and the admission of the capture whose remote observation
-made that proof. A record admitted later is resolved only by a new proof. Each proven head is pinned before its row
+and is re-stamped by every proof, but no stored row or timestamp alone
+resolves anything. An open carrier counts only when the caller hands the
+classifier that very proof (`carried`): the proof's own reclassification, and
+the admission of the capture whose own remote observation just made it.
+Capture passes it explicitly through `capture_automatic(..., carried=)` to
+`admit(..., carried=)`. A replayed or later admission is resolved only by a
+proof of its own. Each proven head is pinned before its row
 commits, at `refs/issue-orchestrator/carried/<lineage>/<PR>/<head>`. Like a
 landing's pin it is create-only, it is not escrow, and nothing can release it.
 
