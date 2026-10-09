@@ -54,6 +54,17 @@ instead of switching to a terminal.
 | PR gate | Script | `scripts/verify-pr.sh` | Runs the repo's publish validation command from `validation.publish.cmd` |
 | Hook helper | Python | `scripts/agent-hooks/block_no_verify.py` | Repo-local fallback used by agent hook scripts |
 
+`scripts/verify-pr.sh` is committed, so the absolute issue-orchestrator
+interpreter it prefers (after `ISSUE_ORCHESTRATOR_PYTHON`) must outlive the
+checkout that generated it. `infra/hooks/durable_python.py` owns that choice:
+`--python`, else `ISSUE_ORCHESTRATOR_PYTHON`, else the running interpreter, and
+it refuses — before writing anything — a path inside a linked git worktree or a
+temp dir, naming the main checkout's interpreter when it can find one. Doctor
+reports a committed script whose preferred interpreter is missing (error) or
+lives in a linked worktree / temp dir (warning). Session-scoped artifacts (the
+per-worktree pre-push hook, Codex session hook argv) deliberately keep the
+running engine's interpreter, since they do not outlive it.
+
 ### Orchestrator-Installed Hooks (per worktree)
 
 These are installed automatically by issue-orchestrator when creating worktrees.

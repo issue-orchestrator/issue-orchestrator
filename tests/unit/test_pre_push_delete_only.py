@@ -25,6 +25,9 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.hooks.pre_push_refs import pre_push_refs_shell
 from issue_orchestrator.infra.repo_guardrails import setup_repo_guardrails
 
+# setup-guardrails needs a stable interpreter to bake (#8087).
+pytestmark = pytest.mark.usefixtures("durable_orchestrator_python")
+
 ZERO_SHA1 = "0" * 40
 ZERO_SHA256 = "0" * 64
 SHA_A = "a" * 40

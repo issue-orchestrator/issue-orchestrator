@@ -60,7 +60,7 @@ Runs before `git push`:
 
 ### `src/issue_orchestrator/hooks/pre-push`
 Installed into orchestrator-created worktrees:
-- resolves the orchestrator Python interpreter (`ISSUE_ORCHESTRATOR_PYTHON` or baked-in `sys.executable`)
+- resolves the orchestrator Python interpreter (`ISSUE_ORCHESTRATOR_PYTHON` or baked-in `sys.executable`; session-scoped, unlike the durable `verify-pr.sh` interpreter owned by `infra/hooks/durable_python.py`)
 - runs the dirty-tree guard
 - blocks target-repo test-skipping patterns such as `@Disabled`, `@Ignore`, `assumeTrue`, `assumeFalse`
 

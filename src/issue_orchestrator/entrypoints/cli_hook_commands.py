@@ -460,6 +460,7 @@ def cmd_setup_guardrails(args: argparse.Namespace) -> int:
             target_root=target_root,
             validation_cmd=validation_cmd,
             hooks_path=hooks_path,
+            python=args.python,
         )
     except RepoGuardrailsError as exc:
         console.print(f"[red]Error: {exc}[/red]")
