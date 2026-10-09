@@ -572,7 +572,7 @@ def _write(step: IntegrationStep, host: "RepositoryHost") -> str | None:
             return (f"{step.default_branch} ({step.default_tip[:8]}) conflicts with {step.branch}"
                     f" ({step.integration_tip[:8]}); a person must merge it")
     elif isinstance(step, OpenDeliveryPullRequest):
-        host.create_pr(step.title, step.body, head=step.head, base=step.base)
+        host.open_pull_request(head=step.head, base=step.base, title=step.title, body=step.body)
     else:
         host.update_pull_request_body(step.pr_number, step.body)
     return None

@@ -344,3 +344,25 @@ def test_a_well_formed_green_check_answer_is_green(make_host) -> None:
     result = make_host(handler).read_commit_check_rollup(SHA_A)
 
     assert (result.state, result.capability) == ("SUCCESS", "ok")
+
+
+def test_open_pull_request_creates_exactly_head_into_base(make_host) -> None:
+    """#8144 review r7 F2: never the adapter's create_pr reuse of an open PR into another base."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert (request.method, request.url.path) == ("POST", "/repos/owner/repo/pulls")
+        assert {k: _body(request)[k] for k in ("head", "base", "title", "body")} == {
+            "head": "integration", "base": "main", "title": "Deliver integration to main", "body": "b",
+        }
+        return httpx.Response(201, json={"number": 600, "html_url": "u600", "base": {"ref": "main"}})
+
+    ref = make_host(handler).open_pull_request(head="integration", base="main",
+                                               title="Deliver integration to main", body="b")
+
+    assert ref == OpenPullRequestRef(number=600, url="u600", body="b")
+    assert [request.method for request in make_host.seen] == ["POST"]  # no reuse lookup
+
+
+def test_open_pull_request_refuses_a_pr_into_another_base(make_host) -> None:
+    host = make_host(lambda request: httpx.Response(201, json={"number": 7, "html_url": "u7", "base": {"ref": "staging"}}))
+    with pytest.raises(RepositoryHostError):
+        host.open_pull_request(head="integration", base="main", title="t", body="b")

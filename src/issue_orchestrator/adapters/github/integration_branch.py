@@ -130,6 +130,17 @@ class GitHubIntegrationBranchMixin:
             raise GitHubHttpError("GitHub pull payload has no number or html_url")
         return OpenPullRequestRef(number=number, url=url, body=pr.get("body") or "")
 
+    def open_pull_request(self, *, head: str, base: str, title: str, body: str) -> OpenPullRequestRef:
+        # Straight to GitHub's create: the adapter's create_pr reuses ANY open
+        # PR from the head branch, whatever its base (#8144 review r7 F2).
+        payload = self._client.create_pr(title, body, head, base)
+        if payload is None or (payload.get("base") or {}).get("ref") != base:
+            raise GitHubHttpError(f"GitHub did not open a PR from {head} into {base}")
+        number, url = payload.get("number"), payload.get("html_url")
+        if type(number) is not int or not isinstance(url, str):
+            raise GitHubHttpError("GitHub create-PR payload has no number or html_url")
+        return OpenPullRequestRef(number=number, url=url, body=body)
+
     def update_pull_request_body(self, pr_number: int, body: str) -> None:
         self._client.update_pr_body(pr_number, body)
 

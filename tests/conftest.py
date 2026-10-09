@@ -683,6 +683,12 @@ class MockGitHubAdapter:
         self._integration_failure("find_open_pull_request")
         return self.open_pr_refs.get((head, base))
 
+    def open_pull_request(self, *, head: str, base: str, title: str, body: str) -> OpenPullRequestRef:
+        """Open a PR from head into exactly base (mock): never reuses another base's."""
+        self._integration_failure("open_pull_request")
+        pr = self.create_pr(title, body, head, base)
+        return OpenPullRequestRef(number=pr.number, url=pr.url, body=body)
+
     def update_pull_request_body(self, pr_number: int, body: str) -> None:
         self._integration_failure("update_pull_request_body")
         self.pr_body_updates.append((pr_number, body))

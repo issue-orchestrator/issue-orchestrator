@@ -68,6 +68,10 @@ class IntegrationBranchHost(Protocol):
         """The open PR from branch *head* into *base*, if there is one."""
         ...
 
+    def open_pull_request(self, *, head: str, base: str, title: str, body: str) -> OpenPullRequestRef:
+        """Open a PR from *head* into exactly *base* (no reuse of another base's PR)."""
+        ...
+
     def update_pull_request_body(self, pr_number: int, body: str) -> None:
         """Replace the PR's description."""
         ...
