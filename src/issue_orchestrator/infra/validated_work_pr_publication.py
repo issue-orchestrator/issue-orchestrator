@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import replace
+from datetime import datetime
 
 from ..domain.validated_work import (
     PublicationProvenance,
@@ -175,16 +176,26 @@ def _record_carrier(
     so its row resolves records only together with the proof that made it
     current (review r1/r2): every proof of an open PR re-stamps the row and
     reclassifies with that proof - ADVANCED - even when its head did not move.
+
+    ``observed_at`` is taken before the PR's head was read. Proofs can reach
+    the store out of order (review r3): an open proof of a head that neither
+    descends from the recorded head nor was observed after it is stale - the
+    PR may have moved away from it - and proves nothing.
     """
     lineage_key = canonical_lineage_key(key)
     recorded = conn.execute(
-        "SELECT head_sha, merged FROM validated_work_lineage_carriers WHERE lineage_key=? AND pr_number=?",
+        "SELECT head_sha, merged, observed_at FROM validated_work_lineage_carriers "
+        "WHERE lineage_key=? AND pr_number=?",
         (lineage_key, carried.pr_number),
     ).fetchone()
     if recorded is not None and recorded["merged"]:
         if recorded["head_sha"] != carried.head_sha or not carried.merged:
             return Status.CONTAINMENT_UNPROVEN  # a merged PR's head cannot move
         return Status.ALREADY_PUBLISHED
+    if recorded is not None and not carried.merged and _stale_open_proof(
+        lineage, key, lineage_key, carried, recorded, observed_at,
+    ):
+        return Status.CONTAINMENT_UNPROVEN
     # Pin before the row commits: once the fetched PR ref is pruned, nothing
     # else keeps a rebased-away or squash-merged head reachable.
     pin = CommitReference(
@@ -203,3 +214,33 @@ def _record_carrier(
     )
     lineage.classify(conn, lineage_key, observed_at, carried=carried)
     return Status.ADVANCED
+
+
+def _stale_open_proof(
+    lineage: LineageClassifier, key: ValidatedWorkKey, lineage_key: str,
+    carried: CarriedByIssuePullRequest, recorded: sqlite3.Row, observed_at: str,
+) -> bool:
+    """Whether an open PR's proof is older than the head already recorded for it.
+
+    A proof of the same head, of a head descending from the recorded one (a
+    later push), or observed strictly after the recorded proof is current. A
+    divergent or ancestral head observed no later than the recorded one
+    cannot be ordered against it, so it proves nothing.
+    """
+    if recorded["head_sha"] == carried.head_sha:
+        return False
+    stored = CommitReference(
+        replace(key, validated_head_sha=recorded["head_sha"]),
+        carrier_ref(lineage_key, carried.pr_number, recorded["head_sha"]),
+    )
+    proven = CommitReference(replace(key, validated_head_sha=carried.head_sha), "")
+    if lineage.compare(stored, proven) is Relation.ANCESTOR:
+        return False
+    return _instant(observed_at) <= _instant(recorded["observed_at"])
+
+
+def _instant(value: str) -> datetime:
+    instant = datetime.fromisoformat(value)
+    if instant.tzinfo is None:
+        raise ValueError(f"an observation instant must be timezone-aware: {value!r}")
+    return instant

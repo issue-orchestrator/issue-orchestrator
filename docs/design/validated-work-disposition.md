@@ -1623,7 +1623,11 @@ classifier that very proof (`carried`): the proof's own reclassification, and
 the admission of the capture whose own remote observation just made it.
 Capture passes it explicitly through `capture_automatic(..., carried=)` to
 `admit(..., carried=)`. A replayed or later admission is resolved only by a
-proof of its own. Each proven head is pinned before its row
+proof of its own. Proofs can reach the store out of order, so each one carries
+the instant taken before its PR head was read. An open proof whose head
+neither descends from the recorded head nor was observed after it cannot be
+ordered against it. That proof proves nothing, and the row keeps the newer
+head. Each proven head is pinned before its row
 commits, at `refs/issue-orchestrator/carried/<lineage>/<PR>/<head>`. Like a
 landing's pin it is create-only, it is not escrow, and nothing can release it.
 

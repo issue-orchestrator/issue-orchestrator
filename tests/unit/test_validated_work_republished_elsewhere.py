@@ -321,6 +321,48 @@ def test_an_open_carrier_resolves_an_admission_only_with_its_own_proof(tmp_path,
         ValidatedWorkState.RECOVERED, ResolutionKind.CONTAINED_IN_PUBLISHED_HEAD, "feature-r1")
 
 
+def test_an_older_open_proof_arriving_late_never_replaces_a_newer_one(tmp_path):
+    """Review r3: worker A observed PR 91 at DIVERGENT, then the PR was
+    force-pushed to TIP and worker B proved and stored TIP. A's proof arriving
+    afterwards cannot be ordered after B's, so it proves nothing: the row keeps
+    TIP and the record only DIVERGENT carries stays held."""
+    from tests.unit.validated_work_support import DIVERGENT, ROOT, TIP, Rig, capture
+
+    store = Rig(tmp_path / "work.sqlite").open()
+    only_in_a = capture(DIVERGENT, run="run-a", expected=ROOT, state=ValidatedWorkState.PARKED,
+                        failure=ValidatedWorkFailure.WORKTREE_AHEAD_OF_VALIDATION, reason="ahead")
+    store.admit(only_in_a)
+    key = only_in_a.evidence.identity.key
+    newer = CarriedByIssuePullRequest(91, TIP, "feature-r1", merged=False)
+    older = CarriedByIssuePullRequest(91, DIVERGENT, "feature-r1", merged=False)
+
+    assert store.record_pr_publication(
+        capture(TIP).evidence.identity.key, published=newer, observed_at="2026-10-04T09:05:00+00:00",
+    ) is PrPublicationStatus.ADVANCED
+    assert store.record_pr_publication(key, published=older, observed_at="2026-10-04T09:00:00+00:00") \
+        is PrPublicationStatus.CONTAINMENT_UNPROVEN
+
+    assert store.get(only_in_a.evidence.record_id).state is ValidatedWorkState.PARKED
+    # A force-push back, observed AFTER the recorded proof, is current again.
+    assert store.record_pr_publication(key, published=older, observed_at="2026-10-04T09:10:00+00:00") \
+        is PrPublicationStatus.ADVANCED
+    assert store.get(only_in_a.evidence.record_id).state is ValidatedWorkState.RECOVERED
+
+
+def test_a_later_push_of_an_open_pr_is_current_whatever_its_stamp(tmp_path):
+    """A head descending from the recorded one is the PR moving forward."""
+    from tests.unit.validated_work_support import L, TIP, Rig, capture
+
+    store = Rig(tmp_path / "work.sqlite").open()
+    key = capture(L).evidence.identity.key
+    assert store.record_pr_publication(
+        key, published=CarriedByIssuePullRequest(91, L, "feature-r1", merged=False),
+        observed_at="2026-10-04T09:05:00+00:00") is PrPublicationStatus.ADVANCED
+    assert store.record_pr_publication(
+        key, published=CarriedByIssuePullRequest(91, TIP, "feature-r1", merged=False),
+        observed_at="2026-10-04T09:00:00+00:00") is PrPublicationStatus.ADVANCED
+
+
 def test_an_existing_store_gains_the_carriers_table_and_published_branch_on_open(tmp_path):
     import sqlite3
 

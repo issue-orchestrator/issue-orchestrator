@@ -164,13 +164,16 @@ class PullRequestPublicationRecorder:
         if record.disposition.state is ValidatedWorkState.PUBLISHING:
             return False
         key = record.disposition.key
+        # Stamped before the remote is read: the store orders open-PR proofs
+        # by when they were observed, not by when they arrive (#8137 r3).
+        observed_at = self.now()
         published = self.carriage.proof(
             ValidatedWorkRemoteRequest(key.repo_slug, key.issue_number, key.branch_name),
             validated_head_sha=key.validated_head_sha, repository=self.repository,
         )
         if published is None:
             return False
-        status = self.store.record_pr_publication(key, published=published, observed_at=self.now())
+        status = self.store.record_pr_publication(key, published=published, observed_at=observed_at)
         # The route that resolved it is the durable record's answer: another
         # owner may have resolved it meanwhile, and that is not this publication.
         resolved = any(
