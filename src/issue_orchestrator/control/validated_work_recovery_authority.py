@@ -1,4 +1,5 @@
-"""Own selection of immutable authority for explicit validated-work recovery.
+"""Own selection of immutable authority for explicit validated-work recovery
+and release (#9092).
 
 Automatic recovery needs no approval snapshot. A human-approved tech-lead or
 operator recovery does: the snapshot must identify one current, retained,
@@ -17,6 +18,9 @@ from ..domain.validated_work import (
 )
 from ..domain.validated_work_commands import ValidatedWorkAuthoritySnapshot
 from ..ports.validated_work_preservation import ValidatedWorkAdmissionStore
+
+
+_RELEASABLE_STATES = frozenset({ValidatedWorkState.PARKED, ValidatedWorkState.FAILED})
 
 
 class ValidatedWorkRecoveryAuthority:
@@ -55,4 +59,38 @@ class ValidatedWorkRecoveryAuthority:
             and dispositions[row.record_id].state is ValidatedWorkState.PARKED
             and dispositions[row.record_id].lineage_role is LineageRole.HEAD
             and row.authority.remote_baseline_status is RemoteBaselineStatus.OBSERVED
+        )
+
+    def release_grants_for(
+        self, issue_numbers: Sequence[int]
+    ) -> tuple[ValidatedWorkAuthoritySnapshot, ...]:
+        """Every PARKED or FAILED record's current authority, per issue (#9092).
+
+        Any lineage role qualifies: work rebuilt elsewhere typically strands
+        DIVERGENT heads, which recovery can never pick between. Whether the
+        record is still releasable is the store's CAS at execution, never
+        this projection.
+        """
+        grants: list[ValidatedWorkAuthoritySnapshot] = []
+        for issue_number in sorted(set(issue_numbers)):
+            grants.extend(sorted(
+                self._current(issue_number, states=_RELEASABLE_STATES),
+                key=lambda grant: grant.record_id,
+            ))
+        return tuple(grants)
+
+    def _current(
+        self, issue_number: int, *, states: frozenset[ValidatedWorkState]
+    ) -> tuple[ValidatedWorkAuthoritySnapshot, ...]:
+        dispositions = {
+            item.record_id: item
+            for item in self._store.for_issue(issue_number).dispositions
+        }
+        return tuple(
+            row.authority
+            for row in self._store.retained_evidence(issue_number)
+            if row.role is EvidenceRole.CURRENT
+            and row.record_id in dispositions
+            and dispositions[row.record_id].evidence_id == row.evidence_id
+            and dispositions[row.record_id].state in states
         )

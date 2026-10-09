@@ -399,6 +399,18 @@ class TechLeadApprovals:
     def verified_numbers(self) -> frozenset[int]:
         return frozenset(self._verified)
 
+    def verified_approval(self, number: int) -> ApprovalVerdict:
+        """The verified approval this process holds for proposal *number*.
+
+        Who approved, for an executor that records the operator's identity
+        (#9092). It is read after :meth:`confirm` re-verified the approval
+        fresh, so a missing verdict is a wiring bug and raises.
+        """
+        verdict = self._verified.get(number)
+        if verdict is None or not verdict.approved:
+            raise LookupError(f"proposal #{number} holds no verified approval")
+        return verdict
+
 
 def ledger_proposal_numbers(authority: "TechLeadAuthorityStore", repo: str | None) -> tuple[int, ...]:
     """Proposal issue numbers the durable ledgers name: stored ops, and

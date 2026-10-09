@@ -33,6 +33,7 @@ from ..domain.validated_work_claim import (
     ValidatedWorkClaim,
 )
 from ..domain.validated_work_commands import (
+    AbandonAllOutcome,
     AbandonValidatedWorkCommand,
     AbandonValidatedWorkOutcome,
     ValidatedWorkAuthoritySnapshot,
@@ -178,6 +179,11 @@ class SqliteValidatedWorkStore:
         self, command: AbandonValidatedWorkCommand
     ) -> AbandonValidatedWorkOutcome:
         return self._abandonment.abandon_if_current(command)
+
+    def abandon_all_if_current(
+        self, commands: tuple[AbandonValidatedWorkCommand, ...]
+    ) -> AbandonAllOutcome:
+        return self._abandonment.abandon_all_if_current(commands)
 
     def retire_outside_scope(
         self,

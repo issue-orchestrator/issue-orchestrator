@@ -74,6 +74,7 @@ _APPROVAL_EFFECTS: dict[str, str] = {
     "reset_retry": "Resets #{target} and retries it from scratch. Destructive: the branch and PR are discarded.",
     "kill_hung_session": "Terminates the hung session on #{target}, only if it is still the session observed.",
     "recover_validated_work": "Publishes #{target}'s retained validated work as a PR, if nothing changed since.",
+    "release_validated_work": "Releases #{target}'s named retained records as rebuilt in a merged PR, if none changed since.",
     "release_withheld_review": "Releases the code review that #{target}'s own block withholds.",
 }
 _FOLLOW_UP_EFFECT = "Admits this issue to the work queue, where it is worked like any other."

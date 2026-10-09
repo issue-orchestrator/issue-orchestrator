@@ -34,6 +34,7 @@ from .tech_lead_op_actions import (
     EFFECTIVE_DISPOSITION_OP_ACTIONS as EFFECTIVE_DISPOSITION_OP_ACTIONS,
     KillHungSessionAction as KillHungSessionAction,
     RecoverValidatedWorkAction as RecoverValidatedWorkAction,
+    ReleaseValidatedWorkAction as ReleaseValidatedWorkAction,
     ReleaseWithheldReviewAction as ReleaseWithheldReviewAction,
     ResolveBlockAction as ResolveBlockAction,
     RequestReworkAction as RequestReworkAction,

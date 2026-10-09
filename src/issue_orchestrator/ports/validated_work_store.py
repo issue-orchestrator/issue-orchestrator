@@ -9,6 +9,7 @@ from ..domain.validated_work_claim import (
     ValidatedWorkClaim,
 )
 from ..domain.validated_work_commands import (
+    AbandonAllOutcome,
     AbandonValidatedWorkCommand,
     AbandonValidatedWorkOutcome,
     ValidatedWorkAuthoritySnapshot,
@@ -52,6 +53,10 @@ class ValidatedWorkStore(Protocol):
     def abandon_if_current(
         self, command: AbandonValidatedWorkCommand
     ) -> AbandonValidatedWorkOutcome: ...
+
+    def abandon_all_if_current(
+        self, commands: tuple[AbandonValidatedWorkCommand, ...]
+    ) -> AbandonAllOutcome: ...
 
     def retire_outside_scope(
         self,

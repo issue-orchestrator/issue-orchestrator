@@ -80,6 +80,7 @@ from ..domain.scoped_rework import ReworkRequest, ReworkTarget
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Mapping
 
+from ..domain.validated_work_release import ReleaseBinder, bound_release, no_release_grants
 from ..domain.tech_lead_artifacts import (
     ProposedTechLeadAction,
     TechLeadDecision,
@@ -207,6 +208,7 @@ def plan_tech_lead_decision_actions(
     observed_validated_work_authority: Callable[
         [int], "ValidatedWorkAuthoritySnapshot | None"
     ] = _no_validated_work_authority,
+    bind_validated_work_release: ReleaseBinder = no_release_grants,
     rework_targets: tuple[ReworkTarget, ...] = (),
     report_text: str = "",
     charter_log: CharterDecisionLog | None = None,
@@ -246,6 +248,7 @@ def plan_tech_lead_decision_actions(
         observed_at=observed_at,
         observed_session_generation=observed_session_generation,
         observed_validated_work_authority=observed_validated_work_authority,
+        bind_validated_work_release=bind_validated_work_release,
         dedup_corpus=dedup_corpus,
         dedup_grant=dedup_grant,
         rework_targets=rework_targets,
@@ -307,6 +310,9 @@ class _DecisionActionPlanner:
     observed_validated_work_authority: Callable[
         [int], "ValidatedWorkAuthoritySnapshot | None"
     ]
+    # Binds a release's named records to their launch-observed snapshots
+    # (#9092); None when any record was not granted for that issue.
+    bind_validated_work_release: ReleaseBinder
     # Trusted dedup facts (#6878), REQUIRED — never a silent empty default, which
     # would disable the safety mechanism invisibly. The corpus carries an explicit
     # Ready/Unavailable state; the grant is the launch-authority-derived set a
@@ -418,6 +424,7 @@ class _DecisionActionPlanner:
         )
         if proposed.action_type == "recover_validated_work" and validated_work_authority is None:
             raise ValueError("recover_validated_work has no immutable launch authority")
+        validated_work_release = bound_release(proposed, self.bind_validated_work_release)
         follow_through = bind_follow_through(
             proposed, rework_targets=self.rework_targets, report_text=self.report_text,
         ) if proposed.follow_through else None
@@ -426,6 +433,7 @@ class _DecisionActionPlanner:
             decision=_operator_decision(proposed),
             resolution=proposed.resolution if proposed.action_type == "resolve_block" else None,
             follow_through=follow_through,
+            release=validated_work_release,
         )
         existing = self.op_ledger.get(key)
         if existing is not None:
@@ -439,6 +447,7 @@ class _DecisionActionPlanner:
                             if proposed.action_type == "kill_hung_session" else None,
                         rework_request=request,
                         validated_work_authority=validated_work_authority,
+                        validated_work_release=validated_work_release,
                         observed_at=self.observed_at, follow_through=follow_through),
                     number=existing,
                     comment=build_duplicate_proposal_comment(
@@ -481,6 +490,7 @@ class _DecisionActionPlanner:
                 target_session=target_session,
                 rework_request=request,
                 validated_work_authority=validated_work_authority,
+                validated_work_release=validated_work_release,
                 observed_at=self.observed_at,
                 follow_through=follow_through,
             )
@@ -495,6 +505,10 @@ class _DecisionActionPlanner:
             return
 
         assert proposed.target_number is not None  # enforced by validate()
+        if proposed.action_type == "release_validated_work":
+            # Destructive (#9092): the charter never executes it, so reaching
+            # here means the policy and the planner disagree. Fail loudly.
+            raise ValueError("release_validated_work never executes without approval")
         if proposed.action_type == "reset_retry":
             self.actions.append(
                 ResetRetryIssueAction(

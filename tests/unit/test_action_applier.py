@@ -3385,6 +3385,10 @@ class TestClaimGateAudit:
     #   authority on the target issue before invoking the shared recovery
     #   operation; that owner then checks the full launch-bound evidence
     #   snapshot before publishing its retained branch/PR.
+    # - RELEASE_VALIDATED_WORK (#9092): the same dispatch gate checks mutation
+    #   authority on the target issue; its owner writes only the local store
+    #   (and reprojects the aggregate block through its own owner). Its only
+    #   GitHub writes are the proposal-issue outcome comment + close.
     # - RELEASE_WITHHELD_REVIEW: owner command (#7399) - re-verifies every
     #   precondition with read-only owners, then performs its only writes
     #   (pr-pending, review label, blocked-failed) as AddLabel/RemoveLabel
@@ -3452,6 +3456,7 @@ class TestClaimGateAudit:
         ActionType.RESET_RETRY_ISSUE,
         ActionType.KILL_HUNG_SESSION,
         ActionType.RECOVER_VALIDATED_WORK,
+        ActionType.RELEASE_VALIDATED_WORK,
         ActionType.RELEASE_WITHHELD_REVIEW,
         # An APPROVED operator decision (#7593): its target write is the
         # operator's own retry command (the dashboard's Retry, which is not

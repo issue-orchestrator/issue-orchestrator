@@ -328,6 +328,8 @@ class TestProposedActionParsing:
                 "body": "The engine gave up on a label that no longer holds.",
                 "evidence": ["board-snapshot.json"],
             }
+        if act_type == "release_validated_work":
+            action["release"] = {"record_ids": ["r1:abc"], "superseding_pr_number": 479}
         parsed = TechLeadDecision.from_agent_payload(_payload(proposed_actions=[action]))
         assert parsed.proposed_actions[0].is_act_level
         broken = dict(action)

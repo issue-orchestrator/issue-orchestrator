@@ -246,6 +246,13 @@ CHARTER_ACTION_CLASSES: Mapping[str, CharterActionClass] = {
         CharterRole.FLOW, _W, CharterBinding.DESTRUCTIVE,
         "reset an issue and retry it from scratch",
     ),
+    # Resolves retained validated-work records with no proof that their work
+    # survived, on the tech lead's word that a merged PR rebuilt it (#9092).
+    # A wrong release loses work for good, so it never runs unattended.
+    "release_validated_work": CharterActionClass(
+        CharterRole.FLOW, _W, CharterBinding.DESTRUCTIVE,
+        "release retained validated work rebuilt in another merged PR",
+    ),
     "create_issue": CharterActionClass(
         CharterRole.FLOW, _F, CharterBinding.APPROVABLE, "file a follow-up issue"
     ),
