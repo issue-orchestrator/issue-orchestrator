@@ -8,7 +8,9 @@
   (each its heats merged), graded blind and pooled. One tournament per
   snapshot, named for the challenge, so a challenge interrupted mid-way is
   resumed (a graded tournament is reused, an ungraded one regraded), never
-  re-run at the cost of its arms again.
+  re-run at the cost of its arms again. A trial graded against an answer key
+  that has changed since no longer stands (#8972): the challenge is tried
+  again as a new attempt (``<id>-k2``), the fallen one kept.
 * :meth:`promote` replaces the champion with a challenger that won on every
   snapshot against the champion that is current now, AND whose issue a
   maintainer approved (#7906's positive ``approved``), read fresh.
@@ -51,7 +53,14 @@ from ..entrypoints.improver_run import HeatPlan
 from ..ports.improver_challenger import ChallengerIssueEvidence
 from .improver_champion_store import ChampionUnavailable, FileChampionStore
 from .improver_run_store import FileImproverRunStore
-from .improver_tournament import DEFAULT_GRADERS, DEFAULT_PASSES, ArmSpec, Grader, TournamentHarness
+from .improver_tournament import (
+    DEFAULT_GRADERS,
+    DEFAULT_PASSES,
+    ArmSpec,
+    GradedKeyChanged,
+    Grader,
+    TournamentHarness,
+)
 
 #: Whole improver runs per arm per snapshot: the fewest the heats' exact
 #: test can separate (two an arm never can).
@@ -119,9 +128,10 @@ class ImproverChallenges:
         except ChangeNotApplicable as error:
             raise ChallengeRefused(f"run {run_id}'s change does not apply to the champion: {error}") from error
         self._champions.store_prompt(challenger_prompt)
-        challenge_id = f"{run_id}-vs-{champion.id}"
+        base = f"{run_id}-vs-{champion.id}"
         # One attempt at a time: a concurrent retry waits, then finds the trial recorded.
-        with self._champions.attempting(challenge_id):
+        with self._champions.attempting(base):
+            challenge_id = self._standing_attempt(base)
             if seed is None:
                 fixed = self._champions.challenge_request(challenge_id)
                 seed = fixed.seed if fixed is not None else random.SystemRandom().randrange(1 << 30)
@@ -144,7 +154,7 @@ class ImproverChallenges:
             ]
             trials = []
             for index, snapshot_id in enumerate(request.snapshots, 1):
-                tournament_id = f"{challenge_id}-s{index}"
+                tournament_id = _tournament_id(challenge_id, index)
                 result = self._tournament(tournament_id, snapshot_id, specs, request, graders)
                 comparison = next(
                     c for c in result.comparisons if {c.higher, c.lower} == {CHAMPION_ARM, CHALLENGER_ARM}
@@ -164,13 +174,48 @@ class ImproverChallenges:
     def promote(self, challenge_id: str) -> Promoted:
         challenge = self._champions.challenge(challenge_id)
         verdict = self._approval(challenge)
-        refusals = promotion_refusals(challenge, current=self._champions.state().champion, approval=verdict)
-        if refusals:
-            return Promoted(None, verdict, tuple(refusals))
-        state = self._champions.promote(challenge, at=self._clock(), approved_by=verdict.actor)
+        # No answer key changes from the trials' check to the promotion: a
+        # trial found standing stands through it (#8972).
+        with self._harness.keys_held():
+            refusals = [
+                *promotion_refusals(challenge, current=self._champions.state().champion, approval=verdict),
+                *self._fallen([t.tournament_id for t in challenge.trials]),
+            ]
+            if refusals:
+                return Promoted(None, verdict, tuple(refusals))
+            state = self._champions.promote(challenge, at=self._clock(), approved_by=verdict.actor)
         return Promoted(state, verdict, ())
 
     # -- parts ---------------------------------------------------------------
+
+    def _standing_attempt(self, base: str) -> str:
+        """The attempt of challenge ``base`` to try (or return, if tried):
+        the first none of whose graded (or sealed for grading) trials has fallen. A trial graded
+        against an answer key that has changed since decides nothing
+        (#8972); its attempt is kept as it was, and the next one
+        (``<base>-k2``, ...) tries the change again on the key as it is."""
+        attempt, number = base, 1
+        while self._attempt_fallen(attempt):
+            number += 1
+            attempt = f"{base}-k{number}"
+        return attempt
+
+    def _attempt_fallen(self, challenge_id: str) -> bool:
+        asked = self._champions.challenge_request(challenge_id)
+        return asked is not None and bool(
+            self._fallen([_tournament_id(challenge_id, i) for i in range(1, len(asked.snapshots) + 1)])
+        )
+
+    def _fallen(self, tournament_ids: Sequence[str]) -> list[str]:
+        """Why each of these tournaments' gradings has fallen: sealed against
+        an answer key that has changed since, it no longer decides anything."""
+        fallen = []
+        for tournament_id in tournament_ids:
+            try:
+                self._harness.require_standing(tournament_id)
+            except GradedKeyChanged as changed:
+                fallen.append(str(changed))
+        return fallen
 
     def _invited_run(self, run_id: str) -> ImproverRunRecord:
         run = next((r for r in self._runs.runs() if r.run_id == run_id), None)
@@ -205,7 +250,10 @@ class ImproverChallenges:
         """The snapshot's tournament: reused when graded (exactly as the
         challenge asked), regraded when its grading was prepared but did not
         finish, otherwise its arms run or resume, then graded."""
-        done = self._harness.result_of(tournament_id)
+        try:
+            done = self._harness.result_of(tournament_id)
+        except GradedKeyChanged as changed:
+            raise ChallengeRefused(str(changed)) from changed
         if done is None and self._harness.grading_prepared(tournament_id):
             done = self._harness.regrade(tournament_id, graders=graders, passes=request.passes)
         if done is None:
@@ -245,6 +293,11 @@ class ImproverChallenges:
             closed_since_approval=added is not None and evidence.issue_closed_on_or_after(number, added.created_at),
             carries_marker=found is not None and marker in (found.body or ""),
         ))
+
+
+def _tournament_id(challenge_id: str, index: int) -> str:
+    """The challenge's tournament on its ``index``-th snapshot."""
+    return f"{challenge_id}-s{index}"
 
 
 def _change_issue(run: ImproverRunRecord) -> str:

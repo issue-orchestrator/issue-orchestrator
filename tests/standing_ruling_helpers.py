@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from issue_orchestrator.control.standing_rulings import StandingRulingsOwner
+from issue_orchestrator.ports.repository_host import RepositoryHostError
 from issue_orchestrator.ports.standing_rulings import SyncedRulings
 from issue_orchestrator.domain.standing_ruling import (
     RulingAuthority,
@@ -53,10 +54,15 @@ class IssueBodies:
     bodies: dict[int, str] = field(default_factory=dict)
     reads: list[int] = field(default_factory=list)
     writes: list[tuple[int, str]] = field(default_factory=list)
+    #: Numbers GitHub has no issue for (the adapter's read returns None).
     unreadable: set[int] = field(default_factory=set)
+    #: Numbers whose read fails (the adapter raises a host error).
+    failing: set[int] = field(default_factory=set)
 
     def read(self, number: int) -> SimpleNamespace | None:
         self.reads.append(number)
+        if number in self.failing:
+            raise RepositoryHostError(f"GitHub read of #{number} failed")
         if number in self.unreadable:
             return None
         return SimpleNamespace(number=number, body=self.bodies.get(number, ""), state="open")

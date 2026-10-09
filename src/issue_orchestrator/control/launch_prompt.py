@@ -9,6 +9,7 @@ by each path remembering to add them.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from ..domain.coder_prompt import CoderPromptAddendumUnavailable, PreparedCoderPromptAddendum
@@ -44,6 +45,9 @@ class IssueLaunchPrompt:
         except StandingRulingsUnavailable as error:
             return LaunchPromptUnavailable(str(error))
         return PreparedLaunchPrompt(rulings=rulings, coder=coder)
+
+    def covered_rulings(self, covered: Mapping[int, tuple[int, ...]]) -> str | None:
+        return self.standing_rulings.covered_section(covered)
 
 
 #: No coder addendum and no rulings: compositions without a repository host.

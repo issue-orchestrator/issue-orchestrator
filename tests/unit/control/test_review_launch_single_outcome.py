@@ -30,6 +30,7 @@ from issue_orchestrator.control.planner_types import OrchestratorSnapshot, Plan
 from issue_orchestrator.control.issue_fetch_resilience import IssueFetchResilience
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.control.startup_manager import StartupManager
+from issue_orchestrator.ports.standing_rulings import NO_STANDING_RULINGS
 from issue_orchestrator.control.worktree_reconciliation import WorktreeRecoverySummary
 from issue_orchestrator.control.github_workflow import launch_issue_by_number
 from issue_orchestrator.control.session_routing import (
@@ -96,6 +97,8 @@ class _RecordedCauses:
 
     def recorded_causes(self, issue_numbers):
         return {n: self.causes.get(n, frozenset()) for n in issue_numbers}
+
+    hold_causes = recorded_causes  # every record here is the standing one
 
     def held_by_another_cause(self, issue_number, *, excluding):
         return bool(self.causes.get(issue_number, frozenset()) - {excluding})
@@ -309,6 +312,7 @@ def _startup_manager(
         issue_fetch_resilience=IssueFetchResilience("test/repo"),
         startup_worktree_reconciler=reconciler,
         pending_work_claims=MagicMock(),
+        standing_rulings=NO_STANDING_RULINGS,
         **({} if needs_human_block is None else {"needs_human_block": needs_human_block}),
     )
 

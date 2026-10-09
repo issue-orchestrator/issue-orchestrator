@@ -19,6 +19,7 @@ from issue_orchestrator.domain.action_liveness import (
 )
 from issue_orchestrator.domain.human_block import NeedsHumanCause
 from issue_orchestrator.events import EventName
+from tests.label_application_helpers import standing_while_present
 
 NOW = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
 
@@ -136,6 +137,7 @@ def _shared_block(tmp_path):
     block = NeedsHumanBlock(
         "needs-human", "tech-lead-needs-human", labels, labels.read, frozenset,
         SqlitePendingWorkClaimStore(tmp_path / "causes.sqlite"),
+        label_application=standing_while_present(labels.read),
     )
     return labels, block
 

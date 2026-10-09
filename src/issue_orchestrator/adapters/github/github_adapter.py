@@ -1969,6 +1969,13 @@ class GitHubAdapter(GitHubIntegrationBranchMixin):
         account = self._client.app_bot_account()
         return account is not None and event.actor_is_bot and event.actor_id == account.user_id
 
+    def own_write_verdict(self, event: "LabelEvent") -> bool | None:
+        """:meth:`is_own_write` where it is decidable (an App engine), else
+        None: a personal-token engine cannot tell its write from its user's."""
+        if self._client.app_bot_account() is None:
+            return None
+        return self.is_own_write(event)
+
     def get_pr_reviews(self, pr_number: int) -> list[dict[str, Any]]:
         """Get all reviews on a pull request.
 

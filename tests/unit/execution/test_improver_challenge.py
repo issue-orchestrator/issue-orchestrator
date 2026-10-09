@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -22,7 +23,7 @@ from issue_orchestrator.domain.improver_champion import (
 from issue_orchestrator.domain.tech_lead_approval import ApprovalVerdictKind, LabelEvent
 from issue_orchestrator.entrypoints.improver_run import ChangePolicy, HeatPlan, ImproverRun
 from issue_orchestrator.execution.command_runner import LocalCommandRunner
-from issue_orchestrator.execution.improver_answer_keys import FileAnswerKeyStore
+from issue_orchestrator.execution.improver_answer_keys import AnswerKeyError, FileAnswerKeyStore
 from issue_orchestrator.execution.improver_challenge import ChallengeRefused, ImproverChallenges
 from issue_orchestrator.execution.improver_champion_store import ChampionUnavailable, FileChampionStore
 from issue_orchestrator.execution.improver_effect_applier import ImproverEffects
@@ -33,7 +34,7 @@ from issue_orchestrator.execution.improver_tournament import TournamentHarness
 from issue_orchestrator.ports.improver import HeatSpace, ImproverAgentResult
 from tests.unit.domain.test_improver_tournament import SEALED
 from tests.unit.entrypoints.test_improver_run import FakeStager, _request
-from tests.unit.execution.test_improver_tournament_harness import T0, _legacy_inputs
+from tests.unit.execution.test_improver_tournament_harness import T0, _hindsight, _legacy_inputs
 from tests.unit.improver_support import FakeIssueHost, example
 
 PROMPT = "You audit the tech lead. Cite the staged evidence for every finding."
@@ -87,10 +88,12 @@ class Agents:
                         agents.broken_gradings -= 1
                         return ImproverAgentResult("not a grading", "broken")
                 anon = space.run_dir / "anon"
+                # Every item the key as the graders read it scores.
+                items = re.findall(r"^- \*\*(\S+?)\*\*", (space.run_dir / "key" / "KEY.md").read_text(), re.MULTILINE)
                 grades = {}
                 for path in sorted(anon.glob("*.json")):
                     grade = "full" if "QUOTED" in path.read_text() else "miss"
-                    grades[path.stem] = {"items": {i: {"grade": grade, "why": "q"} for i in ("1", "2", "9")},
+                    grades[path.stem] = {"items": {i: {"grade": grade, "why": "q"} for i in items},
                                          "unsupported": 0}
                 return ImproverAgentResult(json.dumps(grades), "graded")
 
@@ -138,12 +141,12 @@ def cycle(tmp_path: Path):  # type: ignore[no-untyped-def]
     root = tmp_path / "io-improver"
     snapshots = FrozenSnapshotStore(root, LocalCommandRunner())
     snapshots.import_("20261004", improver_data=_legacy_inputs(tmp_path / "src"), taken_at=T0, origin="test")
-    FileAnswerKeyStore(root).seed_sealed("20261004", SEALED, sealed_at=T0, added_by="coordinator")
+    FileAnswerKeyStore(root, snapshots).seed_sealed("20261004", SEALED, sealed_at=T0, added_by="coordinator")
     champions = FileChampionStore(root)
     champions.seed(_variant(), PROMPT, at=T0, by="operator")
     runs = FileImproverRunStore(root)
     agents, issues = Agents(), Issues()
-    harness = TournamentHarness(root=root, snapshots=snapshots, keys=FileAnswerKeyStore(root),
+    harness = TournamentHarness(root=root, snapshots=snapshots, keys=FileAnswerKeyStore(root, snapshots),
                                 agent_for=lambda choice, minutes: agents.agent_for(choice, minutes),
                                 grader_prompt=GRADER_PROMPT, clock=lambda: T0)
     challenges = ImproverChallenges(harness=harness, champions=champions, runs=runs, issues_for=lambda repo: issues,
@@ -204,6 +207,89 @@ def test_a_challenger_that_wins_and_is_approved_becomes_the_champion(cycle) -> N
     [promotion] = promoted.state.promotions
     assert (promotion.previous, promotion.approved_by, promotion.issue) == (_variant(), "bruce", record.issue)
     assert champions.prompt(record.challenger.prompt_sha256) == PROMPT.replace("Cite the", "Quote the")
+
+
+def test_a_challenge_graded_on_a_key_that_changed_since_is_tried_again_and_only_the_new_trial_promotes(cycle) -> None:  # type: ignore[no-untyped-def]
+    """#8972: a trial is graded against its snapshot's key as it was. Once
+    the key changes (an item confirmed, or found unobservable), the trial
+    decides nothing: it is never promoted, and the challenge retried is a
+    new attempt on the key as it is, the fallen one kept."""
+    root, champions, runs, agents, issues, challenges = cycle
+    keys = FileAnswerKeyStore(root, FrozenSnapshotStore(root, LocalCommandRunner()))
+    run_id = _invited_run(runs, host=issues.host)
+    won = challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5)
+    issues.approve("bruce", role="admin")
+    path = keys.path("20261004")
+    graded = path.read_text()
+    unseen = json.loads(_hindsight("H-8137", seen=T0 + timedelta(hours=2)).model_dump_json())
+    path.write_text(json.dumps({**json.loads(graded), "items": [*json.loads(graded)["items"], unseen]}))
+
+    refused = challenges.promote(won.challenge_id)
+    assert refused.state is None and any("no longer stands" in r and "H-8137" in r for r in refused.refusals)
+    with pytest.raises(AnswerKeyError, match="H-8137.*after the snapshot was frozen"):
+        challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5)
+
+    path.write_text(graded)
+    keys.add(_hindsight("H-7999"), snapshot_id="20261004")
+    refused = challenges.promote(won.challenge_id)
+    assert refused.state is None and any("the key has changed since" in r for r in refused.refusals)
+    arm_calls = agents.calls.count("arm")
+    again = challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5)
+
+    assert again.challenge_id == f"{won.challenge_id}-k2" and again.outcome == "won"
+    assert agents.calls.count("arm") == arm_calls + 6 and champions.challenge(won.challenge_id) == won
+    assert challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5) == again
+    assert challenges.promote(won.challenge_id).state is None
+    assert challenges.promote(again.challenge_id).state is not None
+
+
+def test_a_challenge_whose_grading_failed_before_its_key_changed_is_tried_again_on_the_new_key(cycle) -> None:  # type: ignore[no-untyped-def]
+    """A grading sealed (its key written) but never finished, then the key
+    changes: a regrade would refuse the changed key, so the retry is a new
+    attempt, and only it can be promoted."""
+    root, champions, runs, agents, issues, challenges = cycle
+    keys = FileAnswerKeyStore(root, FrozenSnapshotStore(root, LocalCommandRunner()))
+    run_id = _invited_run(runs, host=issues.host)
+    agents.broken_gradings = 1
+    with pytest.raises(RuntimeError, match="not every grading was complete"):
+        challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5)
+    base = f"{run_id}-vs-{_variant().id}"
+    sealed = (root / "tournaments" / f"{base}-s1" / "key" / "KEY.md").read_text()
+    keys.add(_hindsight("H-7999"), snapshot_id="20261004")
+    issues.approve("bruce", role="admin")
+
+    again = challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5)
+
+    assert again.challenge_id == f"{base}-k2" and again.outcome == "won"
+    assert (root / "tournaments" / f"{base}-s1" / "key" / "KEY.md").read_text() == sealed
+    assert "H-7999" in (root / "tournaments" / f"{base}-k2-s1" / "key" / "KEY.md").read_text()
+    assert not champions.has_challenge(base) and challenges.promote(again.challenge_id).state is not None
+
+
+def test_a_key_written_while_a_challenge_is_promoted_waits_for_it(cycle, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    """The trials found standing stand through the promotion: no key write
+    lands between their check and the champion's change."""
+    root, champions, runs, _, issues, challenges = cycle
+    keys = FileAnswerKeyStore(root, FrozenSnapshotStore(root, LocalCommandRunner()))
+    won = challenges.challenge(_invited_run(runs, host=issues.host), ["20261004"], whole_runs=3, passes=1, seed=5)
+    issues.approve("bruce", role="admin")
+    promote = FileChampionStore.promote
+    confirmed: list[threading.Thread] = []
+
+    def confirm_meanwhile(self, challenge, *, at, approved_by):  # type: ignore[no-untyped-def]
+        writer = threading.Thread(target=keys.add, args=(_hindsight("H-7999"),), kwargs={"snapshot_id": "20261004"})
+        writer.start()
+        writer.join(timeout=1.0)
+        confirmed.append(writer)
+        assert writer.is_alive(), "a key write landed between the trials' check and the promotion"
+        return promote(self, challenge, at=at, approved_by=approved_by)
+
+    monkeypatch.setattr(FileChampionStore, "promote", confirm_meanwhile)
+    promoted = challenges.promote(won.challenge_id)
+    confirmed[0].join(timeout=10)
+
+    assert promoted.state is not None and not confirmed[0].is_alive()
+    assert "H-7999" in {i.id for i in keys.get("20261004").items}
 
 
 def test_a_losing_challenger_is_never_promoted_whoever_approves_it(cycle) -> None:  # type: ignore[no-untyped-def]
@@ -319,8 +405,9 @@ def test_a_tournament_graded_otherwise_than_the_challenge_asked_never_counts(cyc
     agents.broken_gradings = 1
     with pytest.raises(RuntimeError, match="not every grading was complete"):
         challenges.challenge(run_id, ["20261004"], whole_runs=3, passes=1, seed=5)
-    harness = TournamentHarness(root=root, snapshots=FrozenSnapshotStore(root, LocalCommandRunner()),
-                                keys=FileAnswerKeyStore(root), agent_for=agents.agent_for,
+    snapshots = FrozenSnapshotStore(root, LocalCommandRunner())
+    harness = TournamentHarness(root=root, snapshots=snapshots,
+                                keys=FileAnswerKeyStore(root, snapshots), agent_for=agents.agent_for,
                                 grader_prompt=GRADER_PROMPT, clock=lambda: T0)
     harness.regrade(f"{run_id}-vs-{_variant().id}-s1", passes=2)
 

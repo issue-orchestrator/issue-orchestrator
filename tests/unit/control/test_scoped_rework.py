@@ -41,6 +41,7 @@ from tests.approval_helpers import (
     approving_everything,
     make_approvals,
 )
+from tests.label_application_helpers import standing_while_present
 
 
 @pytest.fixture
@@ -108,6 +109,7 @@ def lane(tmp_path):
         lambda number: issues[number].labels,
         lambda: frozenset(),
         causes,
+        label_application=standing_while_present(lambda number: issues[number].labels),
     )
     db = tmp_path / "authority.sqlite"
     store = SqliteTechLeadAuthorityStore(db)

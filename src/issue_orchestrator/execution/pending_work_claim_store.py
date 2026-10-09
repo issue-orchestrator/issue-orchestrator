@@ -49,6 +49,7 @@ from ..ports.pending_work_claim_store import (
     ClaimLookup,
     ClaimState,
     ConflictingPendingWorkClaimError,
+    GenerationBinding,
     NeedsHumanCauseRow,
     QuarantineCause,
     QuarantineLabelState,
@@ -596,9 +597,19 @@ class SqlitePendingWorkClaimStore:
     def bind_needs_human_episode(
         self, issue_number: int, *, event_id: int, applied_at: str
     ) -> str:
-        with self._write_lock, self._transaction() as conn:
-            bind_generation(conn, issue_number, event_id=event_id, applied_at=applied_at)
+        self.bind_needs_human_generation(
+            issue_number, event_id=event_id, applied_at=applied_at, own_write=False
+        )
         return self.needs_human_episodes([issue_number])[issue_number]
+
+    def bind_needs_human_generation(
+        self, issue_number: int, *, event_id: int, applied_at: str, own_write: bool
+    ) -> GenerationBinding:
+        with self._write_lock, self._transaction() as conn:
+            return bind_generation(
+                conn, issue_number, event_id=event_id, applied_at=applied_at,
+                own_write=own_write,
+            )
 
     # -- quarantine --------------------------------------------------------
 

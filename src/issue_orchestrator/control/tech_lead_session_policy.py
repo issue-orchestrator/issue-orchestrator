@@ -63,6 +63,7 @@ from .transition_log import log_transition
 from ..ports.event_sink import make_trace_event
 from .session_launch_types import LaunchResult
 from .scoped_rework_observation import observe_rework_targets
+from .tech_lead_covered_rulings import launch_covered_work
 from .completion_types import ERROR_PREFIX_PUBLISH_BLOCKED, ProcessingResult
 from .tech_lead_charter_prompt import stage_tech_lead_charter
 from .tech_lead_evidence import build_evidence_map, write_evidence_map
@@ -78,6 +79,7 @@ from .tech_lead_run_inputs import (
 if TYPE_CHECKING:
     from .completion_ports import GitAdapter
     from ..ports.blocked_item_triage import BlockedItemTriageAgenda
+    from ..ports.launch_prompt import LaunchPromptProvider
     from ..ports.board_snapshot_provider import BoardSnapshotProvider
     from ..infra.config import Config
     from ..ports import EventSink
@@ -385,6 +387,7 @@ def prepare_tech_lead_manifest(
     manifest_downloader: "ManifestDownloader",
     worktree_path: Path,
     run_dir: Path,
+    repo_slug: str,
 ) -> TechLeadManifest | None:
     """Build and download the batch PR manifest for a tech_lead session.
 
@@ -395,6 +398,7 @@ def prepare_tech_lead_manifest(
     builder = TechLeadManifestBuilder(
         repository_host=repository_host,
         watch_label=config.tech_lead_watch_label,
+        repo_slug=repo_slug,
         candidate_policy=TechLeadCandidatePolicy.from_config(config),
     )
 
@@ -410,6 +414,7 @@ def prepare_tech_lead_manifest(
     manifest = manifest_downloader.download(manifest, worktree_path)
     for pr in manifest.prs:
         pr.head_sha = expected_heads[pr.number]
+    builder.relink_from_metadata(manifest, worktree_path / data_dir)
 
     manifest_path = worktree_path / data_dir / "manifest.json"
     manifest.write(manifest_path)
@@ -501,6 +506,7 @@ def prepare_tech_lead_session_data(
     ),
     board_snapshot_provider: "BoardSnapshotProvider",
     blocked_item_triage: "BlockedItemTriageAgenda",
+    launch_prompt: "LaunchPromptProvider",
     issue: "Issue",
     ctx: "WorktreeContext",
     tech_lead_scope: "TechLeadLaunchScope | None",
@@ -541,6 +547,7 @@ def prepare_tech_lead_session_data(
             manifest_downloader=manifest_downloader,
             worktree_path=ctx.worktree_path,
             run_dir=run_dir,
+            repo_slug=issue.key.scope(),
         )
         if tech_lead_manifest:
             # Store manifest path in session for completion handling
@@ -579,6 +586,8 @@ def prepare_tech_lead_session_data(
         if flavor is TechLeadSessionFlavor.HEALTH_REVIEW
         else TriageAgenda()
     )
+    covered_work = launch_covered_work(tech_lead_manifest, problem_issue_numbers, triage_agenda, anchor=issue.number)
+    covered_rulings = launch_prompt.covered_rulings(covered_work)
     observed_session_generations = tuple(
         sorted(
             (
@@ -654,6 +663,7 @@ def prepare_tech_lead_session_data(
             observed_validated_work_authorities=validated_work_authorities,
             recovery_tracker_numbers=tracker_grants,
             triage_grants=triage_agenda.grants,
+            covered_work=tuple(sorted(covered_work.items())),
         ),
     )
     if flavor is TechLeadSessionFlavor.HEALTH_REVIEW:
@@ -676,7 +686,9 @@ def prepare_tech_lead_session_data(
             focus_issue_number=focus_issue,
             board_snapshot=board_snapshot,
         ),
-        prompt_addendum=render_triage_instructions(triage_agenda),
+        prompt_addendum="\n\n".join(
+            part for part in (covered_rulings, render_triage_instructions(triage_agenda)) if part
+        ),
     )
 
 

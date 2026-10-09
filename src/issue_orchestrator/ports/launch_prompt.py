@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Protocol
 
 from ..domain.launch_prompt import LaunchPromptPreparation
@@ -13,4 +14,10 @@ class LaunchPromptProvider(Protocol):
 
     def prepare(self, *, kind: SessionKind, issue_number: int) -> LaunchPromptPreparation:
         """All I/O happens here, before the caller mutates launch state."""
+        ...
+
+    def covered_rulings(self, covered: Mapping[int, tuple[int, ...]]) -> str | None:
+        """The standing rulings binding a tech-lead run over other issues' work
+        (#8347): *covered* maps each issue to its PRs in the run. Raises
+        :class:`~.standing_rulings.StandingRulingsUnavailable` when one cannot be read."""
         ...

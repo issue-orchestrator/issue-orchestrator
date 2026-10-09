@@ -520,6 +520,11 @@ class TechLeadLaunchAuthority:
     # decision must cover exactly these, and the charter record of each
     # triage carries the observed fingerprint as the re-triage watermark.
     triage_grants: tuple[TriageGrant, ...] = ()
+    # The other issues whose work this run covers, each with its PRs in the
+    # run (#8347), sorted by issue: whose standing rulings bind it. Recorded
+    # at launch, so a retry reads the same issues' rulings fresh even when a
+    # PR's links change meanwhile.
+    covered_work: tuple[tuple[int, tuple[int, ...]], ...] = ()
     schema_version: int = _SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -528,6 +533,7 @@ class TechLeadLaunchAuthority:
                 f"Unsupported tech_lead authority schema_version: {self.schema_version!r}"
             )
         _validate_triage_grants(self)
+        _validate_covered_work(self)
         if (
             self.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION
             and self.focus_issue_number is None
@@ -696,6 +702,7 @@ class TechLeadLaunchAuthority:
             "problem_issue_numbers": list(self.problem_issue_numbers),
             "recovery_tracker_numbers": list(self.recovery_tracker_numbers),
             "triage_grants": [grant.to_dict() for grant in self.triage_grants],
+            "covered_work": [[issue, list(prs)] for issue, prs in self.covered_work],
             "observed_session_generations": [
                 generation.to_dict() for generation in self.observed_session_generations
             ],
@@ -780,6 +787,7 @@ class TechLeadLaunchAuthority:
             problem_issue_numbers=tuple(raw_problems),
             recovery_tracker_numbers=tuple(raw_trackers),
             triage_grants=_triage_grants_from(data.get("triage_grants", [])),
+            covered_work=_covered_work_from(data.get("covered_work", [])),
             observed_session_generations=tuple(
                 TechLeadSessionGeneration.from_dict(item) for item in raw_generations
             ),
@@ -838,6 +846,34 @@ def _validate_triage_grants(authority: TechLeadLaunchAuthority) -> None:
         raise ValueError("triage grants must be sorted and unique by issue")
     if authority.anchor_issue_number in numbers:
         raise ValueError("a health review cannot be granted its own anchor to triage")
+
+
+def _validate_covered_work(authority: TechLeadLaunchAuthority) -> None:
+    work = cast(object, authority.covered_work)
+    if not isinstance(work, tuple) or any(
+        not isinstance(entry, tuple) or len(entry) != 2 or not _positive(entry[0])
+        or not isinstance(entry[1], tuple) or not all(_positive(pr) for pr in entry[1])
+        or entry[1] != tuple(sorted(set(entry[1])))
+        or any(pr not in authority.manifest_pr_numbers for pr in entry[1])
+        for entry in cast(tuple[object, ...], work)
+    ):
+        raise ValueError("covered work is (issue, sorted manifest PRs) pairs of positive ints")
+    issues = [issue for issue, _prs in authority.covered_work]
+    if issues != sorted(set(issues)) or authority.anchor_issue_number in issues:
+        raise ValueError("covered work names each issue once, in order, never the anchor")
+
+
+def _positive(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _covered_work_from(raw: object) -> tuple[tuple[int, tuple[int, ...]], ...]:
+    if not isinstance(raw, list) or any(
+        not isinstance(entry, list) or len(entry) != 2 or not isinstance(entry[1], list)
+        for entry in cast(list[object], raw)
+    ):
+        raise ValueError(f"tech_lead authority covered_work must be [issue, [prs]] pairs, got {raw!r}")
+    return tuple((entry[0], tuple(entry[1])) for entry in cast(list[list[Any]], raw))
 
 
 def _validate_recovery_tracker_grants(authority: TechLeadLaunchAuthority) -> None:

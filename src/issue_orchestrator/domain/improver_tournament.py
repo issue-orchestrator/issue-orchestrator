@@ -4,6 +4,9 @@
   markdown: ``N. (W) **title** text`` under a "Stalls" or "Design" section)
   into an :class:`~..contracts.improver_tournament.AnswerKey`, keeping its
   preamble (what was audited, how to grade) for the graders.
+* :func:`unobservable` says why a hindsight item could not have been seen
+  in a snapshot frozen before its evidence existed (#8972): confirming it
+  would score arms as missing what their evidence could not show.
 * :func:`anonymize` labels the outputs ``S10``..``S99`` in a seeded random
   order, so graders cannot tell which arm wrote which.
 * :func:`read_grades` accepts a grader's answer only if it grades every
@@ -39,6 +42,7 @@ from ..contracts.improver_tournament import (
     GRADE_CREDIT,
     AnswerKey,
     AnswerKeyItem,
+    Observation,
     OutputGrades,
 )
 
@@ -91,6 +95,63 @@ def parse_sealed_key(markdown: str, *, snapshot_id: str, added_at: datetime, add
     if len(set(ids)) != len(ids):
         raise ValueError(f"key item ids repeat: {ids}")
     return AnswerKey(snapshot_id=snapshot_id, preamble="\n".join(preamble).strip(), items=tuple(items))
+
+
+def unobservable(item: AnswerKeyItem, frozen_at: datetime) -> str | None:
+    """Why a snapshot frozen at ``frozen_at`` could not show ``item``; None
+    if it could. A sealed item was written from the snapshot itself; a
+    hindsight item needs its ``observable_since`` recorded, at or before
+    ``frozen_at``."""
+    if item.source == "sealed_key":
+        return None
+    seen = item.observable_since
+    if seen is None:
+        return f"key item {item.id!r} has no observable_since recorded (when its evidence first existed, and where)"
+    if seen.at > frozen_at:
+        return (
+            f"key item {item.id!r} is observable only since {seen.at.isoformat()} ({seen.source}),"
+            f" after the snapshot was frozen at {frozen_at.isoformat()}"
+        )
+    return None
+
+
+def unscoreable(item: AnswerKeyItem, frozen_at: datetime) -> str | None:
+    """Why ``item`` may not stand as it is on the key of a snapshot frozen
+    at ``frozen_at``: it scores (is confirmed) what the snapshot could not
+    show. A candidate stands either way: it scores nothing."""
+    return unobservable(item, frozen_at) if item.status == "confirmed" else None
+
+
+class NotMovable(ValueError):
+    """A hindsight item that cannot be attached to the snapshot asked."""
+
+
+def moved_item(item: AnswerKeyItem, *, frozen_at: datetime, observation: Observation | None) -> AnswerKeyItem:
+    """``item`` attached to a snapshot frozen at ``frozen_at`` instead: a
+    candidate there (judged anew on that snapshot's evidence), observable
+    since ``observation`` if given, else as it recorded. It must be
+    observable at that snapshot's time."""
+    moved = item.model_copy(update={"status": "candidate", "observable_since": observation or item.observable_since})
+    if moved.observable_since is None:
+        raise NotMovable(f"key item {item.id!r} records no observable_since: give it to move it")
+    reason = unobservable(moved, frozen_at)
+    if reason is not None:
+        raise NotMovable(reason)
+    return moved
+
+
+def is_same_move(present: AnswerKeyItem, moved: AnswerKeyItem) -> bool:
+    """Whether ``present`` on the target is ``moved``, as an interrupted move
+    left it (and perhaps confirmed there since)."""
+    return present.model_copy(update={"status": moved.status}) == moved
+
+
+@dataclass(frozen=True)
+class Unobservable:
+    """A key item its snapshot could not show, and why."""
+
+    item_id: str
+    reason: str
 
 
 def anonymize(output_ids: Sequence[str], *, seed: int) -> dict[str, str]:
@@ -409,4 +470,4 @@ def rank(means: Mapping[str, float], *, distinguishable: Callable[[str, str], bo
     return tuple(tuple(t) for t in tiers)
 
 
-__all__ = ["ALPHA", "NOISE_BAND_SES", "GradesRejected", "NoiseComponents", "PooledArm", "PooledScores", "anonymize", "finding_ids", "parse_sealed_key", "pool", "rank", "read_grades", "score"]
+__all__ = ["ALPHA", "NOISE_BAND_SES", "GradesRejected", "NoiseComponents", "NotMovable", "PooledArm", "PooledScores", "Unobservable", "anonymize", "finding_ids", "is_same_move", "moved_item", "parse_sealed_key", "pool", "rank", "read_grades", "score", "unobservable", "unscoreable"]

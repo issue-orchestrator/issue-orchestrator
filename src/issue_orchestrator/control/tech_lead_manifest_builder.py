@@ -9,13 +9,16 @@ gathering — so the PR set that trips the threshold is exactly the set the
 session audits.
 """
 
+import json
 import logging
 import time
+from pathlib import Path
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence
 
 from ..domain.tech_lead_manifest import TechLeadManifest, PRToReview, PRFiles
 from ..ports import RepositoryHost
+from .review_scope import issues_linked
 
 if TYPE_CHECKING:
     from ..infra.config import Config
@@ -69,9 +72,11 @@ class TechLeadManifestBuilder:
         repository_host: RepositoryHost,
         watch_label: str = "code-reviewed",
         *,
+        repo_slug: str,
         candidate_policy: TechLeadCandidatePolicy,
     ):
         self._host = repository_host
+        self._repo_slug = repo_slug
         self._watch_label = watch_label
         self._policy = candidate_policy
 
@@ -100,6 +105,7 @@ class TechLeadManifestBuilder:
                 branch=pr.branch,
                 head_sha=pr.head_sha or "",
                 files=PRFiles(),
+                issue_numbers=tuple(sorted(issues_linked(branch=pr.branch, body=pr.body, repo_slug=self._repo_slug))),
             )
             for pr in prs
             if self._policy.is_candidate(pr.labels)
@@ -116,3 +122,18 @@ class TechLeadManifestBuilder:
             data_dir=data_dir,
             prs=prs_to_review,
         )
+
+    def relink_from_metadata(self, manifest: TechLeadManifest, data_path: Path) -> None:
+        """Re-derive each PR's issue links from the metadata snapshot the
+        downloader wrote for the agent (#8347): the links decide whose rulings
+        bind the PR, so they come from the PR text the agent reads, not the
+        earlier listing. A PR whose snapshot is an error has no links. A PR
+        with no snapshot written (no downloader ran) keeps its listed links.
+        """
+        for pr in manifest.prs:
+            if not pr.files.metadata:
+                continue
+            snapshot = json.loads((data_path / pr.files.metadata).read_text())
+            pr.issue_numbers = tuple(sorted(issues_linked(
+                branch=snapshot.get("branch"), body=snapshot.get("body"), repo_slug=self._repo_slug,
+            )))
