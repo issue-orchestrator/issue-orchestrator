@@ -20,10 +20,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from enum import StrEnum
-from collections.abc import Callable
 from typing import Any
 
-import httpx
 
 #: How long the Control Center waits for an engine to apply one command.
 #:
@@ -98,102 +96,77 @@ def _excerpt(text: str) -> str:
     return text[:UPSTREAM_BODY_EXCERPT_CHARS] + "…[truncated]"
 
 
-def _exception_text(exc: BaseException) -> str:
+def exception_text(exc: BaseException) -> str:
     """``Type: message`` — never empty, unlike ``str(exc)`` for httpx timeouts."""
     message = str(exc).strip()
     return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
 
 
-@dataclass(frozen=True)
-class _FailedForward:
-    """What a classifier needs to describe one failed forward."""
-
-    command: str
-    url: str
-    timeout_seconds: float
+# The failure builders below are transport-agnostic: the HTTP adapter
+# (``orchestrator_http_api``, the one execution module allowed to import
+# httpx) maps its exceptions onto them.
 
 
-def _refused(exc: httpx.HTTPStatusError, ctx: _FailedForward) -> EngineCommandFailure:
-    body = _excerpt(exc.response.text)
+def refused_failure(
+    *, command: str, url: str, upstream_status: int, body_text: str
+) -> EngineCommandFailure:
+    """The engine answered with a non-success HTTP status."""
+    body = _excerpt(body_text)
     return EngineCommandFailure(
         kind=EngineCommandFailureKind.UPSTREAM_ERROR,
-        command=ctx.command,
-        url=ctx.url,
+        command=command,
+        url=url,
         detail=(
-            f"Engine refused {ctx.command} at {ctx.url} with HTTP "
-            f"{exc.response.status_code}: {body or '(empty body)'}"
+            f"Engine refused {command} at {url} with HTTP "
+            f"{upstream_status}: {body or '(empty body)'}"
         ),
-        upstream_status=exc.response.status_code,
+        upstream_status=upstream_status,
         upstream_body=body,
     )
 
 
-def _unreachable(exc: httpx.HTTPError, ctx: _FailedForward) -> EngineCommandFailure:
+def unreachable_failure(*, command: str, url: str, cause: str) -> EngineCommandFailure:
+    """Nothing answered: connection refused, DNS, or a connect timeout."""
     return EngineCommandFailure(
         kind=EngineCommandFailureKind.UNREACHABLE,
-        command=ctx.command,
-        url=ctx.url,
-        detail=f"Could not reach the engine at {ctx.url} for {ctx.command}: {_exception_text(exc)}",
+        command=command,
+        url=url,
+        detail=f"Could not reach the engine at {url} for {command}: {cause}",
     )
 
 
-def _unanswered(exc: httpx.HTTPError, ctx: _FailedForward) -> EngineCommandFailure:
+def unanswered_failure(
+    *, command: str, url: str, timeout_seconds: float, cause: str
+) -> EngineCommandFailure:
+    """The engine took the request but did not answer within the budget."""
     return EngineCommandFailure(
         kind=EngineCommandFailureKind.NO_ANSWER,
-        command=ctx.command,
-        url=ctx.url,
+        command=command,
+        url=url,
         detail=(
-            f"Engine did not answer {ctx.command} at {ctx.url} within "
-            f"{ctx.timeout_seconds:g}s ({_exception_text(exc)}). The engine applies "
-            f"{ctx.command} once its current tick releases the state lock, so it may "
+            f"Engine did not answer {command} at {url} within "
+            f"{timeout_seconds:g}s ({cause}). The engine applies "
+            f"{command} once its current tick releases the state lock, so it may "
             "still take effect; read the engine state before retrying."
         ),
     )
 
 
-def _undecodable(exc: json.JSONDecodeError, ctx: _FailedForward) -> EngineCommandFailure:
-    body = _excerpt(exc.doc)
+def undecodable_failure(
+    *, command: str, url: str, reason: str, body_text: str
+) -> EngineCommandFailure:
+    """The engine answered with a body that is not JSON."""
+    body = _excerpt(body_text)
     return EngineCommandFailure(
         kind=EngineCommandFailureKind.INVALID_BODY,
-        command=ctx.command,
-        url=ctx.url,
+        command=command,
+        url=url,
         detail=(
-            f"Engine answered {ctx.command} at {ctx.url} with a body that is not JSON "
-            f"({exc.msg}): {body or '(empty body)'}"
+            f"Engine answered {command} at {url} with a body that is not JSON "
+            f"({reason}): {body or '(empty body)'}"
         ),
         upstream_body=body,
     )
-
-
-# First match wins, so the specific httpx classes precede their bases: a
-# connect timeout means nothing answered, not that the engine was slow.
-_CLASSIFIERS: tuple[tuple[tuple[type[Exception], ...], Callable[[Any, _FailedForward], EngineCommandFailure]], ...] = (
-    ((httpx.HTTPStatusError,), _refused),
-    ((httpx.ConnectError, httpx.ConnectTimeout), _unreachable),
-    ((httpx.TimeoutException,), _unanswered),
-    ((json.JSONDecodeError,), _undecodable),
-    ((httpx.HTTPError,), _unreachable),
-)
-
-
-def describe_engine_command_failure(
-    exc: httpx.HTTPError | json.JSONDecodeError,
-    *,
-    command: str,
-    url: str,
-    timeout_seconds: float,
-) -> EngineCommandFailure:
-    """Classify one failed forward.
-
-    Only transport, HTTP-status and body-decoding failures are accepted: any
-    other exception is a bug in the Control Center, and the caller must let it
-    propagate rather than dress it up as an engine failure.
-    """
-    ctx = _FailedForward(command=command, url=url, timeout_seconds=timeout_seconds)
-    for exception_types, describe in _CLASSIFIERS:
-        if isinstance(exc, exception_types):
-            return describe(exc, ctx)
-    raise TypeError(f"not an engine command failure: {type(exc).__name__}")
 
 
 def non_object_body_failure(
@@ -218,6 +191,10 @@ __all__ = [
     "ENGINE_COMMAND_TIMEOUT_SECONDS",
     "EngineCommandFailure",
     "EngineCommandFailureKind",
-    "describe_engine_command_failure",
+    "exception_text",
     "non_object_body_failure",
+    "refused_failure",
+    "unanswered_failure",
+    "undecodable_failure",
+    "unreachable_failure",
 ]

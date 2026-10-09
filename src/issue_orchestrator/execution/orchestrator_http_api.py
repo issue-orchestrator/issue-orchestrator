@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable, TypeVar
 import threading
 
 import httpx
@@ -12,9 +12,15 @@ import httpx
 from ..domain.pause_state import PauseActor
 from .engine_command_failure import (
     EngineCommandFailure,
-    describe_engine_command_failure,
+    exception_text,
     non_object_body_failure,
+    refused_failure,
+    unanswered_failure,
+    undecodable_failure,
+    unreachable_failure,
 )
+
+_T = TypeVar("_T")
 from ..ports.orchestrator_api import OrchestratorApi
 
 
@@ -75,6 +81,73 @@ def probe_orchestrator_json(
     except ValueError:
         return None
     return data if isinstance(data, dict) else None
+
+
+def _refused(exc: Any, command: str, url: str, timeout_seconds: float) -> EngineCommandFailure:
+    return refused_failure(
+        command=command,
+        url=url,
+        upstream_status=exc.response.status_code,
+        body_text=exc.response.text,
+    )
+
+
+def _unreachable(exc: Any, command: str, url: str, timeout_seconds: float) -> EngineCommandFailure:
+    return unreachable_failure(command=command, url=url, cause=exception_text(exc))
+
+
+def _unanswered(exc: Any, command: str, url: str, timeout_seconds: float) -> EngineCommandFailure:
+    return unanswered_failure(
+        command=command, url=url, timeout_seconds=timeout_seconds, cause=exception_text(exc)
+    )
+
+
+def _undecodable(exc: Any, command: str, url: str, timeout_seconds: float) -> EngineCommandFailure:
+    return undecodable_failure(command=command, url=url, reason=exc.msg, body_text=exc.doc)
+
+
+# First match wins, so the specific httpx classes precede their bases: a
+# connect timeout means nothing answered, not that the engine was slow.
+_FAILURE_CLASSIFIERS: tuple[
+    tuple[tuple[type[Exception], ...], Callable[[Any, str, str, float], EngineCommandFailure]], ...
+] = (
+    ((httpx.HTTPStatusError,), _refused),
+    ((httpx.ConnectError, httpx.ConnectTimeout), _unreachable),
+    ((httpx.TimeoutException,), _unanswered),
+    ((json.JSONDecodeError,), _undecodable),
+    ((httpx.HTTPError,), _unreachable),
+)
+
+
+def describe_engine_command_failure(
+    exc: httpx.HTTPError | json.JSONDecodeError,
+    *,
+    command: str,
+    url: str,
+    timeout_seconds: float,
+) -> EngineCommandFailure:
+    """Classify one failed engine command (#8222).
+
+    Only transport, HTTP-status and body-decoding failures are accepted: any
+    other exception is a bug in the caller and must propagate rather than be
+    dressed up as an engine failure.
+    """
+    for exception_types, describe in _FAILURE_CLASSIFIERS:
+        if isinstance(exc, exception_types):
+            return describe(exc, command, url, timeout_seconds)
+    raise TypeError(f"not an engine command failure: {type(exc).__name__}")
+
+
+async def guarded_engine_command(
+    call: Awaitable[_T], *, command: str, url: str, timeout_seconds: float
+) -> _T | EngineCommandFailure:
+    """Await one engine command; a transport/status/body failure says why."""
+    try:
+        return await call
+    except (httpx.HTTPError, json.JSONDecodeError) as exc:
+        return describe_engine_command_failure(
+            exc, command=command, url=url, timeout_seconds=timeout_seconds
+        )
 
 
 def post_orchestrator_json(

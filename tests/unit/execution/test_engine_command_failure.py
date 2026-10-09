@@ -12,9 +12,9 @@ from issue_orchestrator.execution.engine_command_failure import (
     UPSTREAM_BODY_EXCERPT_CHARS,
     EngineCommandFailure,
     EngineCommandFailureKind,
-    describe_engine_command_failure,
     non_object_body_failure,
 )
+from issue_orchestrator.execution.orchestrator_http_api import describe_engine_command_failure
 
 URL = "http://127.0.0.1:8081"
 

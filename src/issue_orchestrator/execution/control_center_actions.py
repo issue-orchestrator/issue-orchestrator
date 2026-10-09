@@ -6,7 +6,6 @@ are thin adapters and tests can exercise command objects directly.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
@@ -14,7 +13,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, Protocol
 
-import httpx
 
 from ..domain.pause_state import PauseActor
 from ..domain.repository_launch_selection import (
@@ -25,10 +23,9 @@ from ..ports.repository_engine_supervisor import SupervisorOps
 from .engine_command_failure import (
     ENGINE_COMMAND_TIMEOUT_SECONDS,
     EngineCommandFailure,
-    describe_engine_command_failure,
     non_object_body_failure,
 )
-from .orchestrator_http_api import OrchestratorAsyncHttpApi
+from .orchestrator_http_api import OrchestratorAsyncHttpApi, guarded_engine_command
 from .repository_engine_start import StartRepositoryEngineCommand
 from .control_center_worktree_audit import ControlCenterWorktreeAuditOwner
 from ..ports.repository_host import (
@@ -141,18 +138,16 @@ class EngineCommandForwarder:
             pause_actor=PauseActor.CONTROL_CENTER,
         )
         try:
-            answer = await send(api)
-        except (httpx.HTTPError, json.JSONDecodeError) as exc:
-            return self._failed(
-                describe_engine_command_failure(
-                    exc,
-                    command=command,
-                    url=base_url,
-                    timeout_seconds=self._timeout_seconds,
-                )
+            answer = await guarded_engine_command(
+                send(api),
+                command=command,
+                url=base_url,
+                timeout_seconds=self._timeout_seconds,
             )
         finally:
             await api.close()
+        if isinstance(answer, EngineCommandFailure):
+            return self._failed(answer)
         if not isinstance(answer, dict):
             return self._failed(
                 non_object_body_failure(
