@@ -3261,9 +3261,9 @@ def test_merged_prs_referencing_issues_refuses_a_malformed_answer(repository, ma
         client.merged_prs_referencing_issues([5])
 
 
-def _state_ref(number: int, state: str | None, *, cross_repo: bool = False) -> dict:
+def _state_ref(number: int, state: str | None, *, cross_repo: bool = False, branch: str | None = "262-x") -> dict:
     return {"isCrossRepository": cross_repo,
-            "source": {"__typename": "PullRequest", "number": number, "state": state}}
+            "source": {"__typename": "PullRequest", "number": number, "state": state, "headRefName": branch}}
 
 
 def test_pull_requests_referencing_issue_keeps_open_and_merged_same_repo_prs() -> None:
@@ -3274,7 +3274,7 @@ def test_pull_requests_referencing_issue_keeps_open_and_merged_same_repo_prs() -
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = _graphql_body(request)
-        assert "number state" in body["query"]
+        assert "number state headRefName" in body["query"]
         after = body["variables"].get("after")
         afters.append(after)
         if after is None:
@@ -3287,7 +3287,7 @@ def test_pull_requests_referencing_issue_keeps_open_and_merged_same_repo_prs() -
 
     client = _client_with_transport(httpx.MockTransport(handler))
 
-    assert client.pull_requests_referencing_issue(262) == (457, 479, 511)
+    assert client.pull_requests_referencing_issue(262) == ((457, "262-x"), (479, "262-x"), (511, "262-x"))
     assert afters == [None, "c1"]
 
 
@@ -3295,6 +3295,8 @@ def test_pull_requests_referencing_issue_keeps_open_and_merged_same_repo_prs() -
     ("repository", "match"),
     [
         pytest.param({"i5": _references(_state_ref(9, None))}, "malformed node", id="state-missing"),
+        pytest.param({"i5": _references(_state_ref(9, "OPEN", branch=None))}, "malformed node",
+                     id="branch-missing"),
         pytest.param({"i5": _references(_state_ref(9, "OPEN"), more=True)}, "without a cursor",
                      id="next-page-without-cursor"),
     ],

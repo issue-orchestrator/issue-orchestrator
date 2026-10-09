@@ -257,8 +257,8 @@ def test_an_open_or_merged_pr_elsewhere_whose_head_carries_the_work_proves_it(st
 
 
 def test_a_carrier_follows_an_open_pr_and_freezes_when_it_merges(tmp_path):
-    """An open PR's carriage follows its head; a merged one cannot move, and
-    the same proof again is already recorded."""
+    """An open PR's carriage follows its head and every proof reclassifies; a
+    merged one cannot move, and the same merged proof again is recorded."""
     from tests.unit.validated_work_support import L, ROOT, TIP, Rig, capture
 
     store = Rig(tmp_path / "work.sqlite").open()
@@ -268,7 +268,7 @@ def test_a_carrier_follows_an_open_pr_and_freezes_when_it_merges(tmp_path):
     assert store.record_pr_publication(key, published=open_at_l, observed_at="2026-10-04T09:00:00+00:00") \
         is PrPublicationStatus.ADVANCED
     assert store.record_pr_publication(key, published=open_at_l, observed_at="2026-10-04T09:15:00+00:00") \
-        is PrPublicationStatus.ALREADY_PUBLISHED
+        is PrPublicationStatus.ADVANCED
     assert store.record_pr_publication(
         key, published=CarriedByIssuePullRequest(91, TIP, "feature-r1", merged=False),
         observed_at="2026-10-04T10:00:00+00:00") is PrPublicationStatus.ADVANCED
@@ -276,16 +276,48 @@ def test_a_carrier_follows_an_open_pr_and_freezes_when_it_merges(tmp_path):
         key, published=CarriedByIssuePullRequest(91, TIP, "feature-r1", merged=True),
         observed_at="2026-10-04T11:00:00+00:00") is PrPublicationStatus.ADVANCED
     assert store.record_pr_publication(
+        key, published=CarriedByIssuePullRequest(91, TIP, "feature-r1", merged=True),
+        observed_at="2026-10-04T11:30:00+00:00") is PrPublicationStatus.ALREADY_PUBLISHED
+    assert store.record_pr_publication(
         key, published=CarriedByIssuePullRequest(91, L, "feature-r1", merged=True),
         observed_at="2026-10-04T12:00:00+00:00") is PrPublicationStatus.CONTAINMENT_UNPROVEN
     # The lineage's own fact is untouched: the carrier is another branch's PR.
     assert store.lineage_publication(canonical_lineage_key(key)) is None
-    # A capture the merged carrier contains is landed at admission.
-    late = capture(L, run="run-late", expected=ROOT)
+    # A capture the merged carrier contains is landed at admission, any time later.
+    late = capture(L, run="run-late", expected=ROOT, at="2026-10-05T09:00:00+00:00")
     store.admit(late)
     record = store.record_for_id(late.evidence.record_id)
     assert (record.disposition.state, record.resolution_kind, record.disposition.publication_branch) == (
         ValidatedWorkState.RECOVERED, ResolutionKind.LANDED_VIA_MERGED_PR, "feature-r1")
+
+
+def test_an_open_carrier_proven_earlier_never_resolves_a_later_admission(tmp_path):
+    """Review r1 F1: PR 91 was proven open at TIP, then force-pushed or closed.
+    A capture of an ancestor of TIP admitted later stays held: only the
+    instant that proved an open PR current resolves against it."""
+    from tests.unit.validated_work_support import L, ROOT, TIP, Rig, capture
+
+    store = Rig(tmp_path / "work.sqlite").open()
+    key = capture(TIP).evidence.identity.key
+    proven = "2026-10-04T09:00:00+00:00"
+    assert store.record_pr_publication(
+        key, published=CarriedByIssuePullRequest(91, TIP, "feature-r1", merged=False), observed_at=proven,
+    ) is PrPublicationStatus.ADVANCED
+
+    later = capture(L, run="run-later", expected=ROOT, state=ValidatedWorkState.PARKED,
+                    failure=ValidatedWorkFailure.WORKTREE_AHEAD_OF_VALIDATION, reason="ahead",
+                    at="2026-10-04T12:00:00+00:00")
+    store.admit(later)
+    assert store.get(later.evidence.record_id).state is ValidatedWorkState.PARKED
+
+    # Proven current again, the PR resolves it.
+    assert store.record_pr_publication(
+        later.evidence.identity.key, published=CarriedByIssuePullRequest(91, TIP, "feature-r1", merged=False),
+        observed_at="2026-10-04T12:30:00+00:00",
+    ) is PrPublicationStatus.ADVANCED
+    resolved = store.record_for_id(later.evidence.record_id)
+    assert (resolved.disposition.state, resolved.resolution_kind) == (
+        ValidatedWorkState.RECOVERED, ResolutionKind.CONTAINED_IN_PUBLISHED_HEAD)
 
 
 def test_an_existing_store_gains_the_carriers_table_and_published_branch_on_open(tmp_path):
@@ -321,3 +353,24 @@ def test_a_carriers_pin_is_permanent(rig):
     assert ref not in {pin.ref for pin in ops.retained_refs(Path(rig.repo))}
     with pytest.raises(ValueError, match="only escrow"):
         ops.delete_pinned_ref(Path(rig.repo), ref=ref, sha=head)
+
+
+def test_a_cold_reader_refuses_a_store_without_the_published_branch_column(tmp_path):
+    """Review r1 F2: the mapper reads ``published_branch``, so a read-only
+    reader of a store the engine has not yet migrated reports an unsupported
+    schema instead of raising ``IndexError``."""
+    import sqlite3
+
+    from issue_orchestrator.domain.read_only_sqlite import ReadOnlySqliteAccessError, ReadOnlySqliteFailure
+    from issue_orchestrator.infra.validated_work_read_schema import require_supported_validated_work_schema
+    from issue_orchestrator.infra.validated_work_rows import DispositionDatabase
+
+    path = tmp_path / "work.sqlite"
+    DispositionDatabase(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE validated_work_records DROP COLUMN published_branch")
+        conn.row_factory = sqlite3.Row
+        with pytest.raises(ReadOnlySqliteAccessError) as refused:
+            require_supported_validated_work_schema(conn)
+    assert refused.value.reason is ReadOnlySqliteFailure.UNSUPPORTED_SCHEMA
+    assert "published_branch" in str(refused.value)

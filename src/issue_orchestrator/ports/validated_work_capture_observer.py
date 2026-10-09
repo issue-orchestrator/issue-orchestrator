@@ -26,7 +26,8 @@ class ValidatedWorkCaptureObserver(Protocol):
     def issue_pull_requests(
         self, request: ValidatedWorkRemoteRequest
     ) -> tuple[PublicationPullRequest, ...]:
-        """Every open or merged same-repository PR of the issue, on ANY branch,
+        """Every open or merged same-repository PR of the issue on another of
+        the issue's own branches (``<issue>-...``, not ``request.branch_name``),
         complete and uncached, or raise (#8137).
 
         A PR is the issue's when it references it (``Closes #N`` / ``Refs #N``),

@@ -282,7 +282,9 @@ class PublicationResolution:
 class PrPublicationStatus(StrEnum):
     """What recording an open PR's publication did to the lineage fact."""
 
-    ADVANCED = "advanced"  # the fact now names the PR head; the lineage was reclassified
+    # The fact (or a carrier) now names the PR head, or an open carrier was
+    # proven current again; either way the lineage was reclassified.
+    ADVANCED = "advanced"
     ALREADY_PUBLISHED = "already_published"  # the fact already contains the PR head
     PUBLICATION_IN_FLIGHT = "publication_in_flight"  # recovery owns the remote expectation now
     CONTAINMENT_UNPROVEN = "containment_unproven"  # the store could not verify the commits

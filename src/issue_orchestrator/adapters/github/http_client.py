@@ -2567,7 +2567,7 @@ class GitHubHttpClient:
     )
     _REFERENCE_PR_NUMBERS = "number merged"
     _REFERENCE_PR_HISTORY = "number merged mergedAt body"
-    _REFERENCE_PR_STATES = "number state"
+    _REFERENCE_PR_STATES = "number state headRefName"
 
     def merged_prs_referencing_issues(
         self,
@@ -2643,14 +2643,15 @@ class GitHubHttpClient:
 
     def pull_requests_referencing_issue(
         self, issue_number: int, *, page_cap: int = 10
-    ) -> tuple[int, ...]:
+    ) -> tuple[tuple[int, str], ...]:
         """Every OPEN or MERGED same-repository PR that references
-        ``issue_number``, on any branch (#8137).
+        ``issue_number``, on any branch, as ``(number, head branch)`` (#8137).
 
         The same complete timeline walk as :meth:`merged_prs_referencing_issues`
         - a closing PR and a partial ``Refs #N`` PR alike - keeping open PRs
-        too; a PR closed unmerged is not the issue's work. Raises instead of
-        returning part of the answer. A missing issue has no PRs.
+        too; a PR closed unmerged is not the issue's work. The head branch
+        lets a caller skip a PR before spending a detail read on it. Raises
+        instead of returning part of the answer. A missing issue has no PRs.
         """
         owner, repo = self._config.repo.split("/", 1)
         n = int(issue_number)
@@ -2663,7 +2664,8 @@ class GitHubHttpClient:
         if timeline is None:
             return ()
         return tuple(sorted(
-            source["number"] for source in self._merged_reference_prs(
+            (source["number"], self._reference_field(source, "headRefName", str, n))
+            for source in self._merged_reference_prs(
                 owner, repo, n, timeline, page_cap, self._REFERENCE_PR_STATES,
                 on_page=self._open_or_merged_prs_on_page,
             )

@@ -4,6 +4,7 @@ import json
 from typing import Any
 from urllib.parse import urlsplit
 
+from ...domain.branch_naming import extract_issue_number_from_branch
 from ...domain.exact_git import ExactPushDestination
 
 from ...domain.publication_remote import (
@@ -146,12 +147,18 @@ class GitHubValidatedWorkCaptureObserver:
     def issue_pull_requests(
         self, request: ValidatedWorkRemoteRequest
     ) -> tuple[PublicationPullRequest, ...]:
-        """The issue's open and merged PRs on any branch, each read uncached (#8137)."""
+        """The issue's open and merged PRs on its OTHER branches, each read uncached (#8137).
+
+        Only a PR on another of the issue's own branches can prove anything, so
+        no other referencing PR costs a detail read (review r1).
+        """
         if request.repo_slug != self._repo_slug:
             raise PublicationRemoteError("Capture repository does not match configured remote")
         try:
             pulls: list[PublicationPullRequest] = []
-            for number in self._client.pull_requests_referencing_issue(request.issue_number):
+            for number, branch in self._client.pull_requests_referencing_issue(request.issue_number):
+                if branch == request.branch_name or extract_issue_number_from_branch(branch) != request.issue_number:
+                    continue
                 raw = self._client.read_publication_pr(number)
                 if raw is None:
                     # The timeline just named it: a PR that cannot be read is

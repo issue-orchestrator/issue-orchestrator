@@ -100,6 +100,14 @@ class LineageClassifier:
         *,
         reconsider: frozenset[str] = frozenset(),
     ) -> None:
+        """Reclassify the lineage's unresolved records at observation instant ``at``.
+
+        A merged carrier is final and always counts. An open PR can be
+        force-pushed or closed after it was proven (#8137 review r1), so an
+        open carrier counts only in a classification at the instant that
+        proved it: the proof's own reclassification, and the admission of the
+        capture whose remote observation made that proof just before it.
+        """
         rows = conn.execute(
             "SELECT * FROM validated_work_records WHERE lineage_key=? "
             "AND state IN ('queued','parked','failed','publishing') ORDER BY created_at, record_id",
@@ -112,7 +120,10 @@ class LineageClassifier:
         fact = publication(conn, lineage_key)
         decisions = [self._restore_gate(conn, row, reconsider) for row in rows]
         readable = self._classify_publication(
-            conn, decisions, fact, landings(conn, lineage_key), carriers(conn, lineage_key),
+            conn, decisions, fact, landings(conn, lineage_key), tuple(
+                carrier for carrier in carriers(conn, lineage_key)
+                if carrier.merged or carrier.observed_at == at
+            ),
         )
         self._classify_peers(readable)
         # Vacate the unique drainable slot before installing a descendant. The

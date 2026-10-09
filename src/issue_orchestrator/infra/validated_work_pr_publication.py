@@ -170,23 +170,26 @@ def _record_carrier(
 
     Never the lineage fact: that is what THIS branch publishes, and recovery
     sequences from it. A merged PR's head cannot move, so a second proof of
-    it is already recorded; an open PR's row follows its latest proven head,
-    and becomes final when the PR merges.
+    it is already recorded, and its row resolves every record it contains
+    from then on. An open PR can be force-pushed or closed after any proof,
+    so its row resolves records only at the instant that proved it current
+    (review r1): every proof of an open PR re-stamps the row and reclassifies
+    - ADVANCED - even when its head did not move.
     """
     lineage_key = canonical_lineage_key(key)
     recorded = conn.execute(
         "SELECT head_sha, merged FROM validated_work_lineage_carriers WHERE lineage_key=? AND pr_number=?",
         (lineage_key, carried.pr_number),
     ).fetchone()
-    if recorded is not None:
-        if recorded["merged"] and recorded["head_sha"] != carried.head_sha:
+    if recorded is not None and recorded["merged"]:
+        if recorded["head_sha"] != carried.head_sha or not carried.merged:
             return Status.CONTAINMENT_UNPROVEN  # a merged PR's head cannot move
-        if recorded["head_sha"] == carried.head_sha and bool(recorded["merged"]) == carried.merged:
-            return Status.ALREADY_PUBLISHED
+        return Status.ALREADY_PUBLISHED
     # Pin before the row commits: once the fetched PR ref is pruned, nothing
     # else keeps a rebased-away or squash-merged head reachable.
     pin = CommitReference(
-        replace(key, validated_head_sha=carried.head_sha), carrier_ref(lineage_key, carried.pr_number, carried.head_sha),
+        replace(key, validated_head_sha=carried.head_sha),
+        carrier_ref(lineage_key, carried.pr_number, carried.head_sha),
     )
     if not lineage.retain(pin):
         return Status.CONTAINMENT_UNPROVEN

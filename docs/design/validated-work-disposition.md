@@ -1605,16 +1605,22 @@ published when every fact agrees:
 route. Only a head that no PR of its own branch carries costs the read of the
 issue's PRs (`ValidatedWorkCaptureObserver.issue_pull_requests`). That read is
 one walk of the issue's cross-reference timeline, plus one uncached read per
-open or merged referencing PR. Capture and the scope sweep both ask through
+open or merged referencing PR on another of the issue's own branches. No
+other PR costs a detail read. Capture and the scope sweep both ask through
 it. A completion whose PR collided is therefore published at capture and never
 parks. A record parked before this is released on the sweep's next recheck.
 
 **The store records a carrier beside the fact, never in it.**
 `record_pr_publication` writes the proof to `validated_work_lineage_carriers`
-as `(lineage, PR, branch, head, merged)`. The lineage fact still says what THIS
-branch publishes, and recovery still sequences from it. An open PR's row
-follows its latest proven head. A merged PR's row is final, and a second proof
-with a different head is refused. Each proven head is pinned before its row
+as `(lineage, PR, branch, head, merged, observed_at)`. The lineage fact still
+says what THIS branch publishes, and recovery still sequences from it. A
+merged PR's row is final: a second proof with a different head is refused, and
+the row resolves every record it contains from then on. An open PR can be
+force-pushed or closed after any proof. Its row follows its latest proven head
+and is re-stamped by every proof, but it resolves records only in a
+classification at the instant that proved it: the proof's own
+reclassification, and the admission of the capture whose remote observation
+made that proof. A record admitted later is resolved only by a new proof. Each proven head is pinned before its row
 commits, at `refs/issue-orchestrator/carried/<lineage>/<PR>/<head>`. Like a
 landing's pin it is create-only, it is not escrow, and nothing can release it.
 
