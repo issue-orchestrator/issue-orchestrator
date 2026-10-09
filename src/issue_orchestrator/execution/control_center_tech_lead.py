@@ -33,7 +33,7 @@ from ..contracts.ui_openapi_models import (
     TechLeadProposalOutcomePayload,
 )
 from ..infra.repo_identity import configured_repository_key
-from .engine_command_failure import ENGINE_COMMAND_TIMEOUT_SECONDS, EngineCommandFailure, refused_failure
+from .engine_command_failure import ENGINE_COMMAND_TIMEOUT_SECONDS, EngineCommandFailure, off_contract_answer_failure
 from .orchestrator_http_api import post_orchestrator_json, probe_orchestrator_json
 
 if TYPE_CHECKING:
@@ -140,15 +140,13 @@ class ControlCenterTechLead:
             outcome = TechLeadProposalOutcomePayload.model_validate(body)
         except ValidationError:
             logger.warning("[tech-lead] engine answered a proposal command off-contract: %s", body)
-            if status >= 400:
-                # A refusal outside the outcome contract (auth, validation,
-                # a crash) still says why: keep its status and body (#8222).
-                refusal = refused_failure(
-                    command=_DECISION_COMMAND, url=_proposals_url(port),
-                    upstream_status=status, body_text=json.dumps(body),
-                )
-                return _refused(503, number, f"The repository's engine did not take the decision: {refusal.detail}")
-            return _refused(503, number, "The engine's answer was not understood")
+            # Off the outcome contract (auth, validation, a crash) still says
+            # why: the HTTP status and body are the cause (#8222 r1 F2).
+            failure = off_contract_answer_failure(
+                command=_DECISION_COMMAND, url=_proposals_url(port),
+                upstream_status=status, body_text=json.dumps(body),
+            )
+            return _refused(503, number, f"The repository's engine did not take the decision: {failure.detail}")
         return TechLeadCommandResult(200 if status == 200 else 409, outcome)
 
     def _repo_row(self, repo: "RegisteredRepo") -> ControlCenterTechLeadRepoPayload:

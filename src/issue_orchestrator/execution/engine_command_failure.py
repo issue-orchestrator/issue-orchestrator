@@ -197,6 +197,32 @@ def undecodable_failure(
     )
 
 
+def off_contract_answer_failure(
+    *, command: str, url: str, upstream_status: int, body_text: str
+) -> EngineCommandFailure:
+    """A JSON answer the caller's contract does not accept.
+
+    A refusal (4xx/5xx) keeps its HTTP status and body as the cause — an auth
+    or validation failure must say so (#8222 r1 F2). A success-status answer
+    off the contract is an invalid body.
+    """
+    if upstream_status >= 400:
+        return refused_failure(
+            command=command, url=url, upstream_status=upstream_status, body_text=body_text
+        )
+    return EngineCommandFailure(
+        kind=EngineCommandFailureKind.INVALID_BODY,
+        command=command,
+        url=url,
+        detail=(
+            f"Engine answered {command} at {url} (HTTP {upstream_status}) with an "
+            f"answer it does not define: {_quoted(body_text)}"
+        ),
+        upstream_status=upstream_status,
+        upstream_body=_excerpt(body_text),
+    )
+
+
 def non_object_body_failure(
     body: object, *, command: str, url: str, upstream_status: int
 ) -> EngineCommandFailure:
@@ -222,6 +248,7 @@ __all__ = [
     "exception_text",
     "interrupted_failure",
     "non_object_body_failure",
+    "off_contract_answer_failure",
     "refused_failure",
     "unanswered_failure",
     "undecodable_failure",
