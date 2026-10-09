@@ -33,6 +33,7 @@ from issue_orchestrator.control.needs_human_block import (
     NeedsHumanBlock,
     NeedsHumanCause,
 )
+from tests.label_application_helpers import standing_while_present
 
 
 class _LiveLabelWriter:
@@ -585,6 +586,7 @@ class TestQuarantineProvenanceIsRespected:
                 tech_lead_marker=labels.tech_lead_needs_human,
                 labels=_LiveLabelWriter(live),
                 read_labels=lambda issue_number: list(live[issue_number]),
+                label_application=standing_while_present(lambda issue_number: list(live[issue_number])),
                 quarantined_issue_numbers=lambda: frozenset({903}),
                 causes=SqlitePendingWorkClaimStore.for_repo(tmp_path),
             ),
@@ -614,6 +616,7 @@ class TestQuarantineProvenanceIsRespected:
                 tech_lead_marker=labels.tech_lead_needs_human,
                 labels=_LiveLabelWriter(live),
                 read_labels=lambda issue_number: list(live[issue_number]),
+                label_application=standing_while_present(lambda issue_number: list(live[issue_number])),
                 quarantined_issue_numbers=frozenset,
                 causes=SqlitePendingWorkClaimStore.for_repo(tmp_path),
             ),
@@ -701,6 +704,7 @@ class TestTheSharedBlockIsNotOneOwnersToRetract:
             tech_lead_marker=labels.tech_lead_needs_human,
             labels=_LiveLabelWriter(live),
             read_labels=lambda issue_number: list(live.get(issue_number, set())),
+            label_application=standing_while_present(lambda issue_number: list(live.get(issue_number, set()))),
             quarantined_issue_numbers=claims.quarantined_issue_numbers,
             causes=claims,
         )
@@ -872,6 +876,7 @@ class TestEveryOrchestratorCauseOwnsTheSharedBlock:
             tech_lead_marker=labels.tech_lead_needs_human,
             labels=label_set,
             read_labels=lambda number: list(live.get(number, set())),
+            label_application=standing_while_present(lambda number: list(live.get(number, set()))),
             quarantined_issue_numbers=claims.quarantined_issue_numbers,
             causes=claims,
         )
@@ -1100,6 +1105,7 @@ class TestTheBlockOwnerIsNotBypassableInProduction:
             tech_lead_marker=labels.tech_lead_needs_human,
             labels=label_set,
             read_labels=lambda number: list(live.get(number, set())),
+            label_application=standing_while_present(lambda number: list(live.get(number, set()))),
             quarantined_issue_numbers=claims.quarantined_issue_numbers,
             causes=claims,
         )
@@ -1636,6 +1642,7 @@ class TestTheOwnerSurvivesAHalfWrittenTransition:
             tech_lead_marker=labels.tech_lead_needs_human,
             labels=labels_writer or _LiveLabelWriter(live),
             read_labels=read_labels or (lambda number: list(live.get(number, set()))),
+            label_application=standing_while_present(read_labels or (lambda number: list(live.get(number, set())))),
             quarantined_issue_numbers=lambda: frozenset(held),
             causes=claims,
         ), claims
@@ -1809,6 +1816,11 @@ class TestTheOwnerSurvivesAHalfWrittenTransition:
                     raise RuntimeError("sqlite write failed")
                 real.clear_needs_human_causes(issue_number)
 
+            def bind_needs_human_generation(self, issue_number, *, event_id, applied_at, own_write):
+                return real.bind_needs_human_generation(
+                    issue_number, event_id=event_id, applied_at=applied_at, own_write=own_write
+                )
+
         causes = _RefusingClear()
         labels, block, _claims = self._block(
             sample_config, tmp_path, live, causes=causes
@@ -1867,6 +1879,11 @@ class TestTheOwnerSurvivesAHalfWrittenTransition:
 
             def clear_needs_human_causes(self, issue_number):
                 real.clear_needs_human_causes(issue_number)
+
+            def bind_needs_human_generation(self, issue_number, *, event_id, applied_at, own_write):
+                return real.bind_needs_human_generation(
+                    issue_number, event_id=event_id, applied_at=applied_at, own_write=own_write
+                )
 
         class _RefusingAdd(_LiveLabelWriter):
             def __init__(self, live_labels, *, refuse: bool) -> None:
@@ -1929,6 +1946,11 @@ class TestTheOwnerSurvivesAHalfWrittenTransition:
 
             def clear_needs_human_causes(self, issue_number):
                 raise RuntimeError("sqlite write failed")
+
+            def bind_needs_human_generation(self, issue_number, *, event_id, applied_at, own_write):
+                return real.bind_needs_human_generation(
+                    issue_number, event_id=event_id, applied_at=applied_at, own_write=own_write
+                )
 
         labels, block, _ = self._block(
             sample_config, tmp_path, live, causes=_RefusingClear()

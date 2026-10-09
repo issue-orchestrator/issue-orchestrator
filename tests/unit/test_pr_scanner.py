@@ -405,7 +405,7 @@ class TestScanForReviewsFiltering:
         from issue_orchestrator.domain.human_block import NeedsHumanCause
 
         block = MagicMock()
-        block.recorded_causes.return_value = {100: frozenset({NeedsHumanCause.MERGE_DECISION})}
+        block.hold_causes.return_value = {100: frozenset({NeedsHumanCause.MERGE_DECISION})}
         scanner.attach_human_gates(HumanGates.over(block, scanner._lm))
         mock_repository.issues.append(
             IssueBuilder().with_number(42).with_title("Asks the maintainer")
@@ -427,7 +427,7 @@ class TestScanForReviewsFiltering:
         from issue_orchestrator.control.human_gates import HumanGates
 
         block = MagicMock()
-        block.recorded_causes.return_value = {100: frozenset({cause} if cause else set())}
+        block.hold_causes.return_value = {100: frozenset({cause} if cause else set())}
         scanner.attach_human_gates(HumanGates.over(block, scanner._lm))
         mock_repository.issues.append(
             IssueBuilder().with_number(42).with_title("Asks the maintainer")
@@ -448,7 +448,7 @@ class TestScanForReviewsFiltering:
         from issue_orchestrator.control.human_gates import HumanGates
 
         block = MagicMock()
-        block.recorded_causes.return_value = {42: frozenset({NeedsHumanCause.AGENT_COMPLETION})}
+        block.hold_causes.return_value = {42: frozenset({NeedsHumanCause.AGENT_COMPLETION})}
         scanner.attach_human_gates(HumanGates.over(block, scanner._lm))
         mock_repository.issues.append(
             IssueBuilder().with_number(42).with_title("Asks the maintainer")
@@ -754,7 +754,7 @@ class TestScanForReworksMergeHold:
         from issue_orchestrator.control.human_gates import HumanGates
 
         block = MagicMock()
-        block.recorded_causes.return_value = {100: frozenset({cause} if cause else set())}
+        block.hold_causes.return_value = {100: frozenset({cause} if cause else set())}
         scanner.attach_human_gates(HumanGates.over(block, scanner._lm))
         add_issue_with_agent(mock_repository, 42, "agent:developer")
         mock_repository.prs["42-feature"] = [make_pr_info(

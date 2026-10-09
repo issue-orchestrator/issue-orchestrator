@@ -414,6 +414,22 @@ class PendingWorkClaimStore(Protocol):
         ...
 
 
+class GenerationBinding(Enum):
+    """What binding a needs-human generation to GitHub's standing label
+    application did (#8774)."""
+
+    #: The generation standing is the one recorded: nothing changed.
+    CURRENT = "current"
+    #: No generation (nor any cause or removal intent) was recorded: one was
+    #: opened from the application.
+    ADOPTED = "adopted"
+    #: The label was re-applied outside the owner (or the owner's own write
+    #: was never verified, or causes were recorded with no generation): what
+    #: was recorded was retired, and a new generation opened from the
+    #: application.
+    ENDED = "ended"
+
+
 class NeedsHumanCauseStore(Protocol):
     """Durable provenance for the shared ``needs-human`` block (#6999 F2 r2).
 
@@ -515,6 +531,16 @@ class NeedsHumanCauseStore(Protocol):
         """Drop every cause, and the generation, of an issue whose shared label is gone."""
         ...
 
+    def bind_needs_human_generation(
+        self, issue_number: int, *, event_id: int, applied_at: str, own_write: bool
+    ) -> GenerationBinding:
+        """Bind the generation to GitHub's standing application of the label
+        and say what that did (#8774). ``own_write``: the application is the
+        owner's own label write, read right after it under the owner's gate.
+        See :meth:`NeedsHumanEpisodeReader.bind_needs_human_episode`, which
+        is the same binding without that claim."""
+        ...
+
 
 class NeedsHumanEpisodeReader(Protocol):
     """Which generation (episode) of the shared block each issue is in (#8688).
@@ -549,10 +575,14 @@ class NeedsHumanEpisodeReader(Protocol):
         generation is bound to the event. A generation bound to a DIFFERENT
         event is stale: the label was removed and re-applied outside the owner
         (by hand, between owner observations), so it is replaced by a new one
-        dated by the event. A label no acquisition opened (put on by hand, or
+        dated by the event, and the old one's cause rows and removal intent
+        are retired in the same transaction: the person's clear ended every
+        cause of it (#8774). A label no acquisition opened (put on by hand, or
         before generations were recorded) gets one dated by the event. A
         generation for a label that is in fact gone is retired by the owner's
-        stale-row reconcile.
+        stale-row reconcile. An unbound generation the owner opened is
+        ended too: only the owner's own write may bind it
+        (:meth:`NeedsHumanCauseStore.bind_needs_human_generation`).
         """
         ...
 
@@ -640,6 +670,7 @@ class ClaimQuarantineStore(Protocol):
 
 
 __all__ = [
+    "GenerationBinding",
     "ClaimLookup",
     "ClaimQuarantineStore",
     "ClaimState",

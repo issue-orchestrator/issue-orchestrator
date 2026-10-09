@@ -96,6 +96,7 @@ from tests.unit.control.liveness_doubles import drain_liveness
 from tests.unit.test_completion_evidence_intake import command, completion
 from tests.unit.test_validated_work_scope import Labels
 from tests.unit.validated_work_support import Liveness
+from tests.label_application_helpers import standing_while_present
 
 ISSUE = 186
 PR = 381
@@ -219,7 +220,8 @@ def build_rig(tmp_path: Path) -> SimpleNamespace:
         gate=FileIssueDispositionMutationGate(state), labels=LabelManager(config),
         reader=labels, applier=labels,
         human_block=NeedsHumanBlock("needs-human", "tech-lead-needs-human", labels, labels.read_issue_labels,
-                                    frozenset, SqlitePendingWorkClaimStore(state / "causes.sqlite")))
+                                    frozenset, SqlitePendingWorkClaimStore(state / "causes.sqlite"),
+                                    standing_while_present(labels.read_issue_labels)))
     github = GitHubPulls(git, origin)
     preservation = ValidatedWorkPreservationService(intake=intake, store=aggregate,
         custody=ValidatedWorkCustody(escrow, aggregate),

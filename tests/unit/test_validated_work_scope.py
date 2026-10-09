@@ -88,6 +88,7 @@ from issue_orchestrator.ports.validated_work_capture_observer import ValidatedWo
 from tests.runtime_lifecycle_helpers import no_open_pull_requests
 from tests.unit.test_completion_evidence_intake import command, completion
 from tests.unit.validated_work_support import Liveness, Rig, UnpublishedRecords, capture, owned_intake
+from tests.label_application_helpers import standing_while_present
 
 ISSUE = 410
 TECH_LEAD = "agent:tech-lead"
@@ -483,7 +484,8 @@ def test_drain_scope_sweep_retires_records_no_publication_lane_selects(tmp_path,
     labels = Labels(issue=6914)
     intake = owned_intake(task)
     human = NeedsHumanBlock("needs-human", "tech-lead-needs-human", labels, labels.read_issue_labels,
-                            frozenset, SqlitePendingWorkClaimStore(tmp_path / "causes.sqlite"))
+                            frozenset, SqlitePendingWorkClaimStore(tmp_path / "causes.sqlite"),
+                            standing_while_present(labels.read_issue_labels))
     aggregate = AggregateRecoveryBlocks(repo_slug="owner/repo", records=store,
         admission=RankedEvidenceAdmission(store, intake), phases=store, authority=effects,
         gate=FileIssueDispositionMutationGate(tmp_path), labels=LabelManager(Config(repo="owner/repo")),

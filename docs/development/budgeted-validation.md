@@ -219,7 +219,15 @@ data lives under `<git common dir>/io-improver/`:
 - `keys/<snapshot>.json` holds **answer keys from hindsight**: the sealed key
   written before results (`key seed`; no arm runs until it exists), then problems found later that the
   snapshot's evidence already showed (`key add`, a `candidate` until
-  `key confirm`). Only these commands write keys. No improver run can reach
+  `key confirm`). Each hindsight item records `observable_since`: when its
+  evidence first existed and where that is read (`key add
+  --observable-since/--observable-source`, or `key observe` later). An item
+  first observable after the snapshot was frozen is never confirmed on it
+  (`key add` warns for a candidate, `key confirm` refuses, and no tournament
+  grades a key that scores one, nor counts a tournament graded against a key
+  that has changed since); `key move` attaches it to a snapshot frozen later
+  instead, as a candidate there (recording `--since/--source` as it moves).
+  `key show` prints each item's `observable_since`. Only these commands write keys. No improver run can reach
   the key store, and no agent can read it.
 - `tournaments/<id>/` holds one **tournament**. `run` sends each arm's heats (an arm may set its own prompt, heats, budget
   and timeout: a challenger beside its champion) on the snapshot as ordinary improver runs, which never apply or touch GitHub,

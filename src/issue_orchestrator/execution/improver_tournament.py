@@ -33,8 +33,9 @@ import re
 import shutil
 import tempfile
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -82,7 +83,7 @@ from ..entrypoints.improver_run import (
 )
 from ..entrypoints.improver_staging import ImproverStagingRequest, StagedImproverInputs
 from ..ports.improver import HeatSpace, ImproverAgent, heat_file
-from .improver_answer_keys import FileAnswerKeyStore
+from .improver_answer_keys import AnswerKeyError, FileAnswerKeyStore
 from .improver_effect_applier import ImproverEffects
 from .improver_investigation import EmpoweredInvestigation, ScriptedInvestigation
 from .improver_run_store import FileImproverRunStore
@@ -97,6 +98,10 @@ DEFAULT_PASSES = 3
 _GRADING_RECORD = "grading.json"
 #: What was graded (outputs, seed, snapshot), sealed with the mapping, so a failed grading can be retried.
 _REQUEST = "sealed/request.json"
+#: Written last: with it, a grading is sealed (every input written).
+_SEALED_MAPPING = "sealed/mapping.json"
+#: The key as the graders read it: a result stands only while the key scores just this.
+_GRADED_KEY = "key/KEY.md"
 #: What the tournament's arms were run on (written by run_arms).
 _ARMS_RUN = "arms/run.json"
 #: What the tournament's arms were started with (a resume must match it).
@@ -223,6 +228,10 @@ DEFAULT_GRADERS = (
 )
 
 
+class GradedKeyChanged(RuntimeError):
+    """A tournament's result graded against a key that has changed since (#8972)."""
+
+
 class TournamentHarness:
     def __init__(
         self,
@@ -245,10 +254,40 @@ class TournamentHarness:
     def directory(self, tournament_id: str) -> Path:
         return self._root / require_slug(tournament_id, "a tournament id")
 
+    @contextmanager
+    def keys_held(self) -> Iterator[None]:
+        """No answer key changes while held: a result :meth:`result_of`
+        accepts inside stands until it exits."""
+        with self._keys.held():
+            yield
+
     def result_of(self, tournament_id: str) -> TournamentResult | None:
-        """The tournament's result, if it was graded."""
+        """The tournament's result, if it was graded: one that still stands
+        (see :meth:`require_standing`)."""
         path = self.directory(tournament_id) / "result.json"
-        return TournamentResult.model_validate_json(path.read_text(encoding="utf-8")) if path.is_file() else None
+        if not path.is_file():
+            return None
+        self.require_standing(tournament_id)
+        return TournamentResult.model_validate_json(path.read_text(encoding="utf-8"))
+
+    def require_standing(self, tournament_id: str) -> None:
+        """A tournament whose grading was sealed (prepared, or graded) stands
+        only while its snapshot's key scores exactly what it was sealed with
+        (#8972); else :class:`GradedKeyChanged`: its grading, finished or
+        not, can never count, and a regrade would refuse the changed key."""
+        root = self.directory(tournament_id)
+        if not (root / _SEALED_MAPPING).is_file():
+            return
+        snapshot_id = json.loads((root / _REQUEST).read_text(encoding="utf-8"))["snapshot_id"]
+        try:
+            current = render_key(self._keys.scoring(snapshot_id))
+        except AnswerKeyError as refused:
+            raise GradedKeyChanged(f"tournament {tournament_id}'s grading no longer stands: {refused}") from refused
+        if (root / _GRADED_KEY).read_text(encoding="utf-8") != current:
+            raise GradedKeyChanged(
+                f"tournament {tournament_id} was graded against snapshot {snapshot_id}'s key as it was;"
+                " the key has changed since (an item confirmed, corrected or moved): its grading no longer stands"
+            )
 
     def arms_ran(self, tournament_id: str) -> bool:
         """Whether the tournament's arms ran to the end (their outputs recorded)."""
@@ -260,13 +299,14 @@ class TournamentHarness:
         """Each arm's heats on the snapshot, as outputs (a failed heat has none).
 
         The snapshot's answer key must exist first: a key is written before
-        any result is seen, never after reading the arms' answers.
+        any result is seen, never after reading the arms' answers. And it
+        must score only what the snapshot could show (#8972).
 
         ``resume``: arms interrupted before they all finished are resumed
         (the same snapshot and arm specifications only): every finished run
         is reused, only the unfinished ones run.
         """
-        self._keys.get(snapshot_id)
+        self._keys.scoring(snapshot_id)
         names = [spec.arm.name for spec in specs]
         if len(set(names)) != len(names):
             raise ValueError(f"arm names repeat: {names}")
@@ -408,7 +448,7 @@ class TournamentHarness:
         require_cross_model(graders)
         if passes < 1:
             raise ValueError(f"each grader grades at least once, not {passes} time(s)")
-        key = self._keys.get(snapshot_id)
+        key = self._keys.scoring(snapshot_id)
         root = self.directory(tournament_id).resolve()
         if (root / "result.json").exists():
             raise RuntimeError(f"tournament {tournament_id} already has a result")
@@ -566,11 +606,11 @@ def _grading_inputs(
         f"anon/{label}.json": _scrubbed(by_id[oid].text or "", (str(root), *by_id[oid].hide))
         for label, oid in labels.items()
     }
-    files["sealed/mapping.json"] = json.dumps(
+    files[_SEALED_MAPPING] = json.dumps(
         {"seed": seed, "labels": {label: {"output": oid, "arm": by_id[oid].arm} for label, oid in labels.items()}},
         indent=2,
     ) + "\n"
-    files["key/KEY.md"] = render_key(key)
+    files[_GRADED_KEY] = render_key(key)
     files[_REQUEST] = json.dumps({
         "snapshot_id": snapshot_id, "seed": seed,
         "outputs": [{"arm": o.arm, "heat": o.heat, "text": o.text, "hide": list(o.hide)} for o in outputs],
@@ -585,7 +625,7 @@ def _prepare(root: Path, files: Mapping[str, str]) -> None:
     half-written attempt is cleared). With it, every file must match, and
     the earlier graders' answers are kept beside the new attempt's.
     """
-    mapping = root / "sealed" / "mapping.json"
+    mapping = root / _SEALED_MAPPING
     if mapping.exists():
         present = {str(p.relative_to(root)) for d in ("anon", "sealed", "key") for p in (root / d).iterdir()}
         changed = sorted(
@@ -601,7 +641,7 @@ def _prepare(root: Path, files: Mapping[str, str]) -> None:
     for directory in ("anon", "sealed", "key"):
         shutil.rmtree(root / directory, ignore_errors=True)
         (root / directory).mkdir(parents=True)
-    for name, text in sorted(files.items(), key=lambda item: item[0] == "sealed/mapping.json"):
+    for name, text in sorted(files.items(), key=lambda item: item[0] == _SEALED_MAPPING):
         _write_atomic(root / name, text)
 
 
@@ -719,6 +759,7 @@ __all__ = [
     "ArmSpec",
     "FrozenInputs",
     "FrozenToolbox",
+    "GradedKeyChanged",
     "Grader",
     "TournamentHarness",
     "render_key",

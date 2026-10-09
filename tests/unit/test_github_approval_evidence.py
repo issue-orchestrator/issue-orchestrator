@@ -377,3 +377,20 @@ def test_a_maintainer_approval_with_no_other_application_still_approves() -> Non
                      state="open", repo="owner/repo", body=with_proposal_marker("b"))
 
     assert approvals.verify(snapshot).kind is ApprovalVerdictKind.MAINTAINER
+
+
+def test_own_write_verdict_is_decidable_only_for_an_app_engine() -> None:
+    """#8774: an App engine knows its label writes by its bot account; a
+    personal-token engine cannot tell its writes from its user's (None)."""
+    from issue_orchestrator.domain.tech_lead_approval import LabelEvent
+
+    adapter = _adapter(None)
+    bot = LabelEvent(event_id=1, actor_login="io[bot]", actor_is_bot=True, created_at="t", actor_id=301)
+    person = LabelEvent(event_id=2, actor_login="lead", actor_is_bot=False, created_at="t", actor_id=5)
+
+    adapter._client.app_bot_account.return_value = None
+    assert adapter.own_write_verdict(bot) is None
+
+    adapter._client.app_bot_account.return_value = MagicMock(user_id=301)
+    assert adapter.own_write_verdict(bot) is True
+    assert adapter.own_write_verdict(person) is False

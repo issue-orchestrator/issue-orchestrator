@@ -80,7 +80,9 @@ def test_a_failed_grading_is_regraded_without_running_the_arms_again(tmp_path: P
     import json
     from datetime import UTC, datetime
 
+    from issue_orchestrator.execution.command_runner import LocalCommandRunner
     from issue_orchestrator.execution.improver_answer_keys import FileAnswerKeyStore
+    from issue_orchestrator.execution.improver_snapshots import FrozenSnapshotStore
     from issue_orchestrator.ports.improver import ImproverAgentResult
     from tests.unit.domain.test_improver_tournament import SEALED
     from tests.unit.execution.test_improver_tournament_harness import _legacy_inputs
@@ -90,7 +92,7 @@ def test_a_failed_grading_is_regraded_without_running_the_arms_again(tmp_path: P
     monkeypatch.chdir(Path(__file__).resolve().parents[3])
     assert cli.main(["snapshot", "import", "--id", "s1", "--improver-data", str(_legacy_inputs(tmp_path / "d")),
                      "--taken-at", "2026-10-04T07:36:00+00:00", "--origin", "test"]) == 0
-    FileAnswerKeyStore(store).seed_sealed("s1", SEALED, sealed_at=datetime(2026, 10, 4, tzinfo=UTC), added_by="coordinator")
+    FileAnswerKeyStore(store, FrozenSnapshotStore(store, LocalCommandRunner())).seed_sealed("s1", SEALED, sealed_at=datetime(2026, 10, 4, tzinfo=UTC), added_by="coordinator")
     calls: list[str] = []
     codex_complete = {"now": False}
 
@@ -165,3 +167,47 @@ def test_a_challenge_that_cannot_be_tried_ends_the_command_saying_why(tmp_path: 
 
     with pytest.raises(SystemExit, match="improver_tournament challenge: no improver run 'nope'"):
         cli.main(["challenge", "--run", "nope", "--snapshot", "20261004"])
+
+
+def test_key_commands_warn_refuse_and_show_when_an_item_was_observable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#8972: adding a candidate observable only after the snapshot warns,
+    confirming it is refused, and ``key show`` says when each item was observable."""
+    from tests.unit.domain.test_improver_tournament import SEALED
+    from tests.unit.execution.test_improver_tournament_harness import _legacy_inputs
+
+    store = tmp_path / "io-improver"
+    monkeypatch.setattr(cli, "improver_root", lambda checkout, runner: store)
+    sealed = tmp_path / "sealed.md"
+    sealed.write_text(SEALED)
+    for snapshot_id, taken_at in (("20261004", "2026-10-04T07:36:24+00:00"), ("20261005", "2026-10-05T00:00:00+00:00")):
+        assert cli.main(["snapshot", "import", "--id", snapshot_id, "--improver-data",
+                         str(_legacy_inputs(tmp_path / snapshot_id)), "--taken-at", taken_at, "--origin", "t"]) == 0
+        assert cli.main(["key", "seed", "--snapshot", snapshot_id, "--sealed-key", str(sealed),
+                         "--sealed-at", taken_at, "--by", "coordinator"]) == 0
+    capsys.readouterr()
+    add = ["key", "add", "--snapshot", "20261004", "--id", "H-8137", "--weight", "2", "--category", "stall",
+           "--title", "T", "--description", "D", "--observable-since", "2026-10-04T09:02:00+00:00",
+           "--observable-source", "porchpin/porchpin#479 created_at", "--by", "coordinator"]
+
+    with pytest.raises(SystemExit, match="key add: not confirmed on snapshot '20261004'.*observable only since"):
+        cli.main([*add, "--confirmed"])
+    assert cli.main(add) == 0
+    added = capsys.readouterr()
+    assert "warning: key item 'H-8137' is observable only since 2026-10-04T09:02:00+00:00" in added.err
+    assert ("H-8137 (2, stall, hindsight, candidate) T; observable since: 2026-10-04T09:02:00+00:00"
+            " (porchpin/porchpin#479 created_at)") in added.out
+    assert "1 (3, stall, sealed_key, confirmed)" in added.out and "observable since: sealed with the snapshot" in added.out
+    assert "  NOT observable at the snapshot's time: key item 'H-8137'" in added.out
+    with pytest.raises(SystemExit, match="key confirm: not confirmed.*after the snapshot was frozen at 2026-10-04T07:36:24"):
+        cli.main(["key", "confirm", "--snapshot", "20261004", "--id", "H-8137", "--by", "coordinator"])
+    with pytest.raises(SystemExit):
+        cli.main([*add[:-2], "--observable-since", "2026-10-04T09:02:00", "--by", "coordinator"])  # no zone
+    capsys.readouterr()
+
+    assert cli.main(["key", "move", "--snapshot", "20261004", "--id", "H-8137", "--to", "20261005", "--by", "c"]) == 0
+    assert cli.main(["key", "confirm", "--snapshot", "20261005", "--id", "H-8137", "--by", "c"]) == 0
+    assert "H-8137 (2, stall, hindsight, confirmed)" in capsys.readouterr().out
+    assert cli.main(["key", "show", "--snapshot", "20261004"]) == 0
+    assert "H-8137" not in capsys.readouterr().out

@@ -26,6 +26,7 @@ from tests.callback_endpoint_helpers import ready_callback_endpoint
 from tests.run_allocation_helpers import make_completion_processor
 from tests.unit.test_completion_evidence_intake import command, completion
 from tests.unit.test_validated_work_preservation import custody as custody
+from tests.label_application_helpers import standing_while_present
 
 
 @pytest.fixture
@@ -175,6 +176,7 @@ def _real_block(tmp_path, live, label="needs-human"):
     block = NeedsHumanBlock(
         needs_human_label=label, tech_lead_marker="tech-lead-needs-human", labels=_Labels(),
         read_labels=lambda number: sorted(live.get(number, set())),
+        label_application=standing_while_present(lambda number: sorted(live.get(number, set()))),
         quarantined_issue_numbers=claims.quarantined_issue_numbers, causes=claims,
     )
     return block, claims

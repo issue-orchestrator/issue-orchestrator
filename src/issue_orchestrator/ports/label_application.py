@@ -26,6 +26,11 @@ class LabelApplicationReader(Protocol):
         """
         ...
 
+    def own_write_verdict(self, event: LabelEvent) -> bool | None:
+        """Whether *event* is this engine's own write: decidable for a GitHub
+        App identity (its bot account is the actor, #8987), None otherwise."""
+        ...
+
     def label_applications(
         self, issue_number: int, labels: Sequence[str]
     ) -> Mapping[str, LabelEvent | None]:

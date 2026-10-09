@@ -69,6 +69,7 @@ from issue_orchestrator.execution.pending_work_claim_store import SqlitePendingW
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.event_sink import TraceEvent
 from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+from tests.label_application_helpers import standing_while_present
 
 ITEM = 262
 OBSERVED = "2026-10-02T06:00:00+00:00"
@@ -177,7 +178,7 @@ class World:
         self.store = SqlitePendingWorkClaimStore(self.tmp / "causes.sqlite")
         self.block = NeedsHumanBlock(
             "needs-human", "tech-lead-needs-human", self.github, self.github.read,
-            frozenset, self.store,
+            frozenset, self.store, label_application=standing_while_present(self.github.read),
         )
         self.applier = Applier(self.github)
         self.discharges = InMemoryTechLeadAuthorityStore()
@@ -758,6 +759,7 @@ def test_a_failed_outcome_whose_removal_landed_is_never_decided_again(tmp_path: 
     flaky = _ConfirmFails(world.github)
     world.block = NeedsHumanBlock(
         "needs-human", "tech-lead-needs-human", flaky, flaky.read, frozenset, world.store,
+        label_application=standing_while_present(world.github.read),
     )
     world.blocked_by(ITEM, _SWEEP)
     lift = _resolution(ResolutionKind.LIFT, _SWEEP)
@@ -783,6 +785,7 @@ def test_a_failed_attempted_discharge_stays_begun_even_if_the_label_is_back(tmp_
     flaky = _ConfirmFails(world.github, operator_puts_it_back=True)
     world.block = NeedsHumanBlock(
         "needs-human", "tech-lead-needs-human", flaky, flaky.read, frozenset, world.store,
+        label_application=standing_while_present(world.github.read),
     )
     world.blocked_by(ITEM, _SWEEP)
     lift = _resolution(ResolutionKind.LIFT, _SWEEP)

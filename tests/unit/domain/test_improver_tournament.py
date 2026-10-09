@@ -438,3 +438,18 @@ def test_more_heats_never_make_a_graders_precision_finer() -> None:
 
     assert pooled.heat_p("A", "B") == pytest.approx(1 / 20)
     assert pooled.band("A", "B") == pytest.approx(0.5) and not pooled.distinguishable("A", "B")
+
+
+@pytest.mark.parametrize("source", ["", "   ", "\n\t"])
+def test_an_observation_cites_where_its_time_is_read(source: str) -> None:
+    """#8972: an item's observable_since is only as good as its citation."""
+    from datetime import UTC, datetime
+
+    from pydantic import ValidationError
+
+    from issue_orchestrator.contracts.improver_tournament import Observation
+
+    at = datetime(2026, 10, 4, 9, 2, tzinfo=UTC)
+    with pytest.raises(ValidationError, match="at least 1 character"):
+        Observation(at=at, source=source)
+    assert Observation(at=at, source="  porchpin/porchpin#479 created_at ").source == "porchpin/porchpin#479 created_at"
