@@ -151,12 +151,32 @@ def _first_candidate(
     return running, DurablePythonSource.RUNNING_INTERPRETER
 
 
+_MAX_SYMLINK_HOPS = 40
+
+
 def _path_forms(path: Path) -> tuple[Path, ...]:
-    absolute = path.absolute()
+    """Every location the interpreter path passes through.
+
+    The path as written, each link of its symlink chain (an intermediate link
+    inside a worktree dangles once the worktree goes, even when the chain ends
+    somewhere stable), each of those with its directory resolved, and the
+    final target.
+    """
     forms: list[Path] = []
-    for form in (absolute, absolute.parent.resolve() / absolute.name, absolute.resolve()):
+
+    def add(form: Path) -> None:
         if form not in forms:
             forms.append(form)
+
+    hop = path.absolute()
+    for _ in range(_MAX_SYMLINK_HOPS):
+        add(hop)
+        add(hop.parent.resolve() / hop.name)
+        if not hop.is_symlink():
+            break
+        target = Path(os.readlink(hop))
+        hop = Path(os.path.normpath(hop.parent / target))
+    add(path.absolute().resolve())
     return tuple(forms)
 
 

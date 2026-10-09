@@ -350,3 +350,25 @@ def test_session_scoped_worktree_hook_is_rebaked_on_every_install(
     rebaked = baked_hooks()
     assert str(new_engine) in rebaked
     assert str(old_engine) not in rebaked
+
+
+def test_symlink_chain_through_a_linked_worktree_is_refused(
+    io_checkouts, target_repo, tmp_path
+):
+    """Round 2 F1: stable start and stable end, but a middle link dies with the worktree."""
+    _main, linked = io_checkouts
+    repo, config = target_repo
+    real = Path(sys.executable).resolve()
+    middle = linked / "bin" / "python"
+    middle.parent.mkdir()
+    middle.symlink_to(real)
+    outer = tmp_path / "stable-bin" / "python"
+    outer.parent.mkdir()
+    outer.symlink_to(middle)
+
+    assert unstable_interpreter_reason(outer, temp_roots=NO_TEMP_ROOTS) == (
+        f"it is inside the linked git worktree {linked}"
+    )
+    with pytest.raises(RepoGuardrailsError, match="linked git worktree"):
+        setup_repo_guardrails(config, python=outer)
+    assert not (repo / VERIFY_PR_RELATIVE_PATH).exists()
