@@ -257,6 +257,7 @@ def _proposal(
             key = op.rework_request.key
             receipt = next((item for item in inputs.rework_receipts if item.request_key == key), None)
             details.extend(_rework_details(op))
+        details.extend(_release_details(op))
         details.extend(ruling_details(inputs.rulings, op.target_issue_number))
     status, label = _proposal_status(verdict, receipt)
     open_for_decision = receipt is None
@@ -294,6 +295,28 @@ def ruling_details(
                    f" as of {synced.synced_at[:16].replace('T', ' ')} UTC)"),
         )
         for ruling in synced.rulings
+    ]
+
+
+def _release_details(op: "StoredTechLeadOp") -> list[TechLeadDetailRowPayload]:
+    """What a release approves, rendered from the stored op (#9092).
+
+    The proposal issue's body is documentation anyone with write access can
+    edit; this list is the engine's own, so the operator approving here sees
+    every record the approval releases.
+    """
+    release = op.validated_work_release
+    if release is None:
+        return []
+    return [
+        TechLeadDetailRowPayload(label="Superseding PR", value=f"#{release.superseding_pr_number} (must be merged)"),
+        *(
+            TechLeadDetailRowPayload(
+                label="Releases record",
+                value=f"{item.record_id}: head {item.validated_head_sha} on {item.branch_name}",
+            )
+            for item in release.authorities
+        ),
     ]
 
 
