@@ -14,15 +14,16 @@ from ..domain.exact_git import (
     RetainedRef,
 )
 from ..domain.validated_work import require_sha
-from ..domain.validated_work_store import AncestryRelation
+from ..domain.validated_work_store import CARRIED_REF_PREFIX, LANDED_REF_PREFIX, AncestryRelation
 from ..ports.git import Git, GitError
 from .git_push_operations import GitAuthEnvProvider
 from .git_exact_context import ExactPushContextOwner, require_remote
 
 _PREFIXES = ("refs/issue-orchestrator/validated/", "refs/issue-orchestrator/observed/")
-# Landed merged-PR heads (§2.8) are pinned like escrow, but are not escrow:
+# Landed merged-PR heads (§2.8) and the heads of another branch's PRs that
+# carry republished work (#8137) are pinned like escrow, but are not escrow:
 # escrow reconciliation enumerates only ``_PREFIXES`` and never sees them.
-_PINNABLE = (*_PREFIXES, "refs/issue-orchestrator/landed/")
+_PINNABLE = (*_PREFIXES, LANDED_REF_PREFIX, CARRIED_REF_PREFIX)
 
 
 class GitExactOperations:

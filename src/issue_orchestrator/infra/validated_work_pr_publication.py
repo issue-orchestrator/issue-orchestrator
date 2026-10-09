@@ -1,9 +1,10 @@
 """Record the lineage head a PR publishes, then reclassify the lineage.
 
-Two verified publication routes that are not recovery's own push (§2.1.4,
-§2.7): the completion's push observed on the issue's open PR, and a merged PR
+Three verified publication routes that are not recovery's own push (§2.1.4,
+§2.7): the completion's push observed on the issue's open PR, a merged PR
 of the branch (§3.5), proven by its head at merge - a squash merge leaves
-none of the branch's commits on the base. The store records that head as the
+none of the branch's commits on the base - and an open or merged PR of the
+same issue on ANOTHER branch, where the work was republished (#8137). The store records that head as the
 lineage's published head only after it has itself verified that a validated
 head of the lineage is contained in it. Reclassifying against the new fact is
 what resolves the contained records: ``CONTAINED_IN_PUBLISHED_HEAD`` for an
@@ -24,10 +25,12 @@ from ..domain.validated_work import (
     canonical_record_id,
 )
 from ..domain.validated_work_remote_authority import (
+    CarriedByIssuePullRequest,
     LandedViaMergedPullRequest,
     PullRequestPublication,
 )
 from ..domain.validated_work_store import (
+    carrier_ref,
     landing_ref,
     AncestryRelation as Relation,
     CommitReference,
@@ -79,6 +82,8 @@ def record_pr_publication(
         return Status.PUBLICATION_IN_FLIGHT
     if isinstance(published, LandedViaMergedPullRequest):
         return _record_landing(conn, lineage, key, published, observed_at)
+    if isinstance(published, CarriedByIssuePullRequest):
+        return _record_carrier(conn, lineage, key, published, observed_at)
     fact = publication(conn, lineage_key)
     if fact is not None:
         if fact.published_head_sha == published.head_sha and (
@@ -149,6 +154,49 @@ def _record_landing(
     conn.execute(
         "INSERT INTO validated_work_lineage_landings (lineage_key,pr_number,head_sha,landed_at) VALUES (?,?,?,?)",
         (lineage_key, landed.pr_number, landed.head_sha, observed_at),
+    )
+    lineage.classify(conn, lineage_key, observed_at)
+    return Status.ADVANCED
+
+
+def _record_carrier(
+    conn: sqlite3.Connection,
+    lineage: LineageClassifier,
+    key: ValidatedWorkKey,
+    carried: CarriedByIssuePullRequest,
+    observed_at: str,
+) -> Status:
+    """Record another branch's PR of the issue as carrying the lineage's work (#8137).
+
+    Never the lineage fact: that is what THIS branch publishes, and recovery
+    sequences from it. A merged PR's head cannot move, so a second proof of
+    it is already recorded; an open PR's row follows its latest proven head,
+    and becomes final when the PR merges.
+    """
+    lineage_key = canonical_lineage_key(key)
+    recorded = conn.execute(
+        "SELECT head_sha, merged FROM validated_work_lineage_carriers WHERE lineage_key=? AND pr_number=?",
+        (lineage_key, carried.pr_number),
+    ).fetchone()
+    if recorded is not None:
+        if recorded["merged"] and recorded["head_sha"] != carried.head_sha:
+            return Status.CONTAINMENT_UNPROVEN  # a merged PR's head cannot move
+        if recorded["head_sha"] == carried.head_sha and bool(recorded["merged"]) == carried.merged:
+            return Status.ALREADY_PUBLISHED
+    # Pin before the row commits: once the fetched PR ref is pruned, nothing
+    # else keeps a rebased-away or squash-merged head reachable.
+    pin = CommitReference(
+        replace(key, validated_head_sha=carried.head_sha), carrier_ref(lineage_key, carried.pr_number, carried.head_sha),
+    )
+    if not lineage.retain(pin):
+        return Status.CONTAINMENT_UNPROVEN
+    conn.execute(
+        "INSERT INTO validated_work_lineage_carriers "
+        "(lineage_key,pr_number,branch_name,head_sha,merged,observed_at) VALUES (?,?,?,?,?,?) "
+        "ON CONFLICT(lineage_key,pr_number) DO UPDATE SET branch_name=excluded.branch_name,"
+        "head_sha=excluded.head_sha,merged=excluded.merged,observed_at=excluded.observed_at",
+        (lineage_key, carried.pr_number, carried.branch_name, carried.head_sha,
+         int(carried.merged), observed_at),
     )
     lineage.classify(conn, lineage_key, observed_at)
     return Status.ADVANCED

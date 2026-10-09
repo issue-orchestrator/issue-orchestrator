@@ -120,6 +120,29 @@ class GitHubPulls:
         # Set once PR #381 is merged: GitHub then lists it as merged, its
         # head frozen at ``refs/pull/381/head``.
         self.merged = False
+        # The issue's PRs on OTHER branches (#8137): number -> (branch, state).
+        # Each one's head is ``refs/pull/N/head`` on the bare remote.
+        self.elsewhere: dict[int, tuple[str, PublicationPrState]] = {}
+        self.head_repo = REPO
+
+    def _pull_head(self, number: int) -> str:
+        return self._git.run(self._origin, ["rev-parse", f"refs/pull/{number}/head"]).stdout.strip()
+
+    def issue_pull_requests(self, request):
+        """Every PR that references the issue, as GitHub's timeline lists them:
+        the branch's own PR (when GitHub has it) and the PRs elsewhere."""
+        self.reads += 1
+        if self.unreadable:
+            raise PublicationRemoteError("GitHub is unreadable")
+        assert (request.repo_slug, request.issue_number) == (REPO, ISSUE)
+        own = self.merged_pull_requests(request) if self.merged else ()
+        return own + tuple(
+            PublicationPullRequest(
+                number, f"https://github.com/{REPO}/pull/{number}", self.head_repo, REPO, branch, "main",
+                self._pull_head(number), state, f"Refs #{ISSUE}",
+            )
+            for number, (branch, state) in sorted(self.elsewhere.items())
+        )
 
     def merged_pull_requests(self, request):
         self.reads += 1
@@ -158,6 +181,11 @@ def _commit(git, worktree: Path, name: str, text: str) -> str:
 
 @pytest.fixture
 def rig(tmp_path):
+    return build_rig(tmp_path)
+
+
+def build_rig(tmp_path: Path) -> SimpleNamespace:
+    """The real-Git porchpin rig; shared with the republished-work tests (#8137)."""
     git = create_git(LocalCommandRunner())
     origin, repo, worktree = tmp_path / "origin.git", tmp_path / "repository", tmp_path / "porchpin-186"
     state = tmp_path / "owner-state"

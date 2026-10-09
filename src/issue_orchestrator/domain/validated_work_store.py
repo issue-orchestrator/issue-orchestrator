@@ -225,8 +225,49 @@ class LineageLanding:
         return landing_ref(self.lineage_key, self.pr_number)
 
 
+#: Where permanent pins of PR heads that resolved validated work live.
+LANDED_REF_PREFIX = "refs/issue-orchestrator/landed/"
+CARRIED_REF_PREFIX = "refs/issue-orchestrator/carried/"
+#: Every permanent publication pin: never escrow, never released.
+PUBLICATION_PIN_PREFIXES = (LANDED_REF_PREFIX, CARRIED_REF_PREFIX)
+
+
 def landing_ref(lineage_key: str, pr_number: int) -> str:
-    return f"refs/issue-orchestrator/landed/{lineage_key.replace(':', '-')}/{pr_number}"
+    return f"{LANDED_REF_PREFIX}{lineage_key.replace(':', '-')}/{pr_number}"
+
+
+@dataclass(frozen=True, slots=True)
+class LineageCarrier:
+    """Another branch's PR of the issue that carries this lineage's work (#8137).
+
+    The work was republished on ``branch_name``. An open PR's row holds its
+    latest proven head; a merged PR's row holds its head at merge and never
+    moves. Like a landing it sits beside the lineage fact - which says what
+    THIS branch publishes and sequences recovery from - and only resolves the
+    validated heads its pinned head contains.
+    """
+
+    lineage_key: str
+    pr_number: int
+    branch_name: str
+    head_sha: str
+    merged: bool
+    observed_at: str
+
+    def __post_init__(self) -> None:
+        require_text(self.lineage_key, "lineage_key")
+        if type(self.pr_number) is not int or self.pr_number <= 0:
+            raise ValueError("a carrier names its PR")
+        require_text(self.branch_name, "branch_name")
+        require_sha(self.head_sha)
+        if type(self.merged) is not bool:
+            raise ValueError("a carrier says whether its PR merged")
+        require_text(self.observed_at, "observed_at")
+
+
+def carrier_ref(lineage_key: str, pr_number: int, head_sha: str) -> str:
+    """One create-only pin per proven head: an open PR's head moves, its pins never do."""
+    return f"{CARRIED_REF_PREFIX}{lineage_key.replace(':', '-')}/{pr_number}/{head_sha}"
 
 
 @dataclass(frozen=True, slots=True)

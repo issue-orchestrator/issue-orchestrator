@@ -163,6 +163,7 @@ def _rig(tmp_path, agent_label):
     observer = Mock(spec=ValidatedWorkCaptureObserver)
     observer.observe.return_value = ValidatedWorkRemoteFacts(None, ())
     observer.merged_pull_requests.return_value = ()
+    observer.issue_pull_requests.return_value = ()
     preservation = ValidatedWorkPreservationService(intake=intake, store=aggregate,
         custody=ValidatedWorkCustody(escrow, aggregate), repair=EscrowReconciliation(escrow=escrow, store=aggregate, intake=ledger),
         working_copy=wc, observer=observer,

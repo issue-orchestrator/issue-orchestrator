@@ -97,6 +97,7 @@ def custody(tmp_path):
     observer = Mock(spec=ValidatedWorkCaptureObserver)
     observer.observe.return_value = ValidatedWorkRemoteFacts(None, ())
     observer.merged_pull_requests.return_value = ()
+    observer.issue_pull_requests.return_value = ()
     # The base each capture compares against; a test may swap in the
     # production resolver (the stack-aware PullRequestBaseBranch). With no
     # ``origin`` the base cannot be fetched and every head is preserved; a

@@ -227,8 +227,51 @@ class LandedViaMergedPullRequest:
         )
 
 
-#: Either route by which a PR, not recovery, published a validated head.
-PullRequestPublication = PublishedOnOpenPullRequest | LandedViaMergedPullRequest
+@dataclass(frozen=True, slots=True)
+class CarriedByIssuePullRequest:
+    """Proof a validated head is published on ANOTHER branch's PR of its issue (#8137).
+
+    The work was republished: a completion whose PR collided moved to a
+    suffixed branch, or an agent rebuilt the slice on a fresh one. Its record
+    keeps the branch it validated on, but what protects the work is the PR that
+    carries it: open (``merged`` False) or merged, of this repository, whose
+    head - fetched from ``refs/pull/N/head`` and agreeing with GitHub - is the
+    validated head or one of its descendants. Content, not the branch name,
+    is the proof.
+    """
+
+    pr_number: int
+    head_sha: str
+    branch_name: str
+    merged: bool
+
+    def __post_init__(self) -> None:
+        require_positive(self.pr_number, "pr_number")
+        require_sha(self.head_sha)
+        require_text(self.branch_name, "branch_name")
+        if type(self.merged) is not bool:
+            raise ValueError("an issue PR's carriage says whether it merged")
+
+    @property
+    def provenance(self) -> PublicationProvenance:
+        return (
+            PublicationProvenance.OBSERVED_MERGE if self.merged
+            else PublicationProvenance.OBSERVED_OPEN_PR
+        )
+
+    def describe(self, validated_head_sha: str) -> str:
+        state = "merged" if self.merged else "open"
+        return (
+            f"validated head {validated_head_sha[:12]} is published on another branch: "
+            f"{state} PR #{self.pr_number} ({self.branch_name})'s head "
+            f"{self.head_sha[:12]} carries it"
+        )
+
+
+#: Every route by which a PR, not recovery, published a validated head.
+PullRequestPublication = (
+    PublishedOnOpenPullRequest | LandedViaMergedPullRequest | CarriedByIssuePullRequest
+)
 
 
 def carried_by_open_pull_request(
@@ -281,3 +324,35 @@ def landed_via_merged_pull_request(
     ):
         return None
     return LandedViaMergedPullRequest(pr.number, pr.head_sha)
+
+
+def carried_by_issue_pull_request(
+    pr: PublicationPullRequest,
+    *,
+    repo_slug: str,
+    branch_name: str,
+    fetched_head_sha: str | None,
+    relation: AncestryRelation | None,
+) -> CarriedByIssuePullRequest | None:
+    """Whether another branch's PR of the issue is PROVEN to carry the head (#8137).
+
+    ``pr`` is one of the issue's PRs as the observer read them (a PR that
+    references the issue). Every fact must agree: it is open or merged, of
+    this repository (head and base), on a branch OTHER than the record's own -
+    that branch is judged by the stricter same-branch routes, which a PR
+    elsewhere must never bypass - its head is the head just fetched from
+    ``refs/pull/N/head``, and the validated head is that head or an ancestor
+    of it. Anything else proves nothing and leaves the work held.
+    """
+    if (
+        pr.state not in (PublicationPrState.OPEN, PublicationPrState.MERGED)
+        or pr.head_repo != repo_slug
+        or pr.base_repo != repo_slug
+        or pr.branch == branch_name
+        or fetched_head_sha != pr.head_sha
+        or relation not in (AncestryRelation.EQUAL, AncestryRelation.ANCESTOR)
+    ):
+        return None
+    return CarriedByIssuePullRequest(
+        pr.number, pr.head_sha, pr.branch, merged=pr.state is PublicationPrState.MERGED,
+    )

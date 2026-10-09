@@ -143,6 +143,28 @@ class GitHubValidatedWorkCaptureObserver:
         except (RepositoryHostError, KeyError, TypeError, ValueError) as exc:
             raise PublicationRemoteError(str(exc)) from exc
 
+    def issue_pull_requests(
+        self, request: ValidatedWorkRemoteRequest
+    ) -> tuple[PublicationPullRequest, ...]:
+        """The issue's open and merged PRs on any branch, each read uncached (#8137)."""
+        if request.repo_slug != self._repo_slug:
+            raise PublicationRemoteError("Capture repository does not match configured remote")
+        try:
+            pulls: list[PublicationPullRequest] = []
+            for number in self._client.pull_requests_referencing_issue(request.issue_number):
+                raw = self._client.read_publication_pr(number)
+                if raw is None:
+                    # The timeline just named it: a PR that cannot be read is
+                    # an incomplete answer, never an absent one.
+                    raise PublicationRemoteError(f"Referencing PR #{number} is unreadable")
+                pr = _pull_request(raw)
+                if pr.number != number:
+                    raise PublicationRemoteError("PR response number does not match request")
+                pulls.append(pr)
+            return tuple(pulls)
+        except (RepositoryHostError, KeyError, TypeError, ValueError) as exc:
+            raise PublicationRemoteError(str(exc)) from exc
+
 
 class GitHubPublicationRemote:
     def __init__(self, client: GitHubHttpClient, *, repo_slug: str) -> None:

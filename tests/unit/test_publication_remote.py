@@ -381,3 +381,52 @@ def test_an_unreadable_merged_pr_scan_is_a_remote_error(remote_factory):
     observer = remote_factory(lambda _request: httpx.Response(401, json={"message": "bad"}), capture=True)
     with pytest.raises(PublicationRemoteError):
         observer.merged_pull_requests(ValidatedWorkRemoteRequest("owner/repo", 1, "feature"))
+
+
+def _timeline(*states: tuple[int, str]) -> dict:
+    return {"data": {"repository": {"i1": {"timelineItems": {
+        "pageInfo": {"hasNextPage": False, "endCursor": None},
+        "nodes": [{"isCrossRepository": False, "source": {
+            "__typename": "PullRequest", "number": number, "state": state}} for number, state in states],
+    }}}}}
+
+
+def test_capture_observer_reads_the_issues_prs_on_every_branch_uncached(remote_factory):
+    """#8137: the issue's referencing PRs, each read by number without the cache."""
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if request.url.path == "/graphql":
+            return httpx.Response(200, json=_timeline((2, "OPEN"), (3, "MERGED"), (4, "CLOSED")))
+        number = int(request.url.path.rsplit("/", 1)[1])
+        payload = {**pr_payload(), "number": number, "head": {
+            "repo": {"full_name": "owner/repo"}, "ref": f"feature-r{number}", "sha": SHA}}
+        if number == 3:
+            payload["merged_at"] = "2026-10-04T21:32:11Z"
+        return httpx.Response(200, json=payload, headers={"ETag": '"same"'})
+
+    observer = remote_factory(handler, capture=True)
+    pulls = observer.issue_pull_requests(ValidatedWorkRemoteRequest("owner/repo", 1, "feature"))
+
+    assert [(pr.number, pr.branch, pr.state) for pr in pulls] == [
+        (2, "feature-r2", PublicationPrState.OPEN), (3, "feature-r3", PublicationPrState.MERGED)]
+    assert [request.url.path for request in requests[1:]] == [
+        "/repos/owner/repo/pulls/2", "/repos/owner/repo/pulls/3"]
+    assert all("if-none-match" not in request.headers for request in requests)
+
+
+@pytest.mark.parametrize("failure", ["timeline-incomplete", "pr-missing", "pr-unreadable"])
+def test_capture_observer_never_answers_the_issues_prs_in_part(remote_factory, failure):
+    def handler(request):
+        if request.url.path == "/graphql":
+            if failure == "timeline-incomplete":
+                return httpx.Response(200, json={"data": {"repository": {}}})
+            return httpx.Response(200, json=_timeline((2, "OPEN")))
+        if failure == "pr-missing":
+            return httpx.Response(404, json={"message": "Not Found"})
+        return httpx.Response(500, json={"message": "boom"})
+
+    observer = remote_factory(handler, capture=True)
+    with pytest.raises(PublicationRemoteError):
+        observer.issue_pull_requests(ValidatedWorkRemoteRequest("owner/repo", 1, "feature"))

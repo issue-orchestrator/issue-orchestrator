@@ -9,7 +9,7 @@ import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, Iterator, Literal, cast
 from urllib.parse import quote
 
@@ -2567,6 +2567,7 @@ class GitHubHttpClient:
     )
     _REFERENCE_PR_NUMBERS = "number merged"
     _REFERENCE_PR_HISTORY = "number merged mergedAt body"
+    _REFERENCE_PR_STATES = "number state"
 
     def merged_prs_referencing_issues(
         self,
@@ -2640,15 +2641,47 @@ class GitHubHttpClient:
             ))
         return tuple(history)
 
+    def pull_requests_referencing_issue(
+        self, issue_number: int, *, page_cap: int = 10
+    ) -> tuple[int, ...]:
+        """Every OPEN or MERGED same-repository PR that references
+        ``issue_number``, on any branch (#8137).
+
+        The same complete timeline walk as :meth:`merged_prs_referencing_issues`
+        - a closing PR and a partial ``Refs #N`` PR alike - keeping open PRs
+        too; a PR closed unmerged is not the issue's work. Raises instead of
+        returning part of the answer. A missing issue has no PRs.
+        """
+        owner, repo = self._config.repo.split("/", 1)
+        n = int(issue_number)
+        fields = f"i{n}: issue(number: {n}) {{ " + self._REFERENCE_TIMELINE.format(
+            after="", pr_fields=self._REFERENCE_PR_STATES
+        ) + " }"
+        timeline = self._reference_timeline_of(
+            self._reference_query(owner, repo, fields, variables={}), n
+        )
+        if timeline is None:
+            return ()
+        return tuple(sorted(
+            source["number"] for source in self._merged_reference_prs(
+                owner, repo, n, timeline, page_cap, self._REFERENCE_PR_STATES,
+                on_page=self._open_or_merged_prs_on_page,
+            )
+        ))
+
     def _merged_reference_prs(
         self, owner: str, repo: str, n: int, timeline: dict[str, Any], page_cap: int,
         pr_fields: str,
+        *,
+        on_page: Callable[[dict[str, Any], int], list[dict[str, Any]]] | None = None,
     ) -> list[dict[str, Any]]:
         """Walk one issue's reference timeline to its end, starting from page
-        one; the merged same-repository PR sources, each read once."""
+        one; the same-repository PR sources ``on_page`` keeps (merged ones by
+        default), each read once."""
+        keep = self._merged_prs_on_page if on_page is None else on_page
         merged: dict[int, dict[str, Any]] = {}
         for page in range(1, page_cap + 1):
-            merged.update((source["number"], source) for source in self._merged_prs_on_page(timeline, n))
+            merged.update((source["number"], source) for source in keep(timeline, n))
             page_info = timeline["pageInfo"]
             if not page_info["hasNextPage"]:
                 return list(merged.values())
@@ -2715,7 +2748,27 @@ class GitHubHttpClient:
         return timeline
 
     def _merged_prs_on_page(self, timeline: dict[str, Any], n: int) -> list[dict[str, Any]]:
-        merged: list[dict[str, Any]] = []
+        return [
+            source for source in self._reference_pr_sources(timeline, n)
+            if self._reference_field(source, "merged", bool, n)
+        ]
+
+    def _open_or_merged_prs_on_page(self, timeline: dict[str, Any], n: int) -> list[dict[str, Any]]:
+        return [
+            source for source in self._reference_pr_sources(timeline, n)
+            if self._reference_field(source, "state", str, n) in {"OPEN", "MERGED"}
+        ]
+
+    def _reference_field(self, source: dict[str, Any], field: str, kind: type, n: int) -> Any:
+        """One field of a referencing PR, exactly typed; a malformed node raises."""
+        value = source.get(field)
+        if type(value) is not kind:
+            raise self._incomplete_reference_prs(f"returned a malformed node for #{n}")
+        return value
+
+    def _reference_pr_sources(self, timeline: dict[str, Any], n: int) -> list[dict[str, Any]]:
+        """The page's same-repository PR sources, each with an integer number."""
+        sources: list[dict[str, Any]] = []
         for node in timeline["nodes"]:
             if not isinstance(node, dict) or type(node.get("isCrossRepository")) is not bool:
                 raise self._incomplete_reference_prs(f"returned a malformed node for #{n}")
@@ -2726,11 +2779,10 @@ class GitHubHttpClient:
                 raise self._incomplete_reference_prs(f"returned a malformed node for #{n}")
             if source["__typename"] != "PullRequest":
                 continue  # an issue that mentions this one
-            if type(source.get("number")) is not int or type(source.get("merged")) is not bool:
+            if type(source.get("number")) is not int:
                 raise self._incomplete_reference_prs(f"returned a malformed node for #{n}")
-            if source["merged"]:
-                merged.append(source)
-        return merged
+            sources.append(source)
+        return sources
 
     def _incomplete_reference_prs(self, why: str) -> GitHubScanIncompleteError:
         return GitHubScanIncompleteError(
