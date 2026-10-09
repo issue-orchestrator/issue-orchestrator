@@ -88,6 +88,7 @@ def tech_lead_page_section(orchestrator: Orchestrator) -> "TechLeadPageSectionPa
             merge_statuses={},
             rulings=deps.standing_rulings.synced(),
             known_proposals=approvals.indexed_proposals() if approvals is not None else frozenset(),
+            delivery=state.integration_delivery,
         )
     held = [row.issue_number for row in inputs.needs_human_causes if row.cause in MERGE_HOLD_CAUSES]
     return build_tech_lead_page_section(

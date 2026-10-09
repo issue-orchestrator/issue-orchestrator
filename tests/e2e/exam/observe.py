@@ -44,7 +44,12 @@ from issue_orchestrator.domain.standing_ruling import (
     parse_rulings_block,
 )
 from issue_orchestrator.domain.decision_steps import DECISION_STEP_MARKER_PREFIX as DECISION_STEP_MARKER
-from issue_orchestrator.testing.exam.observation import BodyRulingFact, CapturedPrompt, DecisionProposalFact
+from issue_orchestrator.testing.exam.observation import (
+    BodyRulingFact,
+    CapturedPrompt,
+    DecisionProposalFact,
+    DeliveryPullRequestFact,
+)
 
 #: The tech lead's ``resolve_block`` decision comment (``domain/block_resolution.decision_marker``).
 RESOLUTION_COMMENT = "<!-- io:resolve-block:comment:decision="
@@ -542,6 +547,7 @@ def build_observation(
     ended_by: RunEnd,
     notes: tuple[str, ...],
     upgrade: UpgradeFacts | None = None,
+    delivery: DeliveryPullRequestFact | None = None,
 ) -> ExamObservation:
     return ExamObservation(
         case_id=case_id,
@@ -557,4 +563,5 @@ def build_observation(
         ended_by=ended_by,
         notes=notes,
         upgrade=upgrade,
+        delivery=delivery,
     )

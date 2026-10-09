@@ -38,6 +38,10 @@ ANSWERABLE_CODER_LABEL = "agent:exam-coder-asks-answerable"
 """Case I's coder that asks, before any work, a question its issue's spec
 answers, until the tech lead resolves it (porchpin#327)."""
 
+INTEGRATION_CODER_LABEL = "agent:exam-coder-own-file"
+"""Case K's coder (#8144): codes as ``CODER_LABEL`` does, into a file of its
+own issue, so the items' PRs never truly conflict."""
+
 DECIDING_CODER_LABEL = "agent:exam-coder-asks-delivery"
 """Case J's coder (#8691): it asks porchpin#459's question until a decision is
 posted on its issue (an approved ``propose_decision``, or a ``resolve_block``),
@@ -90,6 +94,7 @@ def shim_command(
     gives_up: bool = False,
     until_resolved: bool = False,
     capture_prompts: Path | None = None,
+    own_file: bool = False,
 ) -> str:
     """Agent command running the shim; no ``{}`` placeholders on purpose.
 
@@ -113,5 +118,6 @@ def shim_command(
             *(("--gives-up",) if gives_up else ()),
             *(("--until-resolved",) if until_resolved else ()),
             *(("--capture-prompts", str(capture_prompts)) if capture_prompts is not None else ()),
+            *(("--own-file",) if own_file else ()),
         )
     )

@@ -176,6 +176,16 @@ _Auto-generated from settings schema._
 | `merge_queue.enqueue_after` | string | `code-reviewed` | Orchestrator gate that must pass before a PR is enqueued | `code-reviewed`, `tech-lead-reviewed` | Names the approval gate the PR must clear before enqueue. code-reviewed is the reviewer-approval gate. |
 | `merge_queue.failure_action` | string | `rework` | How to route a PR that fails the merge queue | `rework`, `needs_human` | rework sends the PR back to a coding agent; needs_human escalates it for manual attention. |
 
+## Integration Branch
+
+| Field | Type | Default | Description | Examples | Notes |
+|-------|------|---------|-------------|----------|-------|
+| `integration.enabled` | boolean | `False` | io merges approved PRs into an integration branch; you merge one delivery PR | `true`, `false` | When enabled, agents' worktrees and PRs use the integration branch as their base (it implies worktrees.base_branch_override), io merges each approved PR into it once its checks are green on a head containing the integration tip, updates a behind PR mechanically before any agent rework, and keeps one delivery PR (integration -> default branch) open for you to merge with a merge commit. Cannot be combined with merge_queue.enabled. |
+| `integration.branch` | string | `integration` | The branch approved PRs are merged into (created from the default branch if missing) | `integration` | A plain branch name: no 'origin/' or 'refs/' prefix. Never deleted by io. |
+| `integration.deliver` | string | `manual` | When the delivery PR is merged | `manual` | manual: io keeps the delivery PR current and you merge it when you choose. cadence and milestone are not defined yet (#9062). |
+| `integration.merge_method` | string | `merge` | How io merges an approved PR into the integration branch | `merge` | merge: a merge commit, made atomically on the tip the PR was checked against (the branch is fast-forwarded only from that tip). |
+| `integration.merge_after` | string | `code-reviewed` | The approval gate a PR must clear before io merges it | `code-reviewed`, `tech-lead-reviewed` | code-reviewed is reviewer approval; tech-lead-reviewed waits for the batch tech-lead review as well. |
+
 ## Validated Work
 
 | Field | Type | Default | Description | Examples | Notes |

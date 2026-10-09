@@ -96,7 +96,7 @@ class MockWorktreeManager:
             "reuse_options": reuse_options,
             "worktree_name": worktree_name,
         })
-        return WorktreeInfo(path=self.worktree_path, branch_name=self.branch_name)
+        return WorktreeInfo(path=self.worktree_path, branch_name=self.branch_name, base_branch=base_branch or "main")
 
     def remove_checkout(self, worktree_path: Path, *, force: bool = False) -> None:
         """Track remove calls."""

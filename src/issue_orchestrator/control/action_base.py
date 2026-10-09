@@ -130,6 +130,9 @@ class ActionType(Enum):
     # Re-run a PR's transient CI failure once per head commit (#8692)
     RERUN_FAILED_CHECKS = "rerun_failed_checks"
 
+    # Integration-branch mode (#8144): merge/update a PR, keep the branch
+    ADVANCE_INTEGRATION = "advance_integration"
+
     # Cleanup operations
     CLEANUP_SESSION = "cleanup_session"
 

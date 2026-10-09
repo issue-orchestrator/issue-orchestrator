@@ -70,6 +70,7 @@ class TestWorktreeContextCreate:
         manager.create.return_value = WorktreeInfo(
             path=worktree_path,
             branch_name="issue-123-fix-bug",
+            base_branch="main",
             reuse_status="created",
             reuse_reason="new worktree",
             uncommitted_discarded=0,
@@ -202,6 +203,7 @@ class TestWorktreeContextCreate:
         mock_worktree_manager.create.return_value = WorktreeInfo(
             path=worktree_path,
             branch_name="issue-123-fix-bug",
+            base_branch="main",
             reuse_status="reused",
             reuse_reason="existing worktree reset",
             uncommitted_discarded=2,

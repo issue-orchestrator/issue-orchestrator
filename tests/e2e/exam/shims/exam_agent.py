@@ -40,6 +40,11 @@ task and time, before doing anything else: Case I (#8141) grades what a
 conflict rework was told. The run directory and the file exist at every
 engine the exam runs, so the capture is engine-independent.
 
+``--own-file`` makes a coding session write ``exam-output-<issue>.txt``
+instead of the shared ``exam-output.txt``, so items' PRs never truly conflict
+(Case K, #8144: integration mode must land them all, updating the ones a merge
+left behind without an agent rework).
+
 ``--hold-until PATH`` makes a session wait, before doing anything, until
 PATH exists. The upgrade case (Case U) uses it to keep work mid-flight across
 an engine stop: the harness creates PATH only after the candidate engine has
@@ -118,8 +123,8 @@ def resolved_by_the_tech_lead() -> bool:
     return resolved
 
 
-def initial_coding_session(extra_pr_labels: list[str], problems: str = "None") -> None:
-    marker = Path("exam-output.txt")
+def initial_coding_session(extra_pr_labels: list[str], problems: str = "None", *, own_file: bool = False) -> None:
+    marker = Path(f"exam-output-{issue_number()}.txt" if own_file else "exam-output.txt")
     marker.write_text(f"tech-lead exam work item, written {time.ctime()}\n", encoding="utf-8")
     run(["git", "add", str(marker)])
     run(
@@ -209,6 +214,7 @@ def main() -> int:
     parser.add_argument("--gives-up", action="store_true")
     parser.add_argument("--until-resolved", action="store_true")
     parser.add_argument("--capture-prompts", type=Path, default=None)
+    parser.add_argument("--own-file", action="store_true")
     args = parser.parse_args()
     in_exchange = bool(os.environ.get(RESPONSE_FILE_ENV))
     log(f"role={args.role} in_exchange={in_exchange} fault={args.exchange_fault}")
@@ -227,7 +233,7 @@ def main() -> int:
         elif args.asks and not (args.until_resolved and resolved_by_the_tech_lead()):
             ask_the_operator(args.asks)
         else:
-            initial_coding_session(args.pr_label)
+            initial_coding_session(args.pr_label, own_file=args.own_file)
         return 0
 
     if not in_exchange:

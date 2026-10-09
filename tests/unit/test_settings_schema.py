@@ -609,7 +609,7 @@ class TestFromConfig:
         """Default Config() should produce valid schema models."""
         cfg = Config()
         tabs = from_config(cfg)
-        assert len(tabs) == 12
+        assert len(tabs) == 13
         assert tabs["validated_work"].validated_work_escrow_retention_days == 30
         assert "validation" in tabs
         assert "merge_queue" in tabs
@@ -1054,7 +1054,19 @@ class TestRestartFields:
         fields = get_restart_fields()
         assert "max_concurrent_sessions" not in fields
         assert "session_timeout_minutes" not in fields
-        assert "enabled" not in fields
+
+    def test_feature_switches_apply_live_except_integration(self):
+        """Restart-required is per field, not per bare name: the generic
+        ``enabled`` switches apply live, while integration mode's (#8144) needs a
+        restart because its implied worktree base is resolved at load."""
+        from issue_orchestrator.infra.settings_schema import TAB_DEFINITIONS
+        from issue_orchestrator.infra.settings_schema_support import (
+            collect_live_applied_settings,
+        )
+
+        live = collect_live_applied_settings(TAB_DEFINITIONS).yaml_paths
+        assert {"e2e.enabled", "merge_queue.enabled", "goal_pilot.enabled"} <= live
+        assert not {path for path in live if path.startswith("integration.")}
 
 
 # ---------------------------------------------------------------------------

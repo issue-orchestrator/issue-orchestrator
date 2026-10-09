@@ -342,8 +342,8 @@ class TestListDirtyFiles:
             assert files == [edited]
 
 
-class TestGetCommitsAheadOfMain:
-    """Tests for get_commits_ahead_of_main method."""
+class TestGetCommitsAheadOfBase:
+    """Tests for get_commits_ahead_of (against the worktree's base, #8144)."""
 
     def test_get_commits_ahead_of_main_success(self, git_wc, worktree_path):
         """Test getting commits ahead of main."""
@@ -357,8 +357,9 @@ class TestGetCommitsAheadOfMain:
                 stderr="",
             )
 
-            commits = git_wc.get_commits_ahead_of_main(worktree_path)
+            commits = git_wc.get_commits_ahead_of(worktree_path, "integration")
 
+            assert "origin/integration..HEAD" in mock_run.call_args.args[1]
             assert len(commits) == 2
             assert commits[0].sha == "abc123"
             assert commits[0].message == "Add feature X"
@@ -378,7 +379,7 @@ class TestGetCommitsAheadOfMain:
                 stderr="",
             )
 
-            commits = git_wc.get_commits_ahead_of_main(worktree_path)
+            commits = git_wc.get_commits_ahead_of(worktree_path, "integration")
 
             assert commits == []
 
@@ -389,7 +390,7 @@ class TestGetCommitsAheadOfMain:
                 1, "git", stderr="error"
             )
 
-            commits = git_wc.get_commits_ahead_of_main(worktree_path)
+            commits = git_wc.get_commits_ahead_of(worktree_path, "integration")
 
             assert commits == []
 
@@ -406,7 +407,7 @@ class TestGetCommitsAheadOfMain:
                 stderr="",
             )
 
-            commits = git_wc.get_commits_ahead_of_main(worktree_path)
+            commits = git_wc.get_commits_ahead_of(worktree_path, "integration")
 
             # Should skip malformed line
             assert len(commits) == 2

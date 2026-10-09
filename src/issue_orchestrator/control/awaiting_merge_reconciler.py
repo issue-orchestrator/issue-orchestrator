@@ -20,6 +20,7 @@ from ..history import latest_history_entries_by_issue
 from ..ports.repository_host import RepositoryHostError
 from ..domain.human_block import HumanHoldScope
 from .human_gates import HumanGates
+from .integration_branch import IntegrationBranchOwner, IntegrationRouting
 from .awaiting_merge_drift_policy import label_drift_finding
 from .close_on_merge import (
     merged_pr_reconciliation,
@@ -135,6 +136,10 @@ class AwaitingMergeReconciler:
     # is never enqueued or treated as silently mergeable ahead of its
     # predecessors. Non-stack issues are never affected.
     dependency_evaluator: "DependencyEvaluator | None" = None
+    # Optional integration-branch owner (#8144). When set, it routes each
+    # approved PR into the integration branch: a mechanical update instead of
+    # a behind-base rework, io's own merge, or a hand-over to a person.
+    integration: "IntegrationBranchOwner | None" = None
 
     def _rollup_gate(self) -> StatusRollupGate:
         return StatusRollupGate(
@@ -525,9 +530,11 @@ class AwaitingMergeReconciler:
             return None, None, None
 
         if self.merge_queue is not None and self.merge_queue.enabled:
-            return self._discover_merge_queue_followup(
-                state=state, entry=entry, pr=pr, issue=issue, pr_number=pr_number,
+            followup = self.merge_queue.discover_followup(
+                state=state, issue_number=entry.issue_number, pr=pr, issue=issue, pr_number=pr_number,
+                rollup_gate=self._rollup_gate(), rollup_scan_interval_seconds=self.rollup_scan_interval_seconds,
             )
+            return followup.rework, followup.escalation, followup.enqueue
         return self._discover_default_post_publish_followup(
             state=state, entry=entry, pr=pr, issue=issue, pr_number=pr_number,
         )
@@ -598,8 +605,12 @@ class AwaitingMergeReconciler:
             action,
             already_escalated,
         )
+        routed = self._integration_route(pr=pr, issue=issue, action=action)
+        action = routed.action
         if action != "WAIT_FOR_CHECKS" or already_escalated:
             state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
+        if routed.escalation is not None:
+            return None, routed.escalation, None
 
         if action in REWORK_ACTIONS:
             return self._build_rework_discovery(
@@ -625,72 +636,11 @@ class AwaitingMergeReconciler:
         # READY / UNKNOWN — nothing to do.
         return None, None, None
 
-    def _discover_merge_queue_followup(
-        self,
-        *,
-        state: OrchestratorState,
-        entry: SessionHistoryEntry,
-        pr: PRInfo,
-        issue: Issue,
-        pr_number: int,
-    ) -> tuple[
-        DiscoveredRework | None,
-        DiscoveredAwaitingMergeEscalation | None,
-        "DiscoveredMergeQueueEnqueue | None",
-    ]:
-        """Run the merge queue coordinator for one eligible approved PR.
-
-        Reads the queue entry first so an already-queued PR is observed without
-        paying for (or escalating on) a status-rollup read. Only a not-yet-queued
-        PR resolves the rollup, since the base eligibility classification needs
-        it for ``unstable``/``blocked`` states.
-        """
-        assert self.merge_queue is not None
-        read = self.merge_queue.read_entry(pr_number)
-        if read.is_indeterminate:
-            # The queue state could not be determined (transient read failure or
-            # an unmodeled provider state). Treat it as non-actionable: do NOT
-            # resolve the rollup or classify, so an unreadable queue can never
-            # enqueue, rework, or escalate a PR off stale status. Re-observe next
-            # tick.
-            return None, None, None
-        queue_entry = read.entry
-        if queue_entry is None:
-            decisive = rollup_is_decisive(pr.mergeable_state)
-            due = not decisive or self._rollup_gate().scan_due(
-                state, pr_number, self.rollup_scan_interval_seconds
-            )
-            if not due:
-                return None, None, None
-            resolution = self._rollup_gate().resolve_decisive(
-                state.status_rollup_capability,
-                pr=pr,
-                issue_number=entry.issue_number,
-                issue_key=issue.key.stable_id(),
-            )
-            if resolution.permission_denied:
-                state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
-                return None, self._build_rollup_permission_escalation(
-                    pr=pr,
-                    issue_number=entry.issue_number,
-                    issue_key=issue.key.stable_id(),
-                    pr_number=pr_number,
-                    reason=resolution.reason,
-                ), None
-            pr.status_check_rollup = resolution.rollup_state
-
-        # Merge-queue mode does not run the WAIT_FOR_CHECKS timeout machine —
-        # GitHub re-runs required checks on the merge group — so clear any
-        # pending-checks bookkeeping a prior non-queue tick may have left.
-        state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
-        followup = self.merge_queue.classify(
-            pr=pr,
-            issue=issue,
-            issue_number=entry.issue_number,
-            pr_number=pr_number,
-            entry=queue_entry,
-        )
-        return followup.rework, followup.escalation, followup.enqueue
+    def _integration_route(self, *, pr: PRInfo, issue: Issue, action: PostApprovalAction) -> IntegrationRouting:
+        """The integration owner's routing of a PR into its branch (#8144); else unchanged."""
+        if self.integration is None or not self.integration.owns(pr):
+            return IntegrationRouting(action)
+        return self.integration.route(pr=pr, issue=issue, action=action)
 
     def _post_publish_eligible(
         self,

@@ -15,6 +15,7 @@ from collections import OrderedDict
 
 from .blocked_open_pr import BlockedOpenPRLedger
 from .ci_failure import CiJobAssessment
+from .integration_branch import IntegrationDeliveryView, IntegrationStep
 from .dependency_gates import DependencyGateSnapshot
 from .host_rate_limit import HostRateLimitWindow
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
@@ -1715,6 +1716,7 @@ PostPublishEscalationKind = Literal[
     "status_rollup_permission_denied",  # token cannot read check status to decide
     "merge_queue_failed",  # GitHub merge queue rejected the PR; failure_action=needs_human
     "ci_rerun_unconfirmed",  # io asked GitHub to re-run a transient CI failure; it never restarted
+    "integration_ruling_check",  # integration mode: the issue has standing rulings; a person checks before it merges (#8144)
 ]
 
 
@@ -2246,6 +2248,16 @@ class OrchestratorState:
     discovered_awaiting_merge_escalations: list[DiscoveredAwaitingMergeEscalation] = field(default_factory=list)  # Post-publish stuck-or-blocked escalations
     discovered_merge_queue_enqueues: list[DiscoveredMergeQueueEnqueue] = field(default_factory=list)  # Approved PRs eligible for the merge queue
     discovered_ci_reruns: list[DiscoveredCiRerun] = field(default_factory=list)  # Transient CI failures to re-run once (#8692)
+    # Integration-branch mode (#8144): the owner's discovered steps (a merge into
+    # integration, a mechanical PR update, branch upkeep, the delivery PR) ...
+    discovered_integration_steps: list[IntegrationStep] = field(default_factory=list)
+    # ... the delivery PR as last observed, for the Tech lead page ...
+    integration_delivery: IntegrationDeliveryView | None = None
+    # ... when the branch upkeep last ran, and the integration branch the upkeep
+    # last SAW exist: until then no session launches, since every worktree is
+    # based on it (review r2 F4).
+    integration_upkeep_at: float = 0.0
+    integration_branch_confirmed: str | None = None
     # Each failed Actions job's assessment, by job id: a job's log is read once
     # (#8692). Job ids are per attempt, so a re-run's new failure is read anew.
     ci_job_assessments: OrderedDict[int, CiJobAssessment] = field(default_factory=OrderedDict)

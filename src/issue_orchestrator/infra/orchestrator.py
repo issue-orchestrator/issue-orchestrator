@@ -1069,16 +1069,8 @@ class Orchestrator:
 
     @property
     def _github_workflow(self) -> GitHubWorkflow:
-        return GitHubWorkflow(
-            self.config,
-            self.deps.events,
-            self.deps.repository_host,
-            self.deps.fact_gatherer,
-            self.deps.pr_scanner,
-            self.deps.label_sync,
-            self._event_context,
-            self.deps.label_manager,
-            self.scheduler.dependency_evaluator,
+        return GitHubWorkflow.for_engine(
+            self.config, self.deps, self._event_context, self.scheduler.dependency_evaluator
         )
 
     def launch_review_session(self, review: PendingReview) -> Optional[Session]:

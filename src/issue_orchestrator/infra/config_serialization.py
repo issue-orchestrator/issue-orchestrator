@@ -18,13 +18,15 @@ if TYPE_CHECKING:
 
 
 def retained_sections(config: "Config") -> dict:
-    """The validated-work and CI-failure-triage sections that differ from default."""
+    """The validated-work, CI-failure-triage and integration sections that differ from default."""
     from .config_ci_failure import ci_failure_triage_section
+    from .config_integration import integration_section
     from .config_validated_work import validated_work_section
 
     sections = (
         ("validated_work", validated_work_section(config)),
         ("ci_failure_triage", ci_failure_triage_section(config)),
+        ("integration", integration_section(config)),
     )
     return {name: section for name, section in sections if section}
 
@@ -105,7 +107,10 @@ def worktrees_section(config: "Config") -> dict:
             else str(config.worktree_base)
         )
     }
-    if config.worktree_base_branch_override:
+    from .config_integration import implied_base_branch_override
+
+    # The override integration mode implies is not pinned on a round trip (#8144).
+    if config.worktree_base_branch_override and not implied_base_branch_override(config):
         section["base_branch_override"] = config.worktree_base_branch_override
     if config.worktree_seed_ref:
         section["seed_ref"] = config.worktree_seed_ref

@@ -3354,6 +3354,7 @@ class TestClaimGateAudit:
         ActionType.QUEUE_REVIEW,
         ActionType.ENQUEUE_TO_MERGE_QUEUE,
         ActionType.RERUN_FAILED_CHECKS,
+        ActionType.ADVANCE_INTEGRATION,
     }
 
     # Action types that legitimately skip claim verification:
@@ -3524,8 +3525,27 @@ class TestClaimGateAudit:
             ActionType.ENQUEUE_TO_MERGE_QUEUE: "_apply_enqueue_to_merge_queue",
             ActionType.RERUN_FAILED_CHECKS: "_apply_rerun_failed_checks",
         }
+        # Handlers extracted to their owner module receive the applier's claim
+        # verifier explicitly: the owner must call it, and the dispatch must
+        # pass the applier's own _verify_claim_before_write (#8144).
+        from issue_orchestrator.control import integration_branch
+
+        extracted = {
+            ActionType.ADVANCE_INTEGRATION: integration_branch.apply_advance_integration,
+        }
+        applier_source = inspect.getsource(ActionApplier)
 
         for action_type in self.GITHUB_WRITE_ACTIONS:
+            if action_type in extracted:
+                owner = extracted[action_type]
+                assert "verify_claim(" in inspect.getsource(owner), (
+                    f"{owner.__qualname__} for {action_type} does not call its claim verifier"
+                )
+                assert (
+                    f"{owner.__name__}(\n                action, self, verify_claim=self._verify_claim_before_write)"
+                    in applier_source
+                ), f"ActionApplier does not pass _verify_claim_before_write to {owner.__name__}"
+                continue
             handler_name = handler_map.get(action_type)
             assert handler_name, f"No handler mapping for {action_type}"
 
@@ -4417,3 +4437,42 @@ def test_single_observation_creation_guards_every_mutation_and_preserves_recover
     assert mock_repository_host.create_issue.call_count == (not remote_issue_exists)
     assert authority.load_pattern_evidence(signature="sig").observation_count == 1
     assert authority.load_pending_case_file(signature="sig") is None
+
+
+def _merge_step(issue_number: int):
+    from issue_orchestrator.domain.integration_branch import MergeIntoIntegration
+    return MergeIntoIntegration(
+        issue_number=issue_number, issue_key=f"M0-{issue_number}", pr_number=900, pr_url="https://x/pr/900",
+        pr_title="t", head_sha="a" * 40, integration_branch="integration", integration_tip="b" * 40,
+        gate_label="code-reviewed",
+    )
+
+
+def test_integration_merge_checks_the_claim_of_the_issue_its_step_writes(
+    applier, mock_labels, mock_repository_host, mock_events,
+):
+    """#9098 final review F1: the claim target is the step's issue, through apply()."""
+    from issue_orchestrator.control.actions import AdvanceIntegrationAction
+
+    manager = MagicMock(spec=ClaimManager)
+    manager.check_winner.side_effect = lambda target, lease: target != 228
+    applier.claim_gate = ClaimGate(manager, mock_events)
+    applier.lease_id_lookup = lambda target: f"lease-{target}"
+    applier.standing_rulings, applier.label_manager = MagicMock(), mock_labels
+    action = AdvanceIntegrationAction(step=_merge_step(228), issue_number=228, pr_number=900)
+    with pytest.raises(ClaimLostError):
+        applier.apply(action)
+    mock_repository_host.assert_not_called()
+    assert not [c for c in mock_repository_host.method_calls if not c[0].startswith(("get", "list", "read"))]
+
+
+@pytest.mark.parametrize("wrapper_issue", [0, 229])
+def test_integration_action_whose_wrapper_disagrees_with_its_step_is_refused(applier, wrapper_issue):
+    from issue_orchestrator.control.actions import AdvanceIntegrationAction
+
+    applier.standing_rulings, applier.label_manager = MagicMock(), MagicMock()
+    action = AdvanceIntegrationAction(step=_merge_step(228), issue_number=wrapper_issue, pr_number=900)
+    result = applier.apply(action)
+    assert result.result_type is ActionResultType.FAILURE
+    assert "step writes #228" in (result.error or "")
+    assert not applier.standing_rulings.method_calls

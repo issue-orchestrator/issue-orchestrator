@@ -47,6 +47,9 @@ from .config_models_tech_lead_charter import (
 )
 from .budgeted_validation_config import budgeted_validation_reference
 from .config_models import (
+    INTEGRATION_DELIVER_MODES,
+    IntegrationConfig,
+    INTEGRATION_MERGE_METHODS,
     MERGE_QUEUE_PROVIDERS,
     TECH_LEAD_AUTHORITY_MODES,
     TECH_LEAD_MAX_EXPEDITED_LIMIT,
@@ -2255,6 +2258,118 @@ class MergeQueueSettings(BaseModel):
         return value
 
 
+class IntegrationSettings(BaseModel):
+    """Settings for the Integration Branch tab (#8144)."""
+
+    enabled: bool = Field(
+        False,
+        title="Enable Integration Branch Mode",
+        description="io merges approved PRs into an integration branch; you merge one delivery PR",
+        json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": (
+                "When enabled, agents' worktrees and PRs use the integration branch as their"
+                " base (it implies worktrees.base_branch_override), io merges each approved"
+                " PR into it once its checks are green on a head containing the integration"
+                " tip, updates a behind PR mechanically before any agent rework, and keeps"
+                " one delivery PR (integration -> default branch) open for you to merge with"
+                " a merge commit. Cannot be combined with merge_queue.enabled."
+            ),
+            "section": "Integration Branch",
+            "config_attr": "integration.enabled",
+            "yaml_path": "integration.enabled",
+            "restart_required": True,
+        },
+    )
+    branch: str = Field(
+        "integration",
+        title="Integration Branch",
+        description="The branch approved PRs are merged into (created from the default branch if missing)",
+        json_schema_extra={
+            "doc_examples": ["integration"],
+            "doc_notes": "A plain branch name: no 'origin/' or 'refs/' prefix. Never deleted by io.",
+            "section": "Integration Branch",
+            "config_attr": "integration.branch",
+            "yaml_path": "integration.branch",
+            "restart_required": True,
+        },
+    )
+    # One allowed value today: a single-value Literal would emit a JSON-schema
+    # `const`, which the form-control projection rejects, so it is a `str`
+    # with an `enum` and a validator (as merge_queue.provider is).
+    deliver: str = Field(
+        "manual",
+        title="Delivery",
+        description="When the delivery PR is merged",
+        json_schema_extra={
+            "enum": list(INTEGRATION_DELIVER_MODES),
+            "doc_examples": ["manual"],
+            "doc_notes": (
+                "manual: io keeps the delivery PR current and you merge it when you choose."
+                " cadence and milestone are not defined yet (#9062)."
+            ),
+            "section": "Integration Branch",
+            "config_attr": "integration.deliver",
+            "yaml_path": "integration.deliver",
+            "restart_required": True,
+        },
+    )
+    merge_method: str = Field(
+        "merge",
+        title="Merge Method",
+        description="How io merges an approved PR into the integration branch",
+        json_schema_extra={
+            "enum": list(INTEGRATION_MERGE_METHODS),
+            "doc_examples": ["merge"],
+            "doc_notes": (
+                "merge: a merge commit, made atomically on the tip the PR was checked against"
+                " (the branch is fast-forwarded only from that tip)."
+            ),
+            "section": "Integration Branch",
+            "config_attr": "integration.merge_method",
+            "yaml_path": "integration.merge_method",
+            "restart_required": True,
+        },
+    )
+    merge_after: Literal["code-reviewed", "tech-lead-reviewed"] = Field(
+        "code-reviewed",
+        title="Merge After Gate",
+        description="The approval gate a PR must clear before io merges it",
+        json_schema_extra={
+            "doc_examples": ["code-reviewed", "tech-lead-reviewed"],
+            "doc_notes": (
+                "code-reviewed is reviewer approval; tech-lead-reviewed waits for the"
+                " batch tech-lead review as well."
+            ),
+            "section": "Integration Branch",
+            "config_attr": "integration.merge_after",
+            "yaml_path": "integration.merge_after",
+            "restart_required": True,
+        },
+    )
+
+    @field_validator("deliver")
+    @classmethod
+    def _validate_deliver(cls, value: str) -> str:
+        if value not in INTEGRATION_DELIVER_MODES:
+            raise ValueError(f"deliver must be one of {list(INTEGRATION_DELIVER_MODES)}, got {value!r}")
+        return value
+
+    @field_validator("merge_method")
+    @classmethod
+    def _validate_merge_method(cls, value: str) -> str:
+        if value not in INTEGRATION_MERGE_METHODS:
+            raise ValueError(f"merge_method must be one of {list(INTEGRATION_MERGE_METHODS)}, got {value!r}")
+        return value
+
+    @field_validator("branch")
+    @classmethod
+    def _validate_branch(cls, value: str) -> str:
+        # The config's own rule, so the form and the YAML load agree (#8144).
+        IntegrationConfig(branch=value)
+        return value
+
+
 class AdvancedSettings(BaseModel):
     """Settings for the Advanced tab."""
 
@@ -2823,6 +2938,7 @@ TAB_DEFINITIONS: list[dict[str, Any]] = [
     {"key": "milestones", "label": "Milestones", "model": MilestonesSettings},
     {"key": "review", "label": "Review", "model": ReviewSettings},
     {"key": "merge_queue", "label": "Merge Queue", "model": MergeQueueSettings},
+    {"key": "integration", "label": "Integration Branch", "model": IntegrationSettings},
     {"key": "validated_work", "label": "Validated Work", "model": ValidatedWorkSettings},
     {"key": "ci_failure_triage", "label": "CI Failure Triage", "model": CiFailureTriageSettings},
     {"key": "goal_pilot", "label": "Goal Pilot", "model": GoalPilotSettings},

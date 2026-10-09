@@ -521,13 +521,31 @@ def create_board_snapshot_builder(
         tech_lead_write_health_reader=_make_tech_lead_write_health_reader(
             config, timeline_store
         ),
-        session_activity_reader=_make_session_activity_reader(working_copy),
+        session_activity_reader=_make_session_activity_reader(working_copy, _worktree_base_branch(config, working_copy)),
         clock=datetime.now,
     )
 
 
+def _worktree_base_branch(config: "Config", working_copy: "WorkingCopy") -> Callable[[], str]:
+    """The branch session worktrees are based on, resolved once on first use.
+
+    The same resolution worktree creation uses (``worktrees.base_branch_override``
+    - integration mode's branch, #8144 - else the repository's default branch),
+    so "commits ahead of base" counts this session's commits, not its base's.
+    """
+    from functools import cache
+
+    from ..infra.worktree_base import resolve_base_branch
+
+    return cache(lambda: resolve_base_branch(
+        config.repo_root, config_override=config.worktree_base_branch_override,
+        default_branch_resolver=working_copy.default_branch,
+    ).branch)
+
+
 def _make_session_activity_reader(
     working_copy: "WorkingCopy",
+    base_branch: Callable[[], str],
 ) -> "Callable[[Session], SessionActivityFacts | None]":
     """Best-effort hung-EVIDENCE probe feed for each active session (ADR-0031).
 
@@ -545,7 +563,7 @@ def _make_session_activity_reader(
 
     def _read(session: "Session") -> "SessionActivityFacts | None":
         return SessionActivityFacts(
-            commits_ahead=_session_commits_ahead(working_copy, session),
+            commits_ahead=_session_commits_ahead(working_copy, session, base_branch),
             last_activity_at=_recording_last_activity_iso(session),
         )
 
@@ -568,7 +586,7 @@ def _recording_last_activity_iso(session: "Session") -> str | None:
     return datetime.fromtimestamp(mtime).isoformat()
 
 
-def _session_commits_ahead(working_copy: "WorkingCopy", session: "Session") -> int:
+def _session_commits_ahead(working_copy: "WorkingCopy", session: "Session", base_branch: Callable[[], str]) -> int:
     """Commits on the session branch ahead of base, or the unknown sentinel.
 
     ``COMMITS_AHEAD_UNKNOWN`` when the worktree is gone or the read raises: a
@@ -585,7 +603,7 @@ def _session_commits_ahead(working_copy: "WorkingCopy", session: "Session") -> i
     try:
         if not worktree.exists():
             return COMMITS_AHEAD_UNKNOWN
-        return len(working_copy.get_commits_ahead_of_main(worktree))
+        return len(working_copy.get_commits_ahead_of(worktree, base_branch()))
     except (OSError, GitError):
         return COMMITS_AHEAD_UNKNOWN
 

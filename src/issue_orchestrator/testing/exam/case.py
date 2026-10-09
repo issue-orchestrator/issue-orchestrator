@@ -69,6 +69,28 @@ class Goal:
         return self.check(observation.item(self.role))
 
 
+#: The role of a goal about the whole run rather than one work item.
+RUN_ROLE = "run"
+
+
+def _no_item_check(item: WorkItemFact) -> GoalCheck:
+    raise TypeError(f"a run-level goal is not graded on one item (#{item.issue_number})")
+
+
+@dataclass(frozen=True)
+class RunGoal(Goal):
+    """A predicate on the whole observation (Case K's delivery PR, #8144).
+
+    Its role is :data:`RUN_ROLE`, which names no work item, so a per-item
+    probe never asks it; the grader evaluates it on the observation.
+    """
+
+    run_check: Callable[[ExamObservation], GoalCheck] = field(default=lambda observation: GoalCheck(False, ""))
+
+    def evaluate(self, observation: ExamObservation) -> GoalCheck:
+        return self.run_check(observation)
+
+
 @dataclass(frozen=True)
 class TermGroup:
     """A concept the diagnosis must name, in any of several phrasings."""
@@ -834,3 +856,70 @@ def body_ruling_states(role: str, text: str, *, authority: str) -> Goal:
 
     return Goal(f"{role}.body_ruling_states_note", role,
                 f"the {role} issue body carries the decided note as a standing ruling", check)
+
+
+#: The engine's events for a rework of an item's PR.
+REWORK_EVENTS = ("review.rework_started", "rework.started")
+#: Integration mode's event for an applied step (a merge into integration, a
+#: mechanical update of a PR to its tip, #8144).
+INTEGRATION_STEP_APPLIED_EVENT = "integration.step_applied"
+
+
+def no_rework(role: str, rework_labels: Iterable[str]) -> Goal:
+    """The item's PR never went back to an agent: no rework event, no rework label."""
+    labels = frozenset(rework_labels)
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        reworks = [name for name in item.events if name in REWORK_EVENTS]
+        carried = sorted({label for pr in item.pull_requests for label in pr.labels} & labels)
+        return GoalCheck(
+            not reworks and not carried,
+            f"issue #{item.issue_number}: rework events {reworks or '(none)'}, rework labels {carried or '(none)'}",
+        )
+
+    return Goal(f"{role}.no_rework", role, f"the {role} PR spends no rework cycle", check)
+
+
+def integration_steps_applied(role: str, *, at_least: int) -> Goal:
+    """Integration mode applied at least this many steps to the item's PR
+    (a mechanical update to the tip, then the merge)."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        applied = item.events.count(INTEGRATION_STEP_APPLIED_EVENT)
+        return GoalCheck(applied >= at_least, f"issue #{item.issue_number}: {applied} integration step(s) applied")
+
+    return Goal(
+        f"{role}.integration_steps_applied",
+        role,
+        f"io applied at least {at_least} integration step(s) to the {role} PR",
+        check,
+    )
+
+
+def delivery_lists_every_pr(roles: Iterable[str]) -> Goal:
+    """The run's open delivery PR (the harness reads the one from the run's own
+    integration branch) lists every role's PR."""
+    wanted_roles = tuple(roles)
+
+    def run_check(observation: ExamObservation) -> GoalCheck:
+        delivery = observation.delivery
+        if delivery is None:
+            return GoalCheck(False, "no open delivery PR from the run's integration branch")
+        wanted = sorted(
+            pr.number for role in wanted_roles for pr in observation.item(role).pull_requests
+        )
+        missing = sorted(set(wanted) - set(delivery.listed_pr_numbers))
+        passed = delivery.state.is_open and not missing and bool(wanted)
+        return GoalCheck(
+            passed,
+            f"delivery PR #{delivery.number} {delivery.head}->{delivery.base} ({delivery.state.value})"
+            f" lists {list(delivery.listed_pr_numbers)}; missing {missing or '(none)'}",
+        )
+
+    return RunGoal(
+        "delivery_lists_every_pr",
+        RUN_ROLE,
+        "one open delivery PR lists every PR it delivers",
+        _no_item_check,
+        run_check=run_check,
+    )

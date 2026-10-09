@@ -1,6 +1,7 @@
 """Config section parsing and application helpers."""
 
 from .config_ci_failure import parse_ci_failure_triage_config
+from .config_integration import apply_integration_implication, parse_integration_config
 from .config_validated_work import parse_validated_work_config
 
 import logging
@@ -66,7 +67,7 @@ _TOP_LEVEL_SECTION_KEYS = (
     "tech_lead", "scheduling", "e2e", "goal_pilot", "milestones", "state", "claims", "hooks",
     "ai_systems", "retry",
     "sqlite_backup",
-    "merge_queue", "validated_work", "ci_failure_triage",
+    "merge_queue", "validated_work", "ci_failure_triage", "integration",
 )
 
 # Derive ALLOWED_TOP_LEVEL_FIELDS from _TOP_LEVEL_SECTION_KEYS — single source of truth.
@@ -331,6 +332,7 @@ _OPTIONAL_SECTION_PARSERS: dict[str, Callable[[dict], object]] = {
     "merge_queue": parse_merge_queue_config,
     "validated_work": parse_validated_work_config,
     "ci_failure_triage": parse_ci_failure_triage_config,
+    "integration": parse_integration_config,
     "claims": parse_claims_config,
     "hooks": parse_hooks_config,
     "provider_resilience": parse_provider_resilience_config,
@@ -347,6 +349,8 @@ def apply_optional_sections(config: "Config", sections: dict) -> None:
         raw = sections[name]
         if raw:
             setattr(config, name, parse(raw))
+    # An enabled integration branch IS the worktree/PR base (#8144).
+    apply_integration_implication(config)
 
 
 def load_repo_section(config: "Config", repo_section: dict, github_section: dict) -> None:

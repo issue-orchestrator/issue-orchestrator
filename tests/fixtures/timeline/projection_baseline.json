@@ -251,6 +251,18 @@
     "status": "completed",
     "step": "history.reconciled"
   },
+  "integration.step_applied": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "integration.step_applied"
+  },
+  "integration.step_skipped": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "integration.step_skipped"
+  },
   "issue.blocked": {
     "level": "phase",
     "phase": "blocked",

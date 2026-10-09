@@ -20,6 +20,7 @@ from ..ports.worktree_manager import (
 )
 from ..adapters.worktree._worktree_runtime import read_reviewer_head_ownership
 from ..adapters.worktree._worktree import (
+    _resolve_base_branch,
     can_remove_without_user_changes,
     create_worktree,
     get_worktree_branch,
@@ -82,6 +83,7 @@ class GitWorktreeManager:
             rebase_failed=rebase_failed,
             uncommitted_discarded=uncommitted_discarded,
             commits_discarded=commits_discarded,
+            base_branch=_resolve_base_branch(repo_root, base_branch),
         )
 
     def remove_checkout(

@@ -57,7 +57,14 @@ from issue_orchestrator.ports.pull_request_tracker import (
     PRRef,
     StatusCheckRollupRead,
 )
-from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
+from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot, RepositoryHostError
+from issue_orchestrator.domain.integration_branch import (
+    BranchComparison,
+    BranchMergeOutcome,
+    MergedIntoBranch,
+    MergedIntoBranchListing,
+    OpenPullRequestRef,
+)
 from issue_orchestrator.domain.issue_key import FakeIssueKey, GitHubIssueKey, IssueKey
 from issue_orchestrator.domain.session_key import SessionKey
 from issue_orchestrator.domain.session_kind import SessionKind
@@ -371,6 +378,23 @@ class MockGitHubAdapter:
         self.job_log_reads: list[int] = []
         self.run_attempts: dict[int, CheckRunAttempt] = {}
         self.rerun_calls: list[int] = []
+        # Integration-branch mode (#8144): an in-memory fake of the port.
+        self.branches: dict[str, str] = {}  # branch -> head SHA
+        self.comparisons: dict[tuple[str, str], BranchComparison] = {}  # (base, head)
+        self.branch_merge_outcomes: dict[tuple[str, str], BranchMergeOutcome] = {}
+        self.open_pr_refs: dict[tuple[str, str], OpenPullRequestRef] = {}  # (head, base)
+        self.merged_into: dict[str, tuple[MergedIntoBranch, ...]] = {}
+        self.merged_listing_truncated: set[str] = set()  # bases whose listing hit its page cap
+        # Seed a method name -> error to make that port call fail.
+        self.integration_failures: dict[str, RepositoryHostError] = {}
+        self.created_branches: list[tuple[str, str]] = []
+        self.fast_forwards: list[tuple[str, str]] = []
+        self.branch_merges: list[tuple[str, str, str]] = []
+        self.pr_branch_updates: list[tuple[int, str]] = []
+        self.pr_merges: list[dict] = []
+        self.pr_body_updates: list[tuple[int, str]] = []
+        self.compare_calls: list[tuple[str, str]] = []
+        self.default_branch = "main"
 
     # IssueRepository methods
     def list_issues(
@@ -584,6 +608,100 @@ class MockGitHubAdapter:
         self.enqueue_merge_queue_calls.append(pr_number)
         self.merge_queue_entries[pr_number] = MergeQueueEntry(state="QUEUED")
 
+    def get_default_branch(self) -> str:
+        """The repository's default branch (mock)."""
+        return self.default_branch
+
+    def issue_comment_marker_present(self, issue_number: int, marker: str) -> bool:
+        """Whether a recorded comment on the issue/PR carries ``marker`` (mock)."""
+        return any(c["number"] == issue_number and marker in c["body"] for c in self.comments)
+
+    # IntegrationBranchHost (#8144) -------------------------------------------
+
+    def _integration_failure(self, method: str) -> None:
+        if method in self.integration_failures:
+            raise self.integration_failures[method]
+
+    def branch_head(self, branch: str) -> str | None:
+        """The seeded branch head (mock); None when absent."""
+        self._integration_failure("branch_head")
+        return self.branches.get(branch)
+
+    def create_branch(self, branch: str, sha: str) -> None:
+        self._integration_failure("create_branch")
+        if branch in self.branches:
+            raise RepositoryHostError(f"branch {branch} already exists")
+        self.created_branches.append((branch, sha))
+        self.branches[branch] = sha
+
+    def fast_forward_branch(self, branch: str, sha: str) -> None:
+        self._integration_failure("fast_forward_branch")
+        if branch not in self.branches:
+            raise RepositoryHostError(f"branch {branch} does not exist")
+        self.fast_forwards.append((branch, sha))
+        self.branches[branch] = sha
+
+    def compare_commits(self, base: str, head: str) -> BranchComparison:
+        """The comparison seeded for (base, head) (mock); unseeded raises."""
+        self._integration_failure("compare_commits")
+        self.compare_calls.append((base, head))
+        key = (base, head)
+        if key not in self.comparisons:
+            raise RepositoryHostError(f"no comparison seeded for {base}...{head}")
+        return self.comparisons[key]
+
+    def merge_branch(self, *, base: str, head: str, message: str) -> BranchMergeOutcome:
+        self._integration_failure("merge_branch")
+        self.branch_merges.append((base, head, message))
+        return self.branch_merge_outcomes.get((base, head), BranchMergeOutcome.MERGED)
+
+    def update_pull_request_branch(self, pr_number: int, *, expected_head_sha: str) -> None:
+        self._integration_failure("update_pull_request_branch")
+        self.pr_branch_updates.append((pr_number, expected_head_sha))
+
+    def merge_head_onto(self, branch: str, *, tip_sha: str, head_sha: str, message: str) -> str:
+        """Record the merge, move the branch only from *tip_sha*, mark the PR merged (mock)."""
+        self._integration_failure("merge_head_onto")
+        if self.branches.get(branch) != tip_sha:
+            raise RepositoryHostError(f"{branch} moved: not a fast-forward from {tip_sha}")
+        merged = f"{len(self.pr_merges) + 1:040x}"
+        self.pr_merges.append({"branch": branch, "tip_sha": tip_sha, "head_sha": head_sha, "message": message})
+        self.branches[branch] = merged
+        for prs in self.prs.values():
+            for pr in prs:
+                if pr.head_sha == head_sha and pr.base_branch == branch:
+                    pr.state = "merged"
+        return merged
+
+    def read_commit_check_rollup(self, sha: str) -> StatusCheckRollupRead:
+        """The checks of the PR whose head is *sha* (mock): its fixture rollup."""
+        self._integration_failure("read_commit_check_rollup")
+        states = [pr.status_check_rollup for prs in self.prs.values() for pr in prs if pr.head_sha == sha]
+        return StatusCheckRollupRead(state=states[0] if states else None, capability="ok")
+
+    def find_open_pull_request(self, *, head: str, base: str) -> OpenPullRequestRef | None:
+        self._integration_failure("find_open_pull_request")
+        return self.open_pr_refs.get((head, base))
+
+    def open_pull_request(self, *, head: str, base: str, title: str, body: str) -> OpenPullRequestRef:
+        """Open a PR from head into exactly base (mock): never reuses another base's."""
+        self._integration_failure("open_pull_request")
+        pr = self.create_pr(title, body, head, base)
+        return OpenPullRequestRef(number=pr.number, url=pr.url, body=body)
+
+    def update_pull_request_body(self, pr_number: int, body: str) -> None:
+        self._integration_failure("update_pull_request_body")
+        self.pr_body_updates.append((pr_number, body))
+        for key, ref in list(self.open_pr_refs.items()):
+            if ref.number == pr_number:
+                self.open_pr_refs[key] = OpenPullRequestRef(number=ref.number, url=ref.url, body=body)
+
+    def merged_pull_requests_into(self, base: str) -> MergedIntoBranchListing:
+        self._integration_failure("merged_pull_requests_into")
+        return MergedIntoBranchListing(
+            pulls=self.merged_into.get(base, ()), complete=base not in self.merged_listing_truncated,
+        )
+
     def read_failed_checks(self, pr_number: int) -> FailedChecksRead:
         """The PR's seeded failed checks (mock)."""
         return self.failed_checks[pr_number]
@@ -632,8 +750,10 @@ class MockGitHubAdapter:
             state="open",
             labels=[],
             draft=draft,
+            base_branch=base,
         )
         self.prs.setdefault(head, []).append(pr)
+        self.open_pr_refs[(head, base)] = OpenPullRequestRef(number=pr.number, url=pr.url, body=body)
         return pr
 
     def add_comment(self, issue_or_pr_number: int, body: str) -> str:

@@ -23,6 +23,7 @@ Usage:
 import logging
 import time
 from collections.abc import Sequence
+from .integration_branch import integration_branch_missing
 from ..ports.budgeted_validation import BudgetedValidationReports, DisabledBudgetedValidationReports
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -293,6 +294,8 @@ class FactGatherer:
                 state.discovered_merge_queue_enqueues
             ),
             discovered_ci_reruns=tuple(state.discovered_ci_reruns),
+            discovered_integration_steps=tuple(state.discovered_integration_steps),
+            integration_branch_missing=integration_branch_missing(self.config, state),
             discovered_failures=tuple(state.discovered_failures),
             stuck_sweep_escalations=tuple(state.stuck_sweep_escalations),
             stuck_sweep_review_releases=tuple(state.stuck_sweep_review_releases),

@@ -44,9 +44,11 @@ class _FakeWorkingCopy:
         self._commits = commits or []
         self._error = error
         self.calls: list[Path] = []
+        self.bases: list[str] = []
 
-    def get_commits_ahead_of_main(self, worktree: Path) -> list[CommitInfo]:
+    def get_commits_ahead_of(self, worktree: Path, base_branch: str) -> list[CommitInfo]:
         self.calls.append(worktree)
+        self.bases.append(base_branch)
         if self._error is not None:
             raise self._error
         return self._commits
@@ -75,12 +77,13 @@ def test_reads_recording_mtime_and_commit_count(tmp_path: Path) -> None:
     os.utime(session.run_assets.terminal_recording.path, (stamp, stamp))
     working_copy = _FakeWorkingCopy(commits=[_commit("a"), _commit("b")])
 
-    facts = _make_session_activity_reader(working_copy)(session)
+    facts = _make_session_activity_reader(working_copy, lambda: "integration")(session)
 
     assert facts is not None
     assert facts.commits_ahead == 2
     assert facts.last_activity_at == datetime.fromtimestamp(stamp).isoformat()
     assert working_copy.calls == [session.worktree_path]
+    assert working_copy.bases == ["integration"]  # the worktree's base, never a hard-coded main (#8144)
 
 
 def test_zero_commits_is_a_real_zero_not_unknown(tmp_path: Path) -> None:
@@ -88,7 +91,7 @@ def test_zero_commits_is_a_real_zero_not_unknown(tmp_path: Path) -> None:
     when paired with idle), never the unknown sentinel."""
     session = _make_session(tmp_path / "wt")
 
-    facts = _make_session_activity_reader(_FakeWorkingCopy(commits=[]))(session)
+    facts = _make_session_activity_reader(base_branch=lambda: "integration", working_copy=_FakeWorkingCopy(commits=[]))(session)
 
     assert facts is not None
     assert facts.commits_ahead == 0
@@ -98,7 +101,7 @@ def test_missing_recording_yields_no_activity_timestamp(tmp_path: Path) -> None:
     session = _make_session(tmp_path / "wt")
     session.run_assets.terminal_recording.path.unlink()
 
-    facts = _make_session_activity_reader(_FakeWorkingCopy(commits=[_commit()]))(
+    facts = _make_session_activity_reader(base_branch=lambda: "integration", working_copy=_FakeWorkingCopy(commits=[_commit()]))(
         session
     )
 
@@ -114,7 +117,7 @@ def test_absent_worktree_yields_unknown_commits(tmp_path: Path) -> None:
     shutil.rmtree(session.worktree_path)
     working_copy = _FakeWorkingCopy(commits=[_commit()])
 
-    facts = _make_session_activity_reader(working_copy)(session)
+    facts = _make_session_activity_reader(working_copy, lambda: "integration")(session)
 
     assert facts is not None
     assert facts.commits_ahead == COMMITS_AHEAD_UNKNOWN
@@ -127,7 +130,7 @@ def test_working_copy_git_error_yields_unknown_commits(tmp_path: Path) -> None:
     git_error = GitError(
         GitResult(argv=["git", "log"], returncode=128, stdout="", stderr="boom")
     )
-    reader = _make_session_activity_reader(_FakeWorkingCopy(error=git_error))
+    reader = _make_session_activity_reader(base_branch=lambda: "integration", working_copy=_FakeWorkingCopy(error=git_error))
 
     facts = reader(session)
 

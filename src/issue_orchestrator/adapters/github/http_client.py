@@ -232,6 +232,38 @@ def _aggregate_check_runs(payload: object) -> _RollupSignal:
     return failure, pending, present
 
 
+_CHECK_RUN_STATUSES = frozenset({"queued", "in_progress", "completed", "waiting", "requested", "pending"})
+_COMMIT_STATUS_STATES = frozenset({"success", "pending", "failure", "error"})
+
+
+def _well_formed_check_runs(payload: object, *, page: int) -> bool:
+    """A `/check-runs` page GitHub actually answered (#8144 review r4/r5).
+
+    A list of run objects each with a known status, and - on a short (last)
+    page - as many runs in all as ``total_count`` says: fewer means runs the
+    answer left out, any of which could be a failure.
+    """
+    runs = payload.get("check_runs") if isinstance(payload, dict) else None
+    total = payload.get("total_count") if isinstance(payload, dict) else None
+    if not isinstance(runs, list) or type(total) is not int:
+        return False
+    if not all(isinstance(run, dict) and run.get("status") in _CHECK_RUN_STATUSES for run in runs):
+        return False
+    return len(runs) == 100 or total == (page - 1) * 100 + len(runs)
+
+
+def _well_formed_combined_status(payload: object) -> bool:
+    """A `/status` answer: a known state and status objects with known states."""
+    if not isinstance(payload, dict):
+        return False
+    statuses = payload.get("statuses")
+    return (
+        payload.get("state") in _COMMIT_STATUS_STATES
+        and isinstance(statuses, list)
+        and all(isinstance(status, dict) and status.get("state") in _COMMIT_STATUS_STATES for status in statuses)
+    )
+
+
 def _aggregate_combined_status(payload: object) -> _RollupSignal:
     """Reduce a REST `/commits/{sha}/status` response to a `_RollupSignal`.
 
@@ -1962,6 +1994,93 @@ class GitHubHttpClient:
             caller="delete_git_ref",
         )
 
+    # -------------------- Integration-branch mode (#8144) --------------------
+
+    def compare_commits(self, base: str, head: str) -> dict[str, Any]:
+        """GitHub's ``base...head`` comparison (first page of commits).
+
+        ETag-revalidated: a branch name's comparison changes as it moves, so the
+        cache only ever answers a 304 GitHub itself confirmed.
+        """
+        basehead = f"{quote(base, safe='')}...{quote(head, safe='')}"
+        payload = self._request_json(
+            "GET",
+            f"/repos/{self._config.repo}/compare/{basehead}",
+            params={"per_page": 250},
+            caller="compare_commits",
+        )
+        if not isinstance(payload, dict):
+            raise GitHubHttpError("GitHub compare payload was not an object")
+        return payload
+
+    def merge_branch(self, *, base: str, head: str, message: str) -> dict[str, Any]:
+        """POST /merges: merge *head* into *base*; ``{}`` when nothing to merge (204).
+
+        A conflict raises :class:`GitHubHttpError` with status 409.
+        """
+        payload = self._request_json(
+            "POST",
+            f"/repos/{self._config.repo}/merges",
+            json_body={"base": base, "head": head, "commit_message": message},
+            use_cache=False,
+            caller="merge_branch",
+        )
+        if not isinstance(payload, dict):
+            raise GitHubHttpError("GitHub merge payload was not an object")
+        return payload
+
+    def update_pull_request_branch(self, pr_number: int, *, expected_head_sha: str) -> None:
+        """PUT /pulls/{n}/update-branch, guarded by the expected head (202 accepted)."""
+        self._request_json(
+            "PUT",
+            f"/repos/{self._config.repo}/pulls/{pr_number}/update-branch",
+            json_body={"expected_head_sha": expected_head_sha},
+            use_cache=False,
+            caller="update_pull_request_branch",
+        )
+        self.invalidate_pr_etag(pr_number)
+
+    def list_pulls(
+        self,
+        *,
+        state: str,
+        base: str,
+        head: str | None = None,
+        sort: str | None = None,
+        direction: str | None = None,
+        page: int = 1,
+    ) -> list[dict[str, Any]]:
+        """One page (100) of PRs into *base*; *head* is a branch of this repo."""
+        params: dict[str, Any] = {"state": state, "base": base, "per_page": 100, "page": page}
+        if head is not None:
+            owner = self._config.repo.split("/", 1)[0]
+            params["head"] = f"{owner}:{head}"
+        if sort is not None:
+            params["sort"] = sort
+        if direction is not None:
+            params["direction"] = direction
+        payload = self._request_json(
+            "GET",
+            f"/repos/{self._config.repo}/pulls",
+            params=params,
+            use_cache=False,
+            caller="list_pulls",
+        )
+        if not isinstance(payload, list):
+            raise GitHubHttpError("GitHub pulls payload was not a list")
+        return payload
+
+    def update_pr_body(self, pr_number: int, body: str) -> None:
+        """PATCH /pulls/{n}: replace the PR's description."""
+        self._request_json(
+            "PATCH",
+            f"/repos/{self._config.repo}/pulls/{pr_number}",
+            json_body={"body": body},
+            use_cache=False,
+            caller="update_pr_body",
+        )
+        self.invalidate_pr_etag(pr_number)
+
     def get_git_commit(self, sha: str) -> dict[str, Any]:
         encoded = quote(sha, safe="")
         payload = self._request_json(
@@ -2312,6 +2431,11 @@ class GitHubHttpClient:
                     exc,
                 )
                 return _SourceReadout((False, False, False), outcome=outcome)
+            if not _well_formed_check_runs(payload, page=page):
+                # A 200 without a list of run objects is not "no runs": an
+                # unread failure could hide behind it (#8144 review r4 F1).
+                logger.warning("check-runs payload for %s (page %d) is malformed; unreadable", encoded_sha, page)
+                return _SourceReadout((False, False, False), outcome="transient_error")
             page_failure, page_pending, page_present = _aggregate_check_runs(payload)
             failure = failure or page_failure
             pending = pending or page_pending
@@ -2370,8 +2494,10 @@ class GitHubHttpClient:
                 "Combined commit status unavailable for %s (%s): %s", sha, outcome, exc
             )
             return _CommitStatusReadout(payload=None, outcome=outcome)
-        normalized = payload if isinstance(payload, dict) else None
-        return _CommitStatusReadout(payload=normalized, outcome="ok")
+        if not _well_formed_combined_status(payload):
+            logger.warning("Combined commit status payload for %s is malformed; unreadable", sha)
+            return _CommitStatusReadout(payload=None, outcome="transient_error")
+        return _CommitStatusReadout(payload=payload, outcome="ok")
 
     def list_prs(
         self, *, state: str = "open", limit: int = 100

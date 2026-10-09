@@ -1792,13 +1792,13 @@ export interface TechLeadWaitingItemPayload {
   can_approve: boolean;
   can_decline: boolean;
   details: TechLeadDetailRowPayload[];
-  kind: "proposal" | "merge_ready_pr" | "hand_over";
+  kind: "proposal" | "merge_ready_pr" | "hand_over" | "delivery_pr";
   link: string;
   number: number;
   operation: string;
   operator_steps: string[];
   recommendation: string;
-  status: "awaiting_approval" | "approved" | "approval_not_accepted" | "executing" | "merge_held" | "handed_over";
+  status: "awaiting_approval" | "approved" | "approval_not_accepted" | "executing" | "merge_held" | "handed_over" | "delivery_ready";
   status_label: string;
   title: string;
   waiting_since: string;
