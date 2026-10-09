@@ -106,11 +106,12 @@ def unstable_interpreter_reason(
 ) -> str | None:
     """Return why *path* will not outlive this run, or None when it should.
 
-    *path* is judged as written, not as its symlinks resolve: a venv's
-    ``bin/python`` usually links to a system interpreter, and it is the venv
-    location that a later ``git worktree remove`` deletes. The containing
-    directory is additionally resolved so ``/tmp`` → ``/private/tmp`` style
-    aliases still match a temp root.
+    *path* is judged as written AND as its symlinks resolve. As written,
+    because a venv's ``bin/python`` usually links to a stable system
+    interpreter while the venv itself is what ``git worktree remove`` deletes.
+    As resolved, because a stable-looking symlink into a worktree dangles once
+    the worktree goes. The containing directory is also resolved on its own so
+    ``/tmp`` → ``/private/tmp`` style aliases match a temp root.
     """
     roots = default_temp_roots() if temp_roots is None else temp_roots
     forms = _path_forms(path)
@@ -152,30 +153,29 @@ def _first_candidate(
 
 def _path_forms(path: Path) -> tuple[Path, ...]:
     absolute = path.absolute()
-    parent_resolved = absolute.parent.resolve() / absolute.name
-    if parent_resolved == absolute:
-        return (absolute,)
-    return (absolute, parent_resolved)
+    forms: list[Path] = []
+    for form in (absolute, absolute.parent.resolve() / absolute.name, absolute.resolve()):
+        if form not in forms:
+            forms.append(form)
+    return tuple(forms)
 
 
 def _enclosing_linked_worktree(path: Path) -> Path | None:
-    """Return the linked worktree containing *path*, if any.
+    """Return the nearest linked worktree containing *path*, if any.
 
     Git marks a linked worktree with a ``.git`` *file* naming a per-worktree
     git dir that holds a ``commondir`` file. A main checkout has a ``.git``
     directory, and a submodule's git dir has no ``commondir``; neither is
-    deleted by ``git worktree remove``.
+    itself deleted by ``git worktree remove``, but either may sit inside a
+    linked worktree that is, so every ancestor is checked.
     """
     for ancestor in path.parents:
         dot_git = ancestor / ".git"
-        if dot_git.is_dir():
-            return None
         if not dot_git.is_file():
             continue
         gitdir = _gitdir_from_file(dot_git)
         if gitdir is not None and (gitdir / "commondir").is_file():
             return ancestor
-        return None
     return None
 
 
@@ -222,7 +222,8 @@ def _refusal_message(
         f"Pass {EXPLICIT_PYTHON_FLAG} <interpreter> or export {ORCHESTRATOR_PYTHON_ENV} "
         "naming a stable issue-orchestrator installation.",
     ]
-    worktree = _enclosing_linked_worktree(candidate.absolute())
+    worktrees = (_enclosing_linked_worktree(form) for form in _path_forms(candidate))
+    worktree = next((found for found in worktrees if found is not None), None)
     suggestion = None if worktree is None else _main_checkout_python(worktree)
     if suggestion is not None:
         lines.append(f"The main checkout's interpreter is {suggestion}.")
