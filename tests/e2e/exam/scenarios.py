@@ -1411,11 +1411,19 @@ def case_k(config: Config) -> ExamCase:
 
 
 def _approved_open_prs(repo: str, labels: LabelManager, items: list[TrackedItem]) -> dict[int, int] | None:
-    """Each item's one open PR, once every item has one carrying code-reviewed."""
+    """Each item's one open PR, once every item has one carrying code-reviewed.
+
+    The complete open-PR walk carries no labels, so each PR's labels are read
+    fresh (the first live Case K run waited forever on the walk's empty set).
+    """
+    adapter = _github_adapter(repo)
     found: dict[int, int] = {}
     for tracked in items:
         prs = linked_pull_requests(repo, tracked.issue_number, state="open")
-        if len(prs) != 1 or labels.code_reviewed not in prs[0].labels:
+        if len(prs) != 1:
+            return None
+        fresh = adapter.get_pr(prs[0].number)
+        if fresh is None or labels.code_reviewed not in fresh.labels:
             return None
         found[tracked.issue_number] = prs[0].number
     return found
