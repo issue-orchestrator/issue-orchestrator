@@ -78,6 +78,7 @@ class _TickingEngine:
             events=MagicMock(), event_context=EventContext(), store=self.state
         )
         self.waited_on_event_loop: list[str] = []
+        self.transitions: list[str] = []
         self.refreshes: list[set[str] | None] = []
         self.shutdowns: list[bool] = []
 
@@ -92,15 +93,21 @@ class _TickingEngine:
         self, *, reason: PauseReason, actor: PauseActor, detail: str = ""
     ) -> PauseTransitionOutcome:
         self._note_caller("pause")
-        return pause_facade.pause(
+        self.transitions.append("pause:waiting")
+        outcome = pause_facade.pause(
             self.pause_controller, self.state_lock, reason=reason, actor=actor, detail=detail
         )
+        self.transitions.append("pause:committed")
+        return outcome
 
     def resume(self, *, actor: PauseActor, detail: str = "") -> PauseTransitionOutcome:
         self._note_caller("resume")
-        return pause_facade.resume(
+        self.transitions.append("resume:waiting")
+        outcome = pause_facade.resume(
             self.pause_controller, self.state_lock, actor=actor, detail=detail
         )
+        self.transitions.append("resume:committed")
+        return outcome
 
     def request_refresh(self, inflight_stable_ids: set[str] | None = None) -> None:
         self._note_caller("refresh")
@@ -299,6 +306,51 @@ def test_engine_keeps_serving_while_a_command_waits_for_the_tick(
 
     assert answers["command"].status_code == 200, answers["command"].text
     assert live_engine.engine.waited_on_event_loop == []
+
+
+@pytest.mark.parametrize("first,second", [("pause", "resume"), ("resume", "pause")])
+def test_transitions_queued_behind_a_tick_commit_in_arrival_order(
+    live_engine: _LiveEngine, first: str, second: str
+) -> None:
+    """Pause-then-resume during a long tick must end running, and vice versa.
+
+    Two threads waiting on the state lock wake in no defined order; the engine
+    must still commit operator transitions in the order it received them.
+    """
+    if first == "resume":
+        live_engine.engine.pause(reason=PauseReason.OPERATOR, actor=PauseActor.CLI)
+        live_engine.engine.transitions.clear()
+    answers: list[httpx.Response] = []
+
+    def send(verb: str) -> threading.Thread:
+        thread = threading.Thread(
+            target=lambda: answers.append(
+                httpx.post(f"{live_engine.base_url}/api/{verb}", json={"actor": "control_center"}, timeout=10)
+            ),
+            daemon=True,
+        )
+        thread.start()
+        return thread
+
+    with live_engine.engine.tick_in_progress() as finish:
+        senders = [send(first)]
+        time.sleep(0.3)
+        senders.append(send(second))
+        time.sleep(0.3)
+        # The second transition has not even started waiting for the lock.
+        assert live_engine.engine.transitions == [f"{first}:waiting"]
+        finish.set()
+        for sender in senders:
+            sender.join(timeout=10)
+
+    assert [answer.status_code for answer in answers] == [200, 200]
+    assert live_engine.engine.transitions == [
+        f"{first}:waiting",
+        f"{first}:committed",
+        f"{second}:waiting",
+        f"{second}:committed",
+    ]
+    assert live_engine.engine.pause_controller.paused is (second == "pause")
 
 
 @pytest.mark.parametrize("path", ["/api/pause", "/api/resume", "/api/refresh"])
