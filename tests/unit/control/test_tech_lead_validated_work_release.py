@@ -368,19 +368,24 @@ def _pull(number: int = SUPERSEDING, *, state=PublicationPrState.MERGED, branch:
 
 
 class _Pulls:
-    def __init__(self, elsewhere=(), own_merged=(), error: Exception | None = None) -> None:
-        self.elsewhere, self.own_merged, self.error = tuple(elsewhere), tuple(own_merged), error
-        self.requests: list[tuple[str, str]] = []
+    """The issue's reference timeline: ``listed`` PRs reference the issue."""
 
-    def issue_pull_requests(self, request):
-        self.requests.append(("issue", request.branch_name))
+    def __init__(self, listed=(), error: Exception | None = None) -> None:
+        self.listed, self.error = tuple(listed), error
+        self.requests: list[int] = []
+
+    def issue_pull_request(self, repo_slug, issue_number, number):
+        assert (repo_slug, issue_number) == (REPO, ISSUE)
+        self.requests.append(number)
         if self.error:
             raise self.error
-        return self.elsewhere
+        return next((pr for pr in self.listed if pr.number == number), None)
 
-    def merged_pull_requests(self, request):
-        self.requests.append(("merged", request.branch_name))
-        return self.own_merged
+    def issue_pull_requests(self, request):  # pragma: no cover - #8137's walk
+        raise AssertionError("a release asks for its one PR")
+
+    def merged_pull_requests(self, request):  # pragma: no cover
+        raise AssertionError("a release asks for its one PR")
 
     def observe(self, request):  # pragma: no cover - the release never reads it
         raise AssertionError("a release reads only the issue's PRs")
@@ -408,7 +413,7 @@ def _executor(*, grants=None, pulls=None, outcome=None, events=None, committed=F
     executor = TechLeadValidatedWorkReleaseExecutor(
         events=events or Mock(),
         grants=grants or _Grants(),
-        pull_requests=pulls or _Pulls(elsewhere=(_pull(),)),
+        pull_requests=pulls or _Pulls(listed=(_pull(),)),
         approval=lambda number: ApprovalVerdict(number, ApprovalVerdictKind.MAINTAINER, approver, 7),
         abandon_all=abandon_all,
         committed=lambda _commands: committed,
@@ -463,20 +468,33 @@ def test_an_approved_release_abandons_every_record_naming_approver_and_pr() -> N
     assert event.data["boundary"]["record_ids"] == list(RECORD_IDS)
 
 
-def test_a_superseding_pr_on_a_records_own_branch_is_found_among_its_merged_prs() -> None:
-    pulls = _Pulls(elsewhere=(), own_merged=(_pull(branch=BRANCH),))
+def test_a_superseding_pr_on_a_records_own_branch_counts_when_it_references_the_issue() -> None:
+    pulls = _Pulls(listed=(_pull(branch=BRANCH),))
     executor, calls = _executor(pulls=pulls)
 
     assert executor.apply(_action()).success
-    assert pulls.requests == [("issue", BRANCH), ("merged", BRANCH)]
+    assert pulls.requests == [SUPERSEDING]
     assert calls
 
 
+def test_a_merged_pr_that_does_not_reference_the_issue_releases_nothing() -> None:
+    """Review r5 F1: a merged same-repo PR on a record's own branch that does
+    not reference the issue (a batch PR, an unrelated PR) is not the PR that
+    rebuilt the work. Association is the issue's reference timeline."""
+    executor, calls = _executor(pulls=_Pulls(listed=()))
+
+    result = executor.apply(_action())
+
+    assert result.details["mode"] == STALE_DOWNGRADE_MODE
+    assert "references issue" in result.details["skip_reason"]
+    assert calls == []
+
+
 @pytest.mark.parametrize("pulls, reason", [
-    (_Pulls(elsewhere=(_pull(state=PublicationPrState.OPEN),)), "is open, not merged"),
-    (_Pulls(elsewhere=(_pull(state=PublicationPrState.CLOSED),)), "is closed, not merged"),
-    (_Pulls(elsewhere=(_pull(head_repo="fork/repo"),)), f"is not a PR of {REPO}"),
-    (_Pulls(elsewhere=(_pull(480),)), "is not an open or merged PR of issue"),
+    (_Pulls(listed=(_pull(state=PublicationPrState.OPEN),)), "is open, not merged"),
+    (_Pulls(listed=(_pull(state=PublicationPrState.CLOSED),)), "is closed, not merged"),
+    (_Pulls(listed=(_pull(head_repo="fork/repo"),)), f"is not a PR of {REPO}"),
+    (_Pulls(listed=(_pull(480),)), "is not an open or merged PR that references issue"),
 ])
 def test_a_pr_that_cannot_have_rebuilt_the_work_closes_the_proposal_unchanged(pulls, reason) -> None:
     executor, calls = _executor(pulls=pulls)

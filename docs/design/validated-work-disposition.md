@@ -1686,9 +1686,13 @@ only the operator can release them. The tech-lead action
   before any fresh write:
   1. the approval verified for this proposal names its maintainer (or the
      Control Center operator);
-  2. the PR is a MERGED PR of the issue in this repository, found by the
-     uncached #8137 issue-PR walk plus the records' own branches' merged PRs.
-     This is skipped for a replay (below), which needs no remote answer.
+  2. the PR is a MERGED PR of the issue in this repository. It must reference
+     the issue, as the issue's reference timeline lists it, from one of the
+     issue's own branches, the records' own branch included. That costs one
+     timeline walk and one uncached PR read
+     (`ValidatedWorkCaptureObserver.issue_pull_request`). A merged PR that only
+     shares a branch, or a batch PR, is not the issue's. This check is skipped
+     for a replay (below), which needs no remote answer.
 
   A PR that fails the check closes the proposal stale with no write. An
   unreadable remote keeps the approved op and retries. Then

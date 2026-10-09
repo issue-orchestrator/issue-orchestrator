@@ -81,11 +81,6 @@ class ValidatedWorkRelease:
     def repo_slug(self) -> str:
         return self.authorities[0].repo_slug
 
-    @property
-    def branch_names(self) -> tuple[str, ...]:
-        """The records' own branches, sorted and distinct."""
-        return tuple(sorted({item.branch_name for item in self.authorities}))
-
     def resolution_reason(self, proposal_issue_number: int) -> str:
         """The durable resolution reason, which is also the operation's identity.
 

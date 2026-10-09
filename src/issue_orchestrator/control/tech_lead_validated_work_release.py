@@ -30,13 +30,8 @@ import logging
 from dataclasses import dataclass
 from typing import Callable
 
-from ..domain.publication_remote import (
-    PublicationPrState,
-    PublicationPullRequest,
-    PublicationRemoteError,
-)
+from ..domain.publication_remote import PublicationPrState, PublicationRemoteError
 from ..domain.tech_lead_approval import ApprovalVerdict
-from ..domain.validated_work_capture import ValidatedWorkRemoteRequest
 from ..domain.validated_work_commands import (
     AbandonAllOutcome,
     AbandonStatus,
@@ -67,7 +62,7 @@ class TechLeadValidatedWorkReleaseExecutor:
     events: EventSink
     #: The current releasable snapshots, from the same owner as launch grants.
     grants: ValidatedWorkRecoveryAuthorityReader
-    #: Uncached reads of the issue's PRs (the #8137 issue-PR walk).
+    #: Uncached reads of the issue's PRs (its reference timeline, #8137).
     pull_requests: ValidatedWorkCaptureObserver
     #: The verified approval of a proposal issue; raises when there is none.
     approval: Callable[[int], ApprovalVerdict]
@@ -154,13 +149,17 @@ class TechLeadValidatedWorkReleaseExecutor:
         return self._downgrade(action, refusal) if refusal is not None else None
 
     def _superseding_refusal(self, release: ValidatedWorkRelease) -> str | None:
-        """Why the named PR cannot have rebuilt this issue's work, or None."""
+        """Why the named PR cannot have rebuilt this issue's work, or None.
+
+        The PR must reference the issue (its reference timeline) from one of
+        the issue's own branches, whichever branch that is; one uncached read.
+        """
         number = release.superseding_pr_number
-        pull = self._find_issue_pull_request(release)
+        pull = self.pull_requests.issue_pull_request(release.repo_slug, release.issue_number, number)
         if pull is None:
             return (
-                f"PR #{number} is not an open or merged PR of issue"
-                f" #{release.issue_number} on one of its own branches"
+                f"PR #{number} is not an open or merged PR that references issue"
+                f" #{release.issue_number} from one of its own branches"
             )
         if pull.head_repo != release.repo_slug or pull.base_repo != release.repo_slug:
             return f"PR #{number} is not a PR of {release.repo_slug}"
@@ -169,28 +168,6 @@ class TechLeadValidatedWorkReleaseExecutor:
                 f"PR #{number} is {pull.state.value}, not merged: only merged"
                 " work can stand in for the records it rebuilt"
             )
-        return None
-
-    def _find_issue_pull_request(
-        self, release: ValidatedWorkRelease
-    ) -> PublicationPullRequest | None:
-        """The named PR among the issue's PRs, read uncached, or None.
-
-        The issue-PR walk covers every branch of the issue except the one
-        asked about, so a PR on a record's own branch is found among that
-        branch's merged PRs instead.
-        """
-        number = release.superseding_pr_number
-        for branch in release.branch_names:
-            request = ValidatedWorkRemoteRequest(
-                release.repo_slug, release.issue_number, branch
-            )
-            for pull in self.pull_requests.issue_pull_requests(request):
-                if pull.number == number:
-                    return pull
-            for pull in self.pull_requests.merged_pull_requests(request):
-                if pull.number == number:
-                    return pull
         return None
 
     def _refused(
