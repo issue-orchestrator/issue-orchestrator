@@ -63,6 +63,7 @@ from .tech_lead_actions import (
     KillHungSessionAction as KillHungSessionAction,
     RequestReworkAction as RequestReworkAction,
     RecoverValidatedWorkAction as RecoverValidatedWorkAction,
+    ReleaseValidatedWorkAction as ReleaseValidatedWorkAction,
     ReleaseWithheldReviewAction as ReleaseWithheldReviewAction,
     ResolveBlockAction as ResolveBlockAction,
     EFFECTIVE_DISPOSITION_OP_ACTIONS as EFFECTIVE_DISPOSITION_OP_ACTIONS,

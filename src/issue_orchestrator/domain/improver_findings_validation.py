@@ -1044,8 +1044,12 @@ HAND_OVER_ACTION_KINDS = frozenset({"escalate_to_human"})
 #: ``resolve_block`` under ``propose`` (#7658): the decision is made and filed,
 #: and only the operator's approval stands between it and the item. Once
 #: APPLIED, a ``resolve_block`` is an approvable remedy like any other, and
-#: :meth:`_Checker._applied_remedy` reads it as the tech lead acting.
-OPERATOR_DECISION_ACTION_KINDS = frozenset({"propose_decision", "resolve_block"})
+#: :meth:`_Checker._applied_remedy` reads it as the tech lead acting. A filed
+#: ``release_validated_work`` (#9092) is the operator's call by construction:
+#: it never runs before their approval.
+OPERATOR_DECISION_ACTION_KINDS = frozenset(
+    {"propose_decision", "resolve_block", "release_validated_work"}
+)
 
 
 def hands_over(d: StagedDecision, *, since: datetime, cutoff: datetime) -> bool:

@@ -81,13 +81,13 @@ def test_every_charter_role_has_a_config_field_and_nothing_else_does() -> None:
     assert names == tuple(role.value for role in CharterRole)
 
 
-def test_reset_retry_is_the_destructive_kind() -> None:
+def test_reset_retry_and_release_validated_work_are_the_destructive_kinds() -> None:
     destructive = {
         kind
         for kind, action_class in CHARTER_ACTION_CLASSES.items()
         if action_class.binding is CharterBinding.DESTRUCTIVE
     }
-    assert destructive == {"reset_retry"}
+    assert destructive == {"reset_retry", "release_validated_work"}
 
 
 def test_release_withheld_review_is_a_flow_fix_that_is_not_destructive() -> None:

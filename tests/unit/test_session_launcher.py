@@ -623,6 +623,7 @@ def _build_launcher_bundle(
     needs_human_block: Any = None,
     blocked_item_triage: Any = None,
     manifest_downloader: Any = None,
+    validated_work_recovery_authority: Any = None,
 ) -> LauncherTestBundle:
     """Create a SessionLauncher with mock dependencies and tracking.
 
@@ -697,6 +698,8 @@ def _build_launcher_bundle(
         launcher_kwargs["needs_human_block"] = needs_human_block
     if blocked_item_triage is not None:
         launcher_kwargs["blocked_item_triage"] = blocked_item_triage
+    if validated_work_recovery_authority is not None:
+        launcher_kwargs["validated_work_recovery_authority"] = validated_work_recovery_authority
     if issue_run_ledger is None:
         issue_run_ledger = SqliteIssueRunLedger(sample_config.repo_root / "state" / "runs.sqlite", repo_slug="test-owner/test-repo")
     launcher = make_session_launcher(
@@ -4706,6 +4709,64 @@ class TestLaunchTechLeadIssueSessionFlavors:
         assert snapshot.problem_issue_numbers() == frozenset({41, 42, 43}), (
             "the snapshot's cohort surface is the grant, not its failure list"
         )
+
+    def test_health_review_records_and_shows_the_cohorts_releasable_records(
+        self, sample_config, mock_events, mock_repo_host, mock_worktree_manager,
+        mock_working_copy, mock_command_runner, tmp_path,
+    ):
+        """#9092: every unresolved retained record of an act-level issue is a
+        launch grant a release may name: written once for the agent to read,
+        and recorded as the trusted copy approval binds."""
+        from issue_orchestrator.control.tech_lead_recovery_targets import (
+            VALIDATED_WORK_RELEASE_TARGETS_FILENAME,
+        )
+        from issue_orchestrator.domain.tech_lead_session import HEALTH_REVIEW_MARKER_LABEL
+        from issue_orchestrator.domain.validated_work import RemoteBaselineStatus, ValidatedWorkKey
+        from issue_orchestrator.domain.validated_work_commands import ValidatedWorkAuthoritySnapshot
+
+        def grant(issue_number: int, head: str) -> ValidatedWorkAuthoritySnapshot:
+            key = ValidatedWorkKey("test/repo", issue_number, f"{issue_number}-work", head)
+            return ValidatedWorkAuthoritySnapshot(
+                key.record_id, f"e-{head[:4]}", 0, head, key.branch_name, key.repo_slug,
+                issue_number, None, None, RemoteBaselineStatus.UNOBSERVED)
+
+        releasable = tuple(sorted((grant(42, "a" * 40), grant(42, "b" * 40)), key=lambda g: g.record_id))
+        asked: list[tuple[int, ...]] = []
+
+        class Authority:
+            def grants_for(self, issue_numbers):
+                return ()
+
+            def release_grants_for(self, issue_numbers):
+                asked.append(tuple(issue_numbers))
+                return releasable
+
+        bundle = _build_launcher_bundle(
+            sample_config, mock_events, mock_repo_host, mock_worktree_manager,
+            mock_working_copy, mock_command_runner, validated_work_recovery_authority=Authority(),
+        )
+        config = bundle.launcher.config
+        self.enable_tech_lead_agent(config, tmp_path)
+        issue = Issue(number=905, title="Health Review — problem storm",
+                      labels=["agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL], repo="test/repo")
+
+        result = bundle.launcher.launch_issue_session(
+            issue, active_sessions=[],
+            tech_lead_scope=TechLeadLaunchScope(
+                flavor=TechLeadSessionFlavor.HEALTH_REVIEW, problem_issue_numbers=(41, 42)),
+        )
+
+        assert result.success is True
+        assert asked == [(41, 42)]
+        run_dir = self.started_run_dir(mock_events)
+        shown = json.loads((run_dir / "tech-lead-data" / VALIDATED_WORK_RELEASE_TARGETS_FILENAME).read_text())
+        assert shown == [item.to_dict() for item in releasable]
+        authority = SqliteTechLeadAuthorityStore.for_repo(config.repo_root).load(
+            run_id=result.session.run_assets.run_id,
+            session_name=result.session.run_assets.session_name,
+        )
+        assert authority is not None
+        assert authority.observed_validated_work_releases == releasable
 
     def test_health_review_is_granted_and_told_its_triage_agenda(
         self, sample_config, mock_events, mock_repo_host, mock_worktree_manager,
