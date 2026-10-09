@@ -697,8 +697,8 @@ class TechLeadLaunchAuthority:
 
     def bind_validated_work_release(
         self, issue_number: int, intent: "ValidatedWorkReleaseIntent"
-    ) -> "ValidatedWorkRelease | None":
-        """The launch-bound release of the named records, or None (#9092).
+    ) -> "tuple[ValidatedWorkAuthoritySnapshot, ...] | None":
+        """The launch-observed grant of each record a release names (#9092).
 
         None when any named record was not observed releasable for this
         issue at launch: the agent can never reach a record it was not shown.

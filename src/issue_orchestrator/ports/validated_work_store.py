@@ -58,6 +58,10 @@ class ValidatedWorkStore(Protocol):
         self, commands: tuple[AbandonValidatedWorkCommand, ...]
     ) -> AbandonAllOutcome: ...
 
+    def already_abandoned_by(
+        self, commands: tuple[AbandonValidatedWorkCommand, ...]
+    ) -> bool: ...
+
     def retire_outside_scope(
         self,
         claim: ValidatedWorkClaim,

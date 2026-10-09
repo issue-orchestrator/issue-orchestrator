@@ -11,17 +11,17 @@ Agent intent, orchestrator authority: the tech lead names records and a PR;
 the orchestrator bound each record to its launch-observed snapshot when the
 proposal was filed, and here re-verifies, before any write, that
 
-1. the superseding PR is a MERGED PR of the issue in this repository, on one
-   of the issue's own branches (else stale: the proposal closes, no change);
-2. a maintainer's approval of this proposal is verified (else a wiring bug).
+1. a maintainer's approval of this proposal is verified (else a wiring bug);
+2. the superseding PR is a MERGED PR of the issue in this repository, on one
+   of the issue's own branches (else stale: the proposal closes, no change).
 
 The store's CAS (``abandon_all_if_current``) then compares every record's
 snapshot inside the write transaction: a record that moved since launch
-refuses the whole release, and a release these very commands already
-committed is recognized as a replay. A retry after the commit (a failed
-reprojection or proposal finalization) therefore completes the operation
-instead of reading its own write as stale. Proposal reuse, which writes
-nothing, asks :meth:`stale_reason` instead.
+refuses the whole release. A release these very commands already committed
+is a replay: it is recognized FIRST, before any remote read, so a retry after
+the commit (a failed reprojection or proposal finalization) completes the
+operation whatever GitHub answers now, and never reads its own write as
+stale. Proposal reuse, which writes nothing, asks :meth:`stale_reason`.
 """
 
 from __future__ import annotations
@@ -72,6 +72,8 @@ class TechLeadValidatedWorkReleaseExecutor:
     #: The verified approval of a proposal issue; raises when there is none.
     approval: Callable[[int], ApprovalVerdict]
     abandon_all: Callable[[tuple[AbandonValidatedWorkCommand, ...]], AbandonAllOutcome]
+    #: Whether exactly these commands already committed (the owner's replay test).
+    committed: Callable[[tuple[AbandonValidatedWorkCommand, ...]], bool]
 
     def stale_reason(self, release: ValidatedWorkRelease) -> str | None:
         """Why the bound snapshots no longer describe the records, or None.
@@ -91,6 +93,52 @@ class TechLeadValidatedWorkReleaseExecutor:
 
     def apply(self, action: ReleaseValidatedWorkAction) -> ActionResult:
         release = action.release
+        verdict = self.approval(action.proposal_issue_number)
+        actor = (
+            f"{verdict.describe()} on tech-lead proposal"
+            f" #{action.proposal_issue_number}"
+        )
+        reason = release.resolution_reason()
+        commands = tuple(
+            AbandonValidatedWorkCommand(authority, actor, reason)
+            for authority in release.authorities
+        )
+        if not self.committed(commands):
+            refused = self._verify_superseding_pr(action)
+            if refused is not None:
+                return refused
+        outcome = self.abandon_all(commands)
+        if outcome.refusal is not None:
+            return self._refused(action, outcome)
+        # Who released the records is what the store recorded: on a replay, the
+        # approver of the commit, not whoever re-approved the retry.
+        recorded = outcome.abandoned[0].disposition
+        assert recorded is not None and recorded.resolution is not None  # ABANDONED carries both
+        self._publish_executed(action, recorded.resolution.actor, replayed=outcome.replayed)
+        logger.info(
+            issue_log(
+                action.issue_number,
+                "Tech Lead release_validated_work %s released %d record(s)"
+                " rebuilt in PR #%d%s",
+            ),
+            action.proposal_id,
+            len(release.authorities),
+            release.superseding_pr_number,
+            " (replayed)" if outcome.replayed else "",
+        )
+        return ActionResult.ok(
+            action,
+            issue_number=action.issue_number,
+            proposal_id=action.proposal_id,
+            terminal_disposition_satisfied=True,
+            released_record_ids=list(release.record_ids),
+            pr_number=release.superseding_pr_number,
+            replayed=outcome.replayed,
+        )
+
+    def _verify_superseding_pr(self, action: ReleaseValidatedWorkAction) -> ActionResult | None:
+        """None when the named PR can have rebuilt the work, else the result."""
+        release = action.release
         try:
             refusal = self._superseding_refusal(release)
         except PublicationRemoteError as exc:
@@ -103,40 +151,7 @@ class TechLeadValidatedWorkReleaseExecutor:
                 issue_number=action.issue_number,
                 proposal_id=action.proposal_id,
             )
-        if refusal is not None:
-            return self._downgrade(action, refusal)
-        verdict = self.approval(action.proposal_issue_number)
-        actor = (
-            f"{verdict.describe()} on tech-lead proposal"
-            f" #{action.proposal_issue_number}"
-        )
-        reason = release.resolution_reason(action.rationale)
-        outcome = self.abandon_all(tuple(
-            AbandonValidatedWorkCommand(authority, actor, reason)
-            for authority in release.authorities
-        ))
-        if outcome.refusal is not None:
-            return self._refused(action, outcome)
-        self._publish_executed(action, actor, replayed=outcome.replayed)
-        logger.info(
-            issue_log(
-                action.issue_number,
-                "Tech Lead release_validated_work %s released %d record(s)"
-                " rebuilt in PR #%d",
-            ),
-            action.proposal_id,
-            len(release.authorities),
-            release.superseding_pr_number,
-        )
-        return ActionResult.ok(
-            action,
-            issue_number=action.issue_number,
-            proposal_id=action.proposal_id,
-            terminal_disposition_satisfied=True,
-            released_record_ids=list(release.record_ids),
-            pr_number=release.superseding_pr_number,
-            replayed=outcome.replayed,
-        )
+        return self._downgrade(action, refusal) if refusal is not None else None
 
     def _superseding_refusal(self, release: ValidatedWorkRelease) -> str | None:
         """Why the named PR cannot have rebuilt this issue's work, or None."""

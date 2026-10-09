@@ -176,8 +176,7 @@ def _mutating_actions() -> dict[ActionType, tuple[Action, int]]:
         ),
         ActionType.RELEASE_VALIDATED_WORK: (
             ReleaseValidatedWorkAction(
-                release=ValidatedWorkRelease(479, (_validated_work_authority(),)),
-                rationale="rebuilt in PR 479",
+                release=ValidatedWorkRelease(479, (_validated_work_authority(),), "rebuilt in PR 479"),
                 proposal_id="A1",
                 anchor_issue_number=ANCHOR,
                 proposal_issue_number=800,

@@ -185,6 +185,11 @@ class SqliteValidatedWorkStore:
     ) -> AbandonAllOutcome:
         return self._abandonment.abandon_all_if_current(commands)
 
+    def already_abandoned_by(
+        self, commands: tuple[AbandonValidatedWorkCommand, ...]
+    ) -> bool:
+        return self._abandonment.already_abandoned_by(commands)
+
     def retire_outside_scope(
         self,
         claim: ValidatedWorkClaim,

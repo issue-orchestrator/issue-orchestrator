@@ -109,6 +109,11 @@ class OperatorValidatedWorkAbandonment:
             self._blocks.reconcile_issue_block(issue_number).require_reconciled()
             return outcome
 
+    def committed(self, commands: tuple[AbandonValidatedWorkCommand, ...]) -> bool:
+        """Whether this exact batch already committed: a retry of it replays
+        through :meth:`abandon_all` and needs no fresh precondition (#9092)."""
+        return self._store.already_abandoned_by(commands)
+
     def _publish_abandoned(self, command: AbandonValidatedWorkCommand) -> None:
         authority = command.authority
         self._events.publish(

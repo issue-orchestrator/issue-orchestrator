@@ -1673,19 +1673,22 @@ only the operator can release them. The tech-lead action
   (`ValidatedWorkReleaseIntent`, untrusted). The target-scope check refuses a
   record id that the launch did not grant for that issue.
 - **What the operator approves.** The planner binds each named record to its
-  launch snapshot (`ValidatedWorkRelease`, stored with the op). The proposal
-  issue lists every record, its head, branch, evidence and observation
-  revision, and the PR. The ledger key includes that whole payload, so a
-  different release of the same issue is a different proposal.
+  launch snapshot. `ValidatedWorkRelease`, stored with the op, carries those
+  snapshots, the PR and the rationale, which is written into every record's
+  resolution. The proposal issue lists every record, its head, branch,
+  evidence and observation revision, and the PR. The ledger key and the reuse
+  check compare that whole value, so a different release of the same issue,
+  even one that only revises the rationale, is a different proposal.
 - **It never runs unattended.** The charter row is `destructive`, there is no
   `tech_lead.authority` key for it, and `ReleaseValidatedWorkAction` cannot
   be built without a proposal issue.
 - **What approval runs.** `TechLeadValidatedWorkReleaseExecutor` re-verifies,
-  before any write:
-  1. the PR is a MERGED PR of the issue in this repository, found by the
-     uncached #8137 issue-PR walk plus the records' own branches' merged PRs;
-  2. the approval verified for this proposal names its maintainer (or the
-     Control Center operator).
+  before any fresh write:
+  1. the approval verified for this proposal names its maintainer (or the
+     Control Center operator);
+  2. the PR is a MERGED PR of the issue in this repository, found by the
+     uncached #8137 issue-PR walk plus the records' own branches' merged PRs.
+     This is skipped for a replay (below), which needs no remote answer.
 
   A PR that fails the check closes the proposal stale with no write. An
   unreadable remote keeps the approved op and retries. Then
@@ -1703,11 +1706,14 @@ only the operator can release them. The tech-lead action
 - **A retry completes, never contradicts.** The approved snapshot and the
   reason are written in the transaction that resolves each record. A batch
   whose every record was resolved by exactly those commands is a replay:
-  committed, `replayed`, with no write. So when reprojection or the proposal's
-  outcome comment fails after the commit, the retried op reprojects again and
-  closes the proposal as executed. It does not read its own write as stale.
-  A replay audits nothing twice. Proposal reuse, which writes nothing, checks
-  the bound snapshots against the current release grants instead.
+  committed, `replayed`, with no write. The executor asks the owner
+  (`committed`) before any remote read. So when reprojection or the
+  proposal's outcome comment fails after the commit, the retried op
+  reprojects again and closes the proposal as executed, whatever GitHub
+  answers by then. It does not read its own write as stale. A replay audits
+  nothing twice, and it reports the actor the store recorded, not whoever
+  re-approved the retry. Proposal reuse, which writes nothing, checks the
+  bound snapshots against the current release grants instead.
 
 ## 3. Composition and control flow
 

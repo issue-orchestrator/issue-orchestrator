@@ -144,6 +144,7 @@ def build_validated_work_release_executor(
         pull_requests=owners.capture_observer,
         approval=approval,
         abandon_all=owners.abandonment.abandon_all,
+        committed=owners.abandonment.committed,
     )
 
 

@@ -38,7 +38,7 @@ from issue_orchestrator.domain.validated_work import (
     ValidatedWorkFailure,
     ValidatedWorkState,
 )
-from issue_orchestrator.domain.validated_work_release import bind_release
+from issue_orchestrator.domain.validated_work_release import ValidatedWorkRelease, bind_release
 from issue_orchestrator.domain.validated_work_release_intent import ValidatedWorkReleaseIntent
 from issue_orchestrator.events import EventName
 from tests.unit.test_validated_work_published_rework import (
@@ -85,16 +85,17 @@ def _executor(rig) -> tuple[TechLeadValidatedWorkReleaseExecutor, ValidatedWorkR
         pull_requests=rig.github,
         approval=lambda number: ApprovalVerdict(number, ApprovalVerdictKind.MAINTAINER, "operator", 9),
         abandon_all=abandonment.abandon_all,
+        committed=abandonment.committed,
     ), grants
 
 
 def _approved_release(grants, parked) -> ReleaseValidatedWorkAction:
     """What launch binds and approval runs: the parked records' launch grants."""
     intent = ValidatedWorkReleaseIntent(tuple(d.record_id for d in parked), ELSEWHERE)
-    release = bind_release(intent, issue_number=ISSUE, grants=grants.release_grants_for((ISSUE,)))
-    assert release is not None
+    authorities = bind_release(intent, issue_number=ISSUE, grants=grants.release_grants_for((ISSUE,)))
+    assert authorities is not None
     return ReleaseValidatedWorkAction(
-        release=release, rationale="PR #479 rebuilt slice 2 after a conflicted rebase",
+        release=ValidatedWorkRelease(ELSEWHERE, authorities, "PR #479 rebuilt slice 2 after a conflicted rebase"),
         proposal_id="A1", anchor_issue_number=PROPOSAL, proposal_issue_number=PROPOSAL,
         expected=build_expected_for_mutation(),
     )
@@ -155,6 +156,8 @@ def test_a_retry_after_a_failed_reprojection_completes_the_release(rig, make_ses
             executor.apply(action)
     assert rig.aggregate.reconcile_issue_block == real
     assert RECOVERY_PENDING in rig.labels.labels
+    # Review r2 F1: GitHub may be unreadable by the retry; the commit stands.
+    rig.github.unreadable = True
 
     result = executor.apply(action)
 

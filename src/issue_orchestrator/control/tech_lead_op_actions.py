@@ -184,7 +184,6 @@ class ReleaseValidatedWorkAction(Action):
     op_type: ClassVar[str] = "release_validated_work"
 
     release: ValidatedWorkRelease = field(kw_only=True)
-    rationale: str = ""
     proposal_id: str = ""
     finding_ids: tuple[str, ...] = ()
     anchor_issue_number: int = 0
@@ -202,12 +201,15 @@ class ReleaseValidatedWorkAction(Action):
             raise ValueError(
                 "ReleaseValidatedWorkAction runs only from an approved proposal"
             )
-        if not self.rationale.strip():
-            raise ValueError("ReleaseValidatedWorkAction requires the rationale")
 
     @property
     def issue_number(self) -> int:
         return self.release.issue_number
+
+    @property
+    def rationale(self) -> str:
+        """The approved rationale, carried by the release it explains."""
+        return self.release.rationale
 
     def reconciliation_subject(self) -> int:
         return self.issue_number
@@ -226,7 +228,6 @@ class ReleaseValidatedWorkAction(Action):
             raise ValueError("an approved release op must carry its bound release")
         return cls(
             release=op.validated_work_release,
-            rationale=op.rationale,
             proposal_id=op.source_action_id,
             finding_ids=op.finding_ids,
             anchor_issue_number=proposal_issue_number,

@@ -38,14 +38,23 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class ValidatedWorkRelease:
-    """An approvable release: each named record bound to its launch authority."""
+    """An approvable release: each named record bound to its launch authority.
+
+    Everything approval runs is here, so this value IS the operation's
+    identity (its proposal's ledger key and reuse check compare it whole):
+    the records' snapshots, the PR, and the rationale written into every
+    record's resolution.
+    """
 
     superseding_pr_number: int
     #: Sorted by record id, one per record, all of one issue and repository.
     authorities: tuple[ValidatedWorkAuthoritySnapshot, ...]
+    #: Why the PR rebuilt the work, as the operator approved it.
+    rationale: str
 
     def __post_init__(self) -> None:
         _pr_number(self.superseding_pr_number, context="release")
+        require_text(self.rationale, "release rationale")
         authorities = cast(object, self.authorities)
         if type(authorities) is not tuple or any(
             type(item) is not ValidatedWorkAuthoritySnapshot
@@ -77,25 +86,25 @@ class ValidatedWorkRelease:
         """The records' own branches, sorted and distinct."""
         return tuple(sorted({item.branch_name for item in self.authorities}))
 
-    def resolution_reason(self, rationale: str) -> str:
+    def resolution_reason(self) -> str:
         """The durable resolution reason: names the PR that rebuilt the work."""
-        require_text(rationale, "release rationale")
         return (
             f"Released on operator approval: the work was rebuilt in merged PR"
             f" #{self.superseding_pr_number} with rewritten history, so no"
-            f" ancestry proof connects it. Rationale: {rationale}"
+            f" ancestry proof connects it. Rationale: {self.rationale}"
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "superseding_pr_number": self.superseding_pr_number,
             "authorities": [item.to_dict() for item in self.authorities],
+            "rationale": self.rationale,
         }
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ValidatedWorkRelease":
         """Parse a persisted release; malformed content fails loudly."""
-        unexpected = sorted(set(data) - {"superseding_pr_number", "authorities"})
+        unexpected = sorted(set(data) - {"superseding_pr_number", "authorities", "rationale"})
         if unexpected:
             raise ValueError(f"validated-work release has unexpected fields: {unexpected}")
         raw = data.get("authorities")
@@ -107,6 +116,7 @@ class ValidatedWorkRelease:
                 ValidatedWorkAuthoritySnapshot.from_dict(cast(dict[str, Any], item))
                 for item in cast(list[object], raw)
             ),
+            rationale=data.get("rationale"),  # type: ignore[arg-type]
         )
 
 
@@ -115,12 +125,12 @@ def bind_release(
     *,
     issue_number: int,
     grants: Iterable[ValidatedWorkAuthoritySnapshot],
-) -> ValidatedWorkRelease | None:
-    """Bind an intent to the launch-observed grants of *issue_number*.
+) -> tuple[ValidatedWorkAuthoritySnapshot, ...] | None:
+    """The launch-observed grant of each record an intent names, sorted.
 
-    ``None`` when any named record was not granted for that issue at launch:
-    the agent may name only records it was shown, never retarget to another
-    issue's, and never have one silently dropped from what it proposed.
+    ``None`` when any named record was not granted for *issue_number* at
+    launch: the agent may name only records it was shown, never retarget to
+    another issue's, and never have one silently dropped from what it proposed.
     """
     require_positive(issue_number, "issue_number")
     granted = {
@@ -128,15 +138,14 @@ def bind_release(
     }
     if any(record_id not in granted for record_id in intent.record_ids):
         return None
-    return ValidatedWorkRelease(
-        superseding_pr_number=intent.superseding_pr_number,
-        authorities=tuple(granted[record_id] for record_id in sorted(intent.record_ids)),
-    )
+    return tuple(granted[record_id] for record_id in sorted(intent.record_ids))
 
 
 #: Binds an intent for an issue to that launch's grants (the launch
 #: authority's ``bind_validated_work_release``); None when any record is ungranted.
-ReleaseBinder = Callable[[int, ValidatedWorkReleaseIntent], "ValidatedWorkRelease | None"]
+ReleaseBinder = Callable[
+    [int, ValidatedWorkReleaseIntent], "tuple[ValidatedWorkAuthoritySnapshot, ...] | None"
+]
 
 
 def no_release_grants(_issue_number: int, _intent: ValidatedWorkReleaseIntent) -> None:
@@ -156,7 +165,11 @@ def bound_release(
         return None
     if proposed.target_number is None or proposed.release is None:
         raise ValueError("release_validated_work requires its target and release")
-    release = binder(proposed.target_number, proposed.release)
-    if release is None:
+    authorities = binder(proposed.target_number, proposed.release)
+    if authorities is None:
         raise ValueError("release_validated_work names records with no launch authority")
-    return release
+    return ValidatedWorkRelease(
+        superseding_pr_number=proposed.release.superseding_pr_number,
+        authorities=authorities,
+        rationale=proposed.body or "",
+    )

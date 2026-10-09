@@ -118,6 +118,7 @@ def _grant(head: str, *, issue: int = ISSUE, branch: str = BRANCH, revision: int
 GRANTS = tuple(sorted((_grant("e5ce8ddd" + "0" * 32), _grant("4e3005a1" + "0" * 32),
                        _grant("20dab383" + "0" * 32)), key=lambda grant: grant.record_id))
 RECORD_IDS = tuple(grant.record_id for grant in GRANTS)
+RATIONALE = "PR #479 rebuilt slice 2 after rebasing it onto main with conflicts resolved."
 
 
 def _intent(record_ids=RECORD_IDS, pr: int = SUPERSEDING) -> ValidatedWorkReleaseIntent:
@@ -129,7 +130,7 @@ def _proposed(**overrides) -> ProposedTechLeadAction:
         id="A1",
         action_type="release_validated_work",
         target_number=ISSUE,
-        body="PR #479 rebuilt slice 2 after rebasing it onto main with conflicts resolved.",
+        body=RATIONALE,
         finding_ids=("T1",),
         release=_intent(),
     )
@@ -231,9 +232,9 @@ def test_the_charter_never_lets_a_release_run_unattended() -> None:
 
 
 def test_the_command_cannot_exist_without_an_approved_proposal() -> None:
-    release = ValidatedWorkRelease(SUPERSEDING, GRANTS)
+    release = ValidatedWorkRelease(SUPERSEDING, GRANTS, RATIONALE)
     with pytest.raises(ValueError, match="approved proposal"):
-        ReleaseValidatedWorkAction(release=release, rationale="r", proposal_id="A1",
+        ReleaseValidatedWorkAction(release=release, proposal_id="A1",
                                    proposal_issue_number=0, expected=build_expected_for_mutation())
 
 
@@ -249,10 +250,7 @@ def test_planning_refuses_to_execute_a_release_the_policy_somehow_executes(monke
 
 def test_binding_takes_each_named_record_from_the_launch_grant_sorted() -> None:
     named = tuple(reversed(RECORD_IDS[:2]))
-    release = _authority().bind_validated_work_release(ISSUE, _intent(named))
-    assert release is not None
-    assert release.authorities == GRANTS[:2]
-    assert release.issue_number == ISSUE and release.superseding_pr_number == SUPERSEDING
+    assert _authority().bind_validated_work_release(ISSUE, _intent(named)) == GRANTS[:2]
 
 
 @pytest.mark.parametrize("record_ids, issue", [
@@ -306,7 +304,7 @@ def test_a_release_files_a_gated_proposal_showing_every_record_and_the_pr() -> N
     assert isinstance(planned, CreateTechLeadProposalIssueAction)
     op = planned.op
     assert op.op_type == "release_validated_work"
-    assert op.validated_work_release == ValidatedWorkRelease(SUPERSEDING, GRANTS)
+    assert op.validated_work_release == ValidatedWorkRelease(SUPERSEDING, GRANTS, RATIONALE)
     assert f"issue #{ISSUE} rebuilt elsewhere" in planned.title
     for grant in GRANTS:
         assert grant.record_id in planned.body
@@ -327,6 +325,19 @@ def test_a_different_release_of_the_same_issue_is_a_different_proposal() -> None
         "release_validated_work", ISSUE, release=two.op.validated_work_release) not in ledger
 
 
+def test_a_revised_rationale_is_a_different_proposal_never_a_reuse() -> None:
+    """Review r2 F2: the rationale is written into every released record, so
+    a re-proposal that revises it must not ride the older proposal."""
+    [first] = _plan(_decision(_proposed()))
+    [revised] = _plan(_decision(_proposed(body="PR #479 rebuilt it; see the conflict notes.")))
+    ledger = build_op_ledger([(PROPOSAL, first.op)])
+
+    assert proposal_ledger_key(
+        "release_validated_work", ISSUE, release=revised.op.validated_work_release) not in ledger
+    assert first.op.validated_work_release != revised.op.validated_work_release
+    assert first.op.validated_work_release.rationale == RATIONALE
+
+
 def test_the_stored_op_carries_a_release_only_for_its_own_type() -> None:
     [planned] = _plan(_decision(_proposed()))
     with pytest.raises(ValueError, match="Only release_validated_work"):
@@ -344,7 +355,7 @@ def test_an_approved_proposal_plans_the_bound_release() -> None:
     assert isinstance(action, ReleaseValidatedWorkAction)
     assert action.release == planned.op.validated_work_release
     assert action.proposal_issue_number == PROPOSAL
-    assert action.rationale == planned.op.rationale
+    assert action.rationale == RATIONALE
 
 
 # -- the executor -----------------------------------------------------------
@@ -387,7 +398,7 @@ class _Grants:
         return self.current
 
 
-def _executor(*, grants=None, pulls=None, outcome=None, events=None):
+def _executor(*, grants=None, pulls=None, outcome=None, events=None, committed=False, approver="operator"):
     calls: list[tuple] = []
 
     def abandon_all(commands):
@@ -398,15 +409,16 @@ def _executor(*, grants=None, pulls=None, outcome=None, events=None):
         events=events or Mock(),
         grants=grants or _Grants(),
         pull_requests=pulls or _Pulls(elsewhere=(_pull(),)),
-        approval=lambda number: ApprovalVerdict(number, ApprovalVerdictKind.MAINTAINER, "operator", 7),
+        approval=lambda number: ApprovalVerdict(number, ApprovalVerdictKind.MAINTAINER, approver, 7),
         abandon_all=abandon_all,
+        committed=lambda _commands: committed,
     )
     return executor, calls
 
 
 def _action() -> ReleaseValidatedWorkAction:
     return ReleaseValidatedWorkAction(
-        release=ValidatedWorkRelease(SUPERSEDING, GRANTS), rationale="PR #479 rebuilt slice 2",
+        release=ValidatedWorkRelease(SUPERSEDING, GRANTS, "PR #479 rebuilt slice 2"),
         proposal_id="A1", finding_ids=("T1",), anchor_issue_number=PROPOSAL,
         proposal_issue_number=PROPOSAL, expected=build_expected_for_mutation())
 
@@ -477,26 +489,40 @@ def test_a_pr_that_cannot_have_rebuilt_the_work_closes_the_proposal_unchanged(pu
     assert calls == []
 
 
-def test_a_retry_after_the_release_committed_completes_it_not_closes_it_stale() -> None:
-    """Review r1 F1: the records are no longer releasable grants once released,
-    so a retry (after a failed reprojection or proposal comment) must not read
-    its own commit as stale. The store recognizes the replay; apply succeeds."""
+def _replayed_by(actor: str):
+    def replay(commands):
+        return replace(_committed(tuple(replace(c, actor=actor) for c in commands)), replayed=True)
+    return replay
+
+
+def test_a_retry_after_the_release_committed_completes_it_without_any_pr_read() -> None:
+    """Review r1 F1 / r2 F1: the records are no longer releasable grants once
+    released, and GitHub may be unreadable now; a retry of the committed batch
+    completes it from the store's replay, never closing it stale."""
     events = Mock()
-
-    def replayed(commands):
-        return replace(_committed(commands), replayed=True)
-
-    executor = TechLeadValidatedWorkReleaseExecutor(
-        events=events, grants=_Grants(()), pull_requests=_Pulls(elsewhere=(_pull(),)),
-        approval=lambda number: ApprovalVerdict(number, ApprovalVerdictKind.MAINTAINER, "operator", 7),
-        abandon_all=replayed,
-    )
+    pulls = _Pulls(error=PublicationRemoteError("GitHub is down"))
+    executor, _ = _executor(grants=_Grants(()), pulls=pulls, events=events, committed=True)
+    executor.abandon_all = _replayed_by("approved by maintainer @alice on tech-lead proposal #485")
 
     result = executor.apply(_action())
 
     assert result.success and result.details["replayed"] is True
+    assert pulls.requests == []
     [event] = [call.args[0] for call in events.publish.call_args_list]
     assert event.data["boundary"]["replayed"] is True
+
+
+def test_a_replay_names_who_released_the_records_not_who_reapproved() -> None:
+    """Review r2 F3: A approved and the batch committed; B re-approved the
+    retry. The records say A released them, and so does the event."""
+    events = Mock()
+    executor, _ = _executor(events=events, committed=True, approver="bob")
+    executor.abandon_all = _replayed_by("approved by maintainer @alice on tech-lead proposal #485")
+
+    executor.apply(_action())
+
+    [event] = [call.args[0] for call in events.publish.call_args_list]
+    assert event.data["boundary"]["actor"] == "approved by maintainer @alice on tech-lead proposal #485"
 
 
 def test_an_unreadable_remote_keeps_the_approved_op_for_a_retry() -> None:
@@ -526,7 +552,7 @@ def test_a_busy_record_defers_and_a_stale_one_closes_the_proposal() -> None:
 
 
 def test_reuse_of_an_open_proposal_is_stale_once_a_record_moved() -> None:
-    release = ValidatedWorkRelease(SUPERSEDING, GRANTS)
+    release = ValidatedWorkRelease(SUPERSEDING, GRANTS, RATIONALE)
     executor, _ = _executor()
     assert executor.stale_reason(release) is None
     executor, _ = _executor(grants=_Grants(GRANTS[1:]))
@@ -534,9 +560,11 @@ def test_reuse_of_an_open_proposal_is_stale_once_a_record_moved() -> None:
 
 
 def test_bind_release_is_the_one_binding_rule() -> None:
-    assert bind_release(_intent(), issue_number=ISSUE, grants=GRANTS) == ValidatedWorkRelease(SUPERSEDING, GRANTS)
+    assert bind_release(_intent(tuple(reversed(RECORD_IDS))), issue_number=ISSUE, grants=GRANTS) == GRANTS
     with pytest.raises(ValueError, match="sorted by record id"):
-        ValidatedWorkRelease(SUPERSEDING, tuple(reversed(GRANTS)))
+        ValidatedWorkRelease(SUPERSEDING, tuple(reversed(GRANTS)), RATIONALE)
     with pytest.raises(ValueError, match="one issue"):
         ValidatedWorkRelease(SUPERSEDING, tuple(sorted(
-            (*GRANTS, _grant(TIP, issue=263)), key=lambda grant: grant.record_id)))
+            (*GRANTS, _grant(TIP, issue=263)), key=lambda grant: grant.record_id)), RATIONALE)
+    with pytest.raises(ValueError, match="rationale"):
+        ValidatedWorkRelease(SUPERSEDING, GRANTS, " ")

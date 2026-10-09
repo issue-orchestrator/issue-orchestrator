@@ -105,6 +105,18 @@ class ValidatedWorkAbandonment:
             # The transaction rolled back: nothing in the batch was written.
             return AbandonAllOutcome((), refused.outcome, refused.record_id)
 
+    def already_abandoned_by(
+        self, commands: tuple[AbandonValidatedWorkCommand, ...]
+    ) -> bool:
+        """Whether these exact commands already resolved every record (read-only).
+
+        The same replay test :meth:`abandon_all_if_current` applies, for a
+        caller that must not repeat a precondition its committed write
+        already satisfied.
+        """
+        with self._db.transaction() as conn:
+            return bool(commands) and all(_already_applied(conn, command) for command in commands)
+
     def _abandon_in(
         self,
         conn: sqlite3.Connection,
