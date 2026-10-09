@@ -490,6 +490,10 @@ class RetryHistoryState:
             d for d in self._state.discovered_failures
             if d.issue_number != issue_number
         ]
+        self._state.discovered_retrospective_reviews = [
+            d for d in self._state.discovered_retrospective_reviews
+            if d.issue_number != issue_number
+        ]
         self._state.discovered_awaiting_merge_reconciliations = [
             d for d in self._state.discovered_awaiting_merge_reconciliations
             if d.issue_number != issue_number

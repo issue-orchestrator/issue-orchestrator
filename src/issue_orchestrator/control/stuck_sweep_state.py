@@ -63,4 +63,28 @@ def persist_stuck_sweep_state(
         )
 
 
-__all__ = ["hydrate_stuck_sweep_state", "persist_stuck_sweep_state"]
+def forget_stuck_sweep_issue(
+    state: "OrchestratorState",
+    store: "QueueCacheStore | None",
+    issue_number: int,
+) -> None:
+    """A reset ended the issue's attempt; its sweep record ends with it (#8219).
+
+    The recovery budget, the unlanded needs-human escalation and the one-shot
+    escalation/release buffers were all decided on the attempt the reset
+    discarded. Kept, the next plan would block the fresh retry behind
+    ``needs-human`` from the old budget. Persisted at once, so a restart does
+    not hydrate them back.
+    """
+    state.recovery_attempts.pop(issue_number, None)
+    state.pending_stuck_sweep_escalations.discard(issue_number)
+    state.review_release_budgets.discard(issue_number)
+    state.stuck_sweep_escalations = [n for n in state.stuck_sweep_escalations if n != issue_number]
+    state.stuck_sweep_review_releases = [
+        n for n in state.stuck_sweep_review_releases if n != issue_number
+    ]
+    state.stuck_sweep_held_for_review = state.stuck_sweep_held_for_review - {issue_number}
+    persist_stuck_sweep_state(state, store)
+
+
+__all__ = ["forget_stuck_sweep_issue", "hydrate_stuck_sweep_state", "persist_stuck_sweep_state"]

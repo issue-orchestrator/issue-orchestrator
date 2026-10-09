@@ -24,6 +24,7 @@ from ..control.review_exchange_lifecycle import (
 
 )
 from ..control.retry_history_state import RetryHistoryState
+from ..control.stuck_sweep_state import forget_stuck_sweep_issue
 from ..control.abandoned_queued_work import retire_abandoned_queued_work
 from ..events import EventName
 from ..history import latest_history_entries_by_issue
@@ -524,10 +525,12 @@ def _settle_pre_reset_observations(*, state: "OrchestratorState", deps: Any, iss
     ``pr-pending``) is refused at the gate as drift if a later plan acts on
     it - and a paused tick keeps its facts. A pause or park the liveness owner
     still owes the issue was decided on the same pre-reset facts; the reset is
-    the answer to it, as an operator's retry is.
+    the answer to it, as an operator's retry is; so is the stuck sweep's
+    recovery budget and any needs-human escalation it has not landed yet.
     """
     RetryHistoryState(state).forget_observations(issue_number)
     deps.action_liveness.owner.release_issue(issue_number)
+    forget_stuck_sweep_issue(state, deps.queue_cache_store, issue_number)
 
 
 def has_active_reset_retry_runtime(*, issue_number: int, state: "OrchestratorState", deps: Any) -> bool:
