@@ -124,7 +124,8 @@ def test_every_step_of_the_reset_runs_under_the_runner_it_was_given():
 
     A runner that records whether it is inside its callable: every collaborator
     the reset touches - the runtime termination, the label read, the reset, the
-    pending labels - must see it inside.
+    liveness release, the pending labels, the issue read and the queue save -
+    must see it inside.
     """
     from issue_orchestrator.control.queue_cache import QueueCache
     from issue_orchestrator.entrypoints.web_retry_history_routes import reset_and_retry_issue
@@ -153,6 +154,26 @@ def test_every_step_of_the_reset_runs_under_the_runner_it_was_given():
     orchestrator.deps.action_applier.apply.side_effect = observing(
         "pending_label", Mock(success=True, error=None)
     )
+    orchestrator.deps.action_liveness.owner.release_issue.side_effect = observing(
+        "release_liveness", ()
+    )
+    orchestrator.repository_host.get_issue.side_effect = observing(
+        "read_issue", create_issue(ISSUE, labels=["agent:web", labels.reset_retry_pending])
+    )
+    orchestrator.deps.queue_cache_store.save_snapshot.side_effect = observing("save_queue", None)
+    lifecycle = orchestrator.deps.runtime_lifecycle
+
+    class ObservedLifecycle:
+        """The runtime lifecycle port, recording when it terminates."""
+
+        def __getattr__(self, name):
+            return getattr(lifecycle, name)
+
+        def terminate(self, issue_number, reason):
+            seen.append(("terminate", inside["now"]))
+            return lifecycle.terminate(issue_number, reason)
+
+    orchestrator.deps.runtime_lifecycle = ObservedLifecycle()
     success, failure = reset_and_retry_issue(
         issue_number=ISSUE,
         from_scratch=True,
@@ -171,7 +192,8 @@ def test_every_step_of_the_reset_runs_under_the_runner_it_was_given():
 
     assert failure is None and success is not None
     assert [name for name, _ in seen] == [
-        "read_labels", "reset", "pending_label", "pending_label",
+        "terminate", "read_labels", "reset", "release_liveness",
+        "pending_label", "pending_label", "read_issue", "save_queue",
     ]
     assert all(locked for _, locked in seen), seen
 
@@ -296,3 +318,36 @@ def test_a_reset_whose_sweep_record_did_not_persist_is_not_reported_settled():
     assert "disk full" in payload["failed"][0]["error"]
     # Not queued for retry: the operator sees the failure and resets again.
     assert ISSUE not in orchestrator.state.priority_queue
+
+
+def test_a_reset_that_failed_part_way_still_forgets_what_it_may_have_invalidated():
+    """Review r3 F1: a reset that fails after removing labels is still a reset.
+
+    ``reset_issue`` returns a failure when a later step (the label store, the
+    history, the timeline) raises after the labels already came off. The
+    pre-reset drift fact and the owed pause would then act on an issue whose
+    ``pr-pending`` is gone, and pause it - the incident, by another door.
+    """
+    orchestrator, labels = _dashboard()
+    orchestrator.state.discovered_awaiting_merge_drifts = [_drift(ISSUE), _drift(OTHER)]
+    store = InMemoryActionLivenessStore()
+    owner = liveness_owner(store=store, escalation=RecordingEscalation(pause_commits=False))
+    orchestrator.deps.action_liveness.owner = owner
+    owner.owe_pause(ISSUE, "Missing required labels: frozenset({'pr-pending'})", TICK)
+
+    with patch("issue_orchestrator.control.maintenance.reset_issue") as reset_issue:
+        reset_issue.return_value = ResetResult(
+            success=False,
+            issue_number=ISSUE,
+            labels_removed=[labels.pr_pending],
+            error="Scratch reset failed to clear label store for #364: locked",
+        )
+        response = TestClient(app).post(
+            "/api/reset-retry", json={"issues": [ISSUE], "from_scratch": True}
+        )
+
+    assert [failure["issue"] for failure in response.json()["failed"]] == [ISSUE]
+    assert [d.issue_number for d in orchestrator.state.discovered_awaiting_merge_drifts] == [
+        OTHER
+    ]
+    assert store.pending_pauses() == ()

@@ -385,6 +385,9 @@ def reset_and_retry_issue(  # noqa: PLR0913
                 result.timeline_events_deleted,
                 elapsed_ms(reset_started_at),
             )
+            # Settled whatever the outcome: a reset that failed part-way may
+            # already have removed the labels a pre-reset fact requires.
+            _settle_pre_reset_observations(state=state, deps=deps, issue_number=issue_number)
             if not result.success:
                 return None, _make_reset_failure(
                     issue_number,
@@ -404,7 +407,6 @@ def reset_and_retry_issue(  # noqa: PLR0913
                     superseded_prs=result.superseded_prs or (),
                 )
                 _clear_scratch_retry_pending_state(state, issue_number, result)
-            _settle_pre_reset_observations(state=state, deps=deps, issue_number=issue_number)
 
             pending_labels_to_add = _pending_labels_for_retry(
                 from_scratch=from_scratch,
