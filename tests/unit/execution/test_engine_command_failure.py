@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import httpx
 import pytest
@@ -83,4 +84,15 @@ def test_a_failure_cannot_be_built_without_a_cause() -> None:
     with pytest.raises(ValueError, match="detail"):
         EngineCommandFailure(
             kind=EngineCommandFailureKind.NO_ANSWER, command="pause", url=URL, detail="  "
+        )
+
+
+def test_a_control_center_bug_is_not_dressed_up_as_an_engine_failure() -> None:
+    bug: Any = KeyError("x")
+    with pytest.raises(TypeError, match="KeyError"):
+        describe_engine_command_failure(
+            bug,
+            command="pause",
+            url=URL,
+            timeout_seconds=1,
         )
