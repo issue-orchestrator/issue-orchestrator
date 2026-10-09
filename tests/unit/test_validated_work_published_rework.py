@@ -125,7 +125,7 @@ class GitHubPulls:
         self.elsewhere: dict[int, tuple[str, PublicationPrState]] = {}
         self.head_repo = REPO
 
-    def _pull_head(self, number: int) -> str:
+    def pull_head(self, number: int) -> str:
         return self._git.run(self._origin, ["rev-parse", f"refs/pull/{number}/head"]).stdout.strip()
 
     def issue_pull_requests(self, request):
@@ -139,7 +139,7 @@ class GitHubPulls:
         return own + tuple(
             PublicationPullRequest(
                 number, f"https://github.com/{REPO}/pull/{number}", self.head_repo, REPO, branch, "main",
-                self._pull_head(number), state, f"Refs #{ISSUE}",
+                self.pull_head(number), state, f"Refs #{ISSUE}",
             )
             for number, (branch, state) in sorted(self.elsewhere.items())
         )

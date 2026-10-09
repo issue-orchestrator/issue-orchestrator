@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, replace
 
+from .branch_naming import extract_issue_number_from_branch
 from .publication_remote import PublicationPrState, PublicationPullRequest
 from .validated_work import (
     LineageRole,
@@ -330,25 +331,30 @@ def carried_by_issue_pull_request(
     pr: PublicationPullRequest,
     *,
     repo_slug: str,
+    issue_number: int,
     branch_name: str,
     fetched_head_sha: str | None,
     relation: AncestryRelation | None,
 ) -> CarriedByIssuePullRequest | None:
     """Whether another branch's PR of the issue is PROVEN to carry the head (#8137).
 
-    ``pr`` is one of the issue's PRs as the observer read them (a PR that
-    references the issue). Every fact must agree: it is open or merged, of
-    this repository (head and base), on a branch OTHER than the record's own -
-    that branch is judged by the stricter same-branch routes, which a PR
-    elsewhere must never bypass - its head is the head just fetched from
-    ``refs/pull/N/head``, and the validated head is that head or an ancestor
-    of it. Anything else proves nothing and leaves the work held.
+    ``pr`` is one of the PRs that reference the issue, as the observer read
+    them. Every fact must agree: it is open or merged, of this repository
+    (head and base), on a branch OTHER than the record's own - that branch is
+    judged by the stricter same-branch routes, which a PR elsewhere must never
+    bypass - and that branch is the ISSUE's (``<issue>-...``, as every branch
+    the orchestrator cuts for it, a collision's ``-rN`` included). A batch or
+    integration PR that merely names the issue is not the issue's PR, so
+    custody never routes the issue's review to it. Its head is the head just
+    fetched from ``refs/pull/N/head``, and the validated head is that head or
+    an ancestor of it. Anything else proves nothing and leaves the work held.
     """
     if (
         pr.state not in (PublicationPrState.OPEN, PublicationPrState.MERGED)
         or pr.head_repo != repo_slug
         or pr.base_repo != repo_slug
         or pr.branch == branch_name
+        or extract_issue_number_from_branch(pr.branch) != issue_number
         or fetched_head_sha != pr.head_sha
         or relation not in (AncestryRelation.EQUAL, AncestryRelation.ANCESTOR)
     ):

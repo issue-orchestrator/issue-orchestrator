@@ -1573,6 +1573,74 @@ stop forcing one another to park.
   head at merge.
 - An unreadable remote.
 
+### 2.9 Work republished on another branch's PR is published (porchpin #262, #8137)
+
+§2.7 and §2.8 look for a PR only on the record's own branch. Work does not
+always stay there. In porchpin #262 a review exchange validated slice 2 on the
+issue's branch after that branch's first PR (#457) had merged. The completion's
+PR collided, so the completion moved to `<branch>-r1` and opened PR #479 there.
+Every validated head was captured under the original branch. Both the proof
+route and published-review custody matched a PR only on that branch, so three
+records stayed parked `DIVERGENT_VALIDATED_HEADS` for days. `recovery-pending`
+kept coming back, the stuck sweep read the issue as abandoned, and the tech
+lead filed a do-not-approve proposal (porchpin #485) just to keep the sweep off.
+
+**Content is the proof, not the branch name.** `carried_by_issue_pull_request`
+(`domain/validated_work_remote_authority.py`) proves a record's work is
+published when every fact agrees:
+
+- the PR is one of the issue's PRs. It references the issue (`Closes #N` or
+  `Refs #N`), as every PR the orchestrator opens does;
+- it is open or merged, and of this repository (head and base);
+- it is on a branch OTHER than the record's own. That branch is judged by the
+  stricter §2.7 and §2.8 routes only, and a PR elsewhere never bypasses them;
+- that branch is the issue's own (`<issue>-...`, like every branch the
+  orchestrator cuts for it, including a collision's `-rN`). A batch or
+  integration PR that only names the issue is not the issue's PR, so custody
+  never routes the issue's review to it;
+- its head equals the head just fetched from `refs/pull/N/head`;
+- the validated head equals that head or is an ancestor of it.
+
+**Who proves it.** `PullRequestCarriage.proof` stays the one owner of every
+route. Only a head that no PR of its own branch carries costs the read of the
+issue's PRs (`ValidatedWorkCaptureObserver.issue_pull_requests`). That read is
+one walk of the issue's cross-reference timeline, plus one uncached read per
+open or merged referencing PR. Capture and the scope sweep both ask through
+it. A completion whose PR collided is therefore published at capture and never
+parks. A record parked before this is released on the sweep's next recheck.
+
+**The store records a carrier beside the fact, never in it.**
+`record_pr_publication` writes the proof to `validated_work_lineage_carriers`
+as `(lineage, PR, branch, head, merged)`. The lineage fact still says what THIS
+branch publishes, and recovery still sequences from it. An open PR's row
+follows its latest proven head. A merged PR's row is final, and a second proof
+with a different head is refused. Each proven head is pinned before its row
+commits, at `refs/issue-orchestrator/carried/<lineage>/<PR>/<head>`. Like a
+landing's pin it is create-only, it is not escrow, and nothing can release it.
+
+**Classification checks carriers after landings and before the fact.** A
+record that a carrier's pinned head contains resolves as
+`RECOVERED(CONTAINED_IN_PUBLISHED_HEAD)` for an open PR, or
+`RECOVERED(LANDED_VIA_MERGED_PR)` for a merged one. It is named for that PR,
+and `published_branch` records the PR's branch.
+
+**Custody follows the work.** `PublishedReviewCustody` reads open PRs on each
+published record's `publication_branch`: the record's own branch, or the
+branch its carrier named. While PR #479 is open it holds the issue. So
+`reset_retry` refuses to close it, and the stuck sweep hands the issue to
+review instead of investigating it as abandoned.
+
+**What stays unresolved:**
+- A PR closed unmerged, a PR from another repository, or a PR on a branch
+  that is not the issue's.
+- A PR whose head does not contain the record. This includes a PR that was
+  later rebased with conflicts resolved, so that none of the record's commits
+  remain. That is porchpin #262 as it stands today. PR #479's head no longer
+  contains the three parked heads, and no ancestry or patch-identity proof
+  connects them. Releasing such records is an operator's explicit decision,
+  never an inference.
+- An unreadable remote, or an incomplete timeline walk.
+
 ## 3. Composition and control flow
 
 ### 3.1 Inside `terminate_issue_runtime()`

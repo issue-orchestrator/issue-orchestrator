@@ -77,7 +77,7 @@ class _OpenPulls:
         self.reads.append(branch)
         return [
             PRInfo(number=number, title=f"#{ISSUE}", url="", branch=pr_branch, body="", state="open", labels=[],
-                   head_sha=self._rig.github._pull_head(number))
+                   head_sha=self._rig.github.pull_head(number))
             for number, (pr_branch, state) in self._rig.github.elsewhere.items()
             if pr_branch == branch and state is PublicationPrState.OPEN
         ]
@@ -143,12 +143,12 @@ def test_parked_records_another_branchs_merged_pr_landed_resolve(rig, make_sessi
     assert PublishedReviewCustody(rig.store, _OpenPulls(rig)).holds(ISSUE) == ()
 
 
-@pytest.mark.parametrize("doubt", ["rebased-away", "closed-unmerged", "fork", "unreadable"])
+@pytest.mark.parametrize("doubt", ["rebased-away", "closed-unmerged", "fork", "batch-pr", "unreadable"])
 def test_a_pr_elsewhere_not_proven_to_carry_the_work_leaves_it_parked(rig, make_session, monkeypatch, doubt):
     """porchpin#262 as it stands now: PR #479 was later rebased with conflict
     resolution, so its head no longer contains the parked heads. Content is
     the proof, so they stay held - as they do for a PR closed unmerged, a
-    fork's PR, or an unreadable GitHub."""
+    fork's PR, a batch PR that only names the issue, or an unreadable GitHub."""
     _, _, parked = _legacy_parked_records(rig, make_session, monkeypatch)
     _republish(rig)
     if doubt == "rebased-away":
@@ -159,6 +159,11 @@ def test_a_pr_elsewhere_not_proven_to_carry_the_work_leaves_it_parked(rig, make_
         rig.github.elsewhere[ELSEWHERE] = (REPUBLISHED, PublicationPrState.CLOSED)
     elif doubt == "fork":
         rig.github.head_repo = "fork/repo"
+    elif doubt == "batch-pr":
+        # An integration PR whose body names the issue carries the work, but
+        # it is not the issue's PR: the issue's review never routes to it.
+        rig.git.run(rig.origin, ["update-ref", "refs/pull/480/head", f"refs/pull/{ELSEWHERE}/head"])
+        rig.github.elsewhere = {480: ("integration", PublicationPrState.OPEN)}
     else:
         rig.github.unreadable = True
 
@@ -225,18 +230,22 @@ def _pull(*, state=PublicationPrState.OPEN, branch=REPUBLISHED, head_repo=REPO, 
     (_pull(), HEAD, AncestryRelation.DESCENDANT),
     (_pull(), HEAD, AncestryRelation.DIVERGENT),
     (_pull(), HEAD, AncestryRelation.RIGHT_UNREACHABLE),
+    (_pull(branch="integration"), HEAD, AncestryRelation.ANCESTOR),
+    (_pull(branch=f"{ISSUE + 1}-sibling"), HEAD, AncestryRelation.ANCESTOR),
 ], ids=["closed-unmerged", "own-branch", "fork-head", "fork-base", "pull-ref-moved", "pull-ref-unfetchable",
-        "head-ahead-of-pr", "divergent", "unreachable"])
+        "head-ahead-of-pr", "divergent", "unreachable", "batch-pr-naming-the-issue", "another-issues-branch"])
 def test_only_every_fact_agreeing_proves_another_branchs_carriage(pr, fetched, relation):
     assert carried_by_issue_pull_request(
-        pr, repo_slug=REPO, branch_name=BRANCH, fetched_head_sha=fetched, relation=relation) is None
+        pr, repo_slug=REPO, issue_number=ISSUE, branch_name=BRANCH, fetched_head_sha=fetched,
+        relation=relation) is None
 
 
 @pytest.mark.parametrize("state", [PublicationPrState.OPEN, PublicationPrState.MERGED])
 @pytest.mark.parametrize("relation", [AncestryRelation.EQUAL, AncestryRelation.ANCESTOR])
 def test_an_open_or_merged_pr_elsewhere_whose_head_carries_the_work_proves_it(state, relation):
     proof = carried_by_issue_pull_request(
-        _pull(state=state), repo_slug=REPO, branch_name=BRANCH, fetched_head_sha=HEAD, relation=relation)
+        _pull(state=state), repo_slug=REPO, issue_number=ISSUE, branch_name=BRANCH, fetched_head_sha=HEAD,
+        relation=relation)
     merged = state is PublicationPrState.MERGED
     assert proof == CarriedByIssuePullRequest(ELSEWHERE, HEAD, REPUBLISHED, merged=merged)
     assert proof.provenance is (

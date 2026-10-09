@@ -19,6 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..domain.branch_naming import extract_issue_number_from_branch
 from ..domain.publication_remote import PublicationPullRequest, PublicationRemoteError
 from ..domain.validated_work import ValidatedWorkState
 from ..domain.validated_work_capture import ValidatedWorkRemoteFacts, ValidatedWorkRemoteRequest
@@ -127,14 +128,16 @@ class PullRequestCarriage:
         # Newest first. The record's own branch was judged above under rules a
         # PR elsewhere must not bypass, so it is never fetched again here.
         for pr in sorted(pulls, key=lambda candidate: candidate.number, reverse=True):
-            if pr.branch == request.branch_name or pr.head_repo != request.repo_slug:
+            if (pr.branch == request.branch_name or pr.head_repo != request.repo_slug
+                    or extract_issue_number_from_branch(pr.branch) != request.issue_number):
                 continue  # never fetch a ref the proof would refuse anyway
             fetched = self.git.fetch_pull_request_head(repository, pr.number)
             relation = None if fetched is None else self.git.compare_commits(
                 repository, left=validated_head_sha, right=fetched,
             )
             carried = carried_by_issue_pull_request(
-                pr, repo_slug=request.repo_slug, branch_name=request.branch_name,
+                pr, repo_slug=request.repo_slug, issue_number=request.issue_number,
+                branch_name=request.branch_name,
                 fetched_head_sha=fetched, relation=relation,
             )
             if carried is not None:
