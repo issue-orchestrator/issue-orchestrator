@@ -60,4 +60,39 @@ async def in_arrival_order(apply: Callable[[], _T]) -> _T:
     return await asyncio.shield(future)
 
 
-__all__ = ["await_detached", "detach", "in_arrival_order", "off_loop"]
+class SignalShutdowns:
+    """Signal-driven shutdown requests: escalation and the final server stop.
+
+    Every signal after the first escalates to a forced shutdown, decided when
+    the signal arrives rather than when its request runs — two quick signals
+    must not both read "not yet shutting down". The server is stopped only
+    after the last outstanding request has been applied, so a graceful request
+    finishing first cannot exit the process under a forced one still stopping
+    sessions. Lives on the event loop thread; no locking needed.
+    """
+
+    def __init__(self) -> None:
+        self._seen = 0
+        self._outstanding = 0
+
+    def admit(self) -> bool:
+        """Record one signal, synchronously; ``True`` if it must force.
+
+        Called from the signal callback itself, so the escalation and the
+        outstanding count are settled before any request has run.
+        """
+        self._seen += 1
+        self._outstanding += 1
+        return self._seen > 1
+
+    async def apply(self, request: Callable[[], None], stop_server: Callable[[], None]) -> None:
+        """Apply one admitted request off the loop; the last one stops the server."""
+        try:
+            await asyncio.to_thread(request)
+        finally:
+            self._outstanding -= 1
+        if self._outstanding == 0:
+            stop_server()
+
+
+__all__ = ["SignalShutdowns", "await_detached", "detach", "in_arrival_order", "off_loop"]

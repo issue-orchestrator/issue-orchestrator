@@ -217,16 +217,17 @@ def _install_shutdown_signal_handlers(
     ``infra.shutdown_signals``.
     """
     from ..infra.shutdown_signals import install_attributed_shutdown
-    from .engine_custody import detach
+    from .engine_custody import SignalShutdowns, detach
 
-    async def _shutdown() -> None:
-        # request_shutdown waits for the state lock a running tick holds; off
-        # the loop and detached, so the engine keeps serving meanwhile (#8222).
-        await asyncio.to_thread(orchestrator.request_shutdown)
-        trigger_server_shutdown()
+    # request_shutdown waits for the state lock a running tick holds: off the
+    # loop and detached, so the engine keeps serving meanwhile; the server
+    # stops after the last signalled request is applied (#8222). This path
+    # never escalates to a forced stop.
+    signals = SignalShutdowns()
 
     def _on_shutdown() -> None:
-        detach(_shutdown())
+        signals.admit()
+        detach(signals.apply(orchestrator.request_shutdown, trigger_server_shutdown))
 
     install_attributed_shutdown(
         loop=asyncio.get_running_loop(),

@@ -90,19 +90,20 @@ async def run_web_dashboard_mode(
 ) -> None:
     """Run orchestrator with web dashboard."""
     import signal
-    from .engine_custody import detach
+    from .engine_custody import SignalShutdowns, detach
     from .web import run_with_web_dashboard, trigger_server_shutdown
     from .control_api_server import ControlAPIServer
 
-    async def shut_down(force: bool) -> None:
-        # Waits for the state lock a running tick holds: off the loop and
-        # detached, so the dashboard keeps serving meanwhile (#8222).
-        await asyncio.to_thread(partial(orchestrator.request_shutdown, force=force))
-        trigger_server_shutdown()
+    # Shutdown requests wait for the state lock a running tick holds: off the
+    # loop and detached, so the dashboard keeps serving meanwhile (#8222). The
+    # escalation is decided here, synchronously, so a second signal forces even
+    # before the first request has run; the server stops once every requested
+    # shutdown — the forced one included — has been applied.
+    signals = SignalShutdowns()
 
     def handle_signal():
-        # A second signal while shutting down escalates to a forced stop.
-        detach(shut_down(force=orchestrator.shutdown_requested))
+        force = signals.admit() or orchestrator.shutdown_requested
+        detach(signals.apply(partial(orchestrator.request_shutdown, force=force), trigger_server_shutdown))
 
     loop = asyncio.get_running_loop()
     loop.add_signal_handler(signal.SIGINT, handle_signal)

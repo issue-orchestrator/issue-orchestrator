@@ -256,6 +256,57 @@ class TestTuiDashboardMode:
 
 
 class TestWebDashboardMode:
+    def test_a_second_signal_forces_even_before_the_first_request_ran(
+        self, orchestrator, fake_server, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#8222 r4 F2: escalation is decided when the signal arrives, and the
+        server stops only after every requested shutdown has been applied."""
+        import threading
+        import time
+
+        from issue_orchestrator.entrypoints import web
+
+        handlers: list = []
+        loop_type = type(asyncio.new_event_loop())
+        monkeypatch.setattr(
+            loop_type, "add_signal_handler", lambda self, sig, handler: handlers.append(handler)
+        )
+        tick_lock = threading.Lock()
+        forces: list[bool] = []
+
+        def request_shutdown(force: bool = False) -> None:
+            with tick_lock:  # waits out the running tick, like the real one
+                forces.append(force)
+
+        orchestrator.request_shutdown = request_shutdown
+        orchestrator.shutdown_requested = False
+        stops: list[list[bool]] = []
+        monkeypatch.setattr(web, "trigger_server_shutdown", lambda: stops.append(list(forces)))
+
+        async def serve(*_args, **_kwargs) -> None:
+            tick_lock.acquire()
+            handlers[0]()  # SIGINT
+            handlers[0]()  # again, before the first request has run
+            await asyncio.sleep(0.2)
+            assert stops == [], "server stopped while the tick still held custody"
+            tick_lock.release()
+            deadline = time.monotonic() + 5
+            while not stops:
+                assert time.monotonic() < deadline
+                await asyncio.sleep(0.02)
+
+        monkeypatch.setattr(web, "run_with_web_dashboard", serve)
+        monkeypatch.setattr(cli_run_modes, "console", MagicMock(), raising=False)
+
+        asyncio.run(
+            cli_run_modes.run_web_dashboard_mode(
+                orchestrator, MagicMock(web_port=8080), MagicMock(port=8080), 0
+            )
+        )
+
+        assert sorted(forces) == [False, True]
+        assert len(stops) == 1 and sorted(stops[0]) == [False, True], "one stop, after both requests"
+
     def test_declares_and_runs_the_web_dashboard(
         self, orchestrator, fake_server, monkeypatch: pytest.MonkeyPatch
     ) -> None:

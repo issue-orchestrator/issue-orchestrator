@@ -310,13 +310,31 @@ def test_engine_keeps_serving_while_a_command_waits_for_the_tick(
 
 @pytest.mark.parametrize("first,second", [("pause", "resume"), ("resume", "pause")])
 def test_transitions_queued_behind_a_tick_commit_in_arrival_order(
-    live_engine: _LiveEngine, first: str, second: str
+    live_engine: _LiveEngine, first: str, second: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Pause-then-resume during a long tick must end running, and vice versa.
 
     Two threads waiting on the state lock wake in no defined order; the engine
     must still commit operator transitions in the order it received them.
+    Barriers, not sleeps: each request is known to be queued before the tick
+    is released.
     """
+    from issue_orchestrator.entrypoints import engine_custody
+
+    queued = threading.Semaphore(0)
+
+    class CountingExecutor:
+        def __init__(self, inner: Any) -> None:
+            self._inner = inner
+
+        def submit(self, fn: Any) -> Any:
+            future = self._inner.submit(fn)
+            queued.release()
+            return future
+
+    monkeypatch.setattr(
+        engine_custody, "_TRANSITIONS", CountingExecutor(vars(engine_custody)["_TRANSITIONS"])
+    )
     if first == "resume":
         live_engine.engine.pause(reason=PauseReason.OPERATOR, actor=PauseActor.CLI)
         live_engine.engine.transitions.clear()
@@ -332,12 +350,20 @@ def test_transitions_queued_behind_a_tick_commit_in_arrival_order(
         thread.start()
         return thread
 
+    def wait_until(condition: Any, what: str) -> None:
+        deadline = time.monotonic() + 10
+        while not condition():
+            assert time.monotonic() < deadline, what
+            time.sleep(0.01)
+
     with live_engine.engine.tick_in_progress() as finish:
         senders = [send(first)]
-        time.sleep(0.3)
+        assert queued.acquire(timeout=10), f"{first} was never queued"
+        wait_until(lambda: live_engine.engine.transitions == [f"{first}:waiting"], f"{first} never waited")
         senders.append(send(second))
-        time.sleep(0.3)
-        # The second transition has not even started waiting for the lock.
+        assert queued.acquire(timeout=10), f"{second} was never queued"
+        # Queued behind the first on the one worker: it has not even started
+        # waiting for the lock.
         assert live_engine.engine.transitions == [f"{first}:waiting"]
         finish.set()
         for sender in senders:
@@ -679,3 +705,51 @@ def test_a_shutdown_signal_waits_for_the_tick_off_the_event_loop(
 
     assert engine.shutdowns == [False]
     assert engine.waited_on_event_loop == []
+
+
+def test_a_cancelled_tech_lead_decision_still_reaches_the_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """r4 F1: a Control Center that times out must not drop a decision still
+    waiting for a worker — the timeout detail promises it may still apply."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from issue_orchestrator.contracts.ui_openapi_models import TechLeadProposalCommandPayload
+    from issue_orchestrator.entrypoints.web_tech_lead_routes import command_tech_lead_proposal
+
+    decided: list[Any] = []
+
+    class Engine:
+        def request_tech_lead_proposal(self, command: Any) -> Any:
+            decided.append(command)
+            return SimpleNamespace(
+                proposal_issue_number=command.proposal_issue_number,
+                outcome="approved",
+                detail="ok",
+            )
+
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        busy = threading.Event()
+        loop.run_in_executor(None, busy.wait, 5)  # occupies the only worker
+        engine: Any = Engine()
+        route = asyncio.ensure_future(
+            command_tech_lead_proposal(
+                TechLeadProposalCommandPayload(proposal_issue_number=10, decision="approve"),
+                engine,
+            )
+        )
+        await asyncio.sleep(0.2)
+        route.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await route
+        busy.set()
+        deadline = time.monotonic() + 5
+        while not decided:
+            assert time.monotonic() < deadline, "the cancelled decision was dropped"
+            await asyncio.sleep(0.02)
+
+    asyncio.run(scenario())
+
+    assert [command.proposal_issue_number for command in decided] == [10]
