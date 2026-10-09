@@ -247,7 +247,10 @@ def test_the_server_stops_with_the_run(run_dir: Path) -> None:
     [
         "SELECT randomblob(16000000)",
         "SELECT zeroblob(2000000000)",
-        "SELECT printf('%.*c', 50000000, 'x')",
+        # A text value built past the limit from a blob under it. Not printf:
+        # a SQLite built with SQLITE_PRINTF_PRECISION_LIMIT (CI's) caps the
+        # width, so the value is never oversized there.
+        "SELECT hex(zeroblob(40000))",
         "WITH RECURSIVE r(s) AS (SELECT 'x' UNION ALL SELECT s || s FROM r) SELECT s FROM r",
     ],
 )
