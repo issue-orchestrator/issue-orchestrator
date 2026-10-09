@@ -333,10 +333,19 @@ def test_when_both_moved_on_the_default_branch_is_merged_in() -> None:
 
     owner.upkeep(world.state)
 
-    assert owner.discovered_steps()[0] == SyncIntegrationFromDefault(
+    # Review r6 F2: the delivery is described from the tip the sync produces,
+    # on the very next upkeep, never from the pre-sync tip.
+    assert owner.discovered_steps() == [SyncIntegrationFromDefault(
         branch="integration", default_branch="main", integration_tip=TIP, default_tip=MAIN,
-    )
-    assert isinstance(owner.discovered_steps()[1], OpenDeliveryPullRequest)
+    )]
+    assert world.state.integration_upkeep_at == 0.0
+
+    world.host.branches["integration"] = HEAD_C  # the sync's merge commit
+    world.host.comparisons[("main", HEAD_C)] = BranchComparison(ahead_by=4, behind_by=0, commit_shas=(HEAD_A,))
+    owner = world.owner()
+    owner.upkeep(world.state)  # next tick: not throttled
+    [delivery] = owner.discovered_steps()
+    assert isinstance(delivery, OpenDeliveryPullRequest) and delivery.integration_tip == HEAD_C
 
 
 def test_the_delivery_pr_is_opened_listing_the_prs_it_delivers() -> None:

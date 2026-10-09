@@ -380,6 +380,10 @@ class IntegrationBranchOwner:
             self.steps.append(SyncIntegrationFromDefault(
                 branch=self.branch, default_branch=default, integration_tip=tip, default_tip=default_tip,
             ))
+            # The sync moves the tip this tick: describe the delivery from the
+            # tip it produces, on the very next upkeep (review r6 F2).
+            state.integration_upkeep_at = 0.0
+            return
         if not comparison.ahead_by:
             state.integration_delivery = None
             return
