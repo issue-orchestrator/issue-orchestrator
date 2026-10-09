@@ -4437,3 +4437,42 @@ def test_single_observation_creation_guards_every_mutation_and_preserves_recover
     assert mock_repository_host.create_issue.call_count == (not remote_issue_exists)
     assert authority.load_pattern_evidence(signature="sig").observation_count == 1
     assert authority.load_pending_case_file(signature="sig") is None
+
+
+def _merge_step(issue_number: int):
+    from issue_orchestrator.domain.integration_branch import MergeIntoIntegration
+    return MergeIntoIntegration(
+        issue_number=issue_number, issue_key=f"M0-{issue_number}", pr_number=900, pr_url="https://x/pr/900",
+        pr_title="t", head_sha="a" * 40, integration_branch="integration", integration_tip="b" * 40,
+        gate_label="code-reviewed",
+    )
+
+
+def test_integration_merge_checks_the_claim_of_the_issue_its_step_writes(
+    applier, mock_labels, mock_repository_host, mock_events,
+):
+    """#9098 final review F1: the claim target is the step's issue, through apply()."""
+    from issue_orchestrator.control.actions import AdvanceIntegrationAction
+
+    manager = MagicMock(spec=ClaimManager)
+    manager.check_winner.side_effect = lambda target, lease: target != 228
+    applier.claim_gate = ClaimGate(manager, mock_events)
+    applier.lease_id_lookup = lambda target: f"lease-{target}"
+    applier.standing_rulings, applier.label_manager = MagicMock(), mock_labels
+    action = AdvanceIntegrationAction(step=_merge_step(228), issue_number=228, pr_number=900)
+    with pytest.raises(ClaimLostError):
+        applier.apply(action)
+    mock_repository_host.assert_not_called()
+    assert not [c for c in mock_repository_host.method_calls if not c[0].startswith(("get", "list", "read"))]
+
+
+@pytest.mark.parametrize("wrapper_issue", [0, 229])
+def test_integration_action_whose_wrapper_disagrees_with_its_step_is_refused(applier, wrapper_issue):
+    from issue_orchestrator.control.actions import AdvanceIntegrationAction
+
+    applier.standing_rulings, applier.label_manager = MagicMock(), MagicMock()
+    action = AdvanceIntegrationAction(step=_merge_step(228), issue_number=wrapper_issue, pr_number=900)
+    result = applier.apply(action)
+    assert result.result_type is ActionResultType.FAILURE
+    assert "step writes #228" in (result.error or "")
+    assert not applier.standing_rulings.method_calls

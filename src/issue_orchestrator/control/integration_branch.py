@@ -62,6 +62,7 @@ from ..domain.integration_branch import (
     merge_commit_message,
     merged_in_delivery,
     render_delivery_body,
+    step_issue_number,
 )
 from ..events import EventName
 from ..infra.logging_config import issue_log
@@ -614,6 +615,14 @@ def apply_advance_integration(
     assert isinstance(action, AdvanceIntegrationAction)
     host, labels, rulings = applier.repository_host, applier.label_manager, applier.standing_rulings
     assert host is not None and labels is not None and rulings is not None, "integration needs host, labels, rulings"
-    if action.issue_number:
-        verify_claim(action, action.issue_number)
+    assert action.step is not None, "an integration action carries its step"
+    # The claim is the issue the step writes, never the wrapper's copy of it
+    # (#9098 final review F1): a disagreeing wrapper is a planner bug, refused.
+    target = step_issue_number(action.step) or 0
+    if action.issue_number != target:
+        raise ValueError(
+            f"integration action names issue #{action.issue_number} but its step writes #{target}; refused"
+        )
+    if target:
+        verify_claim(action, target)
     return apply_integration_step(action, host=host, labels=labels, rulings=rulings, events=applier.events)
