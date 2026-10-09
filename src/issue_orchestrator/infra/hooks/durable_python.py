@@ -74,7 +74,8 @@ def resolve_durable_orchestrator_python(
 
     Source order: *explicit* (``--python``), then ``ISSUE_ORCHESTRATOR_PYTHON``,
     then the running interpreter. The first source that is set is the one
-    used: an unusable or unstable choice raises rather than falling through to
+    used (an empty ``ISSUE_ORCHESTRATOR_PYTHON`` counts as unset, exactly as
+    the generated script's own ``[ -n ... ]`` test treats it): an unusable or unstable choice raises rather than falling through to
     a later source, so the written path is always the one the operator chose
     (or the one they can see they did not override).
     """
@@ -89,11 +90,11 @@ def resolve_durable_orchestrator_python(
         raise UnstableInterpreterError(
             f"Interpreter from {source.describe()} must be an absolute path: {candidate}"
         )
-    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in str(candidate)):
+    if not _single_line(str(candidate)):
         # The committed script and doctor's reader are line-oriented; a path
-        # that needs a quoted newline cannot be read back reliably.
+        # that needs a quoted line break cannot be read back reliably.
         raise UnstableInterpreterError(
-            f"Interpreter from {source.describe()} contains a control character: "
+            f"Interpreter from {source.describe()} contains a control character or line break: "
             f"{candidate!r}"
         )
     if not (candidate.is_file() and os.access(candidate, os.X_OK)):
@@ -104,6 +105,13 @@ def resolve_durable_orchestrator_python(
     if reason is not None:
         raise UnstableInterpreterError(_refusal_message(candidate, source, reason))
     return DurableOrchestratorPython(path=candidate, source=source)
+
+
+def _single_line(text: str) -> bool:
+    """True when *text* has no control character and nothing ``splitlines`` breaks on."""
+    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in text):
+        return False
+    return len(f"x{text}x".splitlines()) == 1
 
 
 def unstable_interpreter_reason(

@@ -412,3 +412,25 @@ def test_interpreter_path_with_a_newline_is_refused(io_checkouts):
     odd = _fake_python(main / "odd\ndir" / "python")
     with pytest.raises(UnstableInterpreterError, match="control character"):
         resolve_durable_orchestrator_python(odd, environ={}, temp_roots=NO_TEMP_ROOTS)
+
+
+def test_interpreter_path_with_a_unicode_line_separator_is_refused(io_checkouts):
+    """Round 4 F2: doctor reads the script with ``splitlines``, which breaks on U+2028."""
+    main, _linked = io_checkouts
+    odd = _fake_python(main / "odd dir" / "python")
+    with pytest.raises(UnstableInterpreterError, match="control character"):
+        resolve_durable_orchestrator_python(odd, environ={}, temp_roots=NO_TEMP_ROOTS)
+
+
+def test_empty_environment_override_counts_as_unset(io_checkouts):
+    """An empty ISSUE_ORCHESTRATOR_PYTHON is unset, as verify-pr.sh's ``[ -n ]`` treats it."""
+    main, _linked = io_checkouts
+    running = main / ".venv" / "bin" / "python"
+    resolved = resolve_durable_orchestrator_python(
+        None,
+        environ={"ISSUE_ORCHESTRATOR_PYTHON": ""},
+        running_interpreter=running,
+        temp_roots=NO_TEMP_ROOTS,
+    )
+    assert resolved.path == running
+    assert resolved.source is DurablePythonSource.RUNNING_INTERPRETER
