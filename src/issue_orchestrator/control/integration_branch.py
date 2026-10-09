@@ -82,7 +82,8 @@ if TYPE_CHECKING:
     from ..ports.repository_host import RepositoryHost
     from ..ports.standing_rulings import StandingRulings
     from .action_results import ActionResult
-    from .actions import AdvanceIntegrationAction
+    from .action_applier import ActionApplier
+    from .actions import Action, AdvanceIntegrationAction
     from .label_manager import LabelManager
 
 logger = logging.getLogger(__name__)
@@ -602,3 +603,17 @@ __all__ = [
     "integration_branch_missing",
     "plan_integration_steps",
 ]
+
+
+def apply_advance_integration(
+    action: "Action", applier: "ActionApplier", *, verify_claim: Callable[["Action", int], None]
+) -> "ActionResult":
+    """The applier handler (#8144): one integration-branch step; a merge or update writes the issue's PR."""
+    from .actions import AdvanceIntegrationAction
+
+    assert isinstance(action, AdvanceIntegrationAction)
+    host, labels, rulings = applier.repository_host, applier.label_manager, applier.standing_rulings
+    assert host is not None and labels is not None and rulings is not None, "integration needs host, labels, rulings"
+    if action.issue_number:
+        verify_claim(action, action.issue_number)
+    return apply_integration_step(action, host=host, labels=labels, rulings=rulings, events=applier.events)
