@@ -128,8 +128,7 @@ def test_a_behind_approved_pr_is_updated_mechanically_and_never_reworked() -> No
     result = world.discover(owner)
 
     assert result.reworks == ()
-    assert owner.discovered_steps() == [UpdatePullRequestBranch(issue_number=228, pr_number=318, head_sha=HEAD_A,
-                                                   integration_tip=TIP)]
+    assert owner.discovered_steps() == [_update_step()]
 
 
 def test_github_reporting_behind_is_an_update_not_a_rework() -> None:
@@ -164,7 +163,7 @@ def test_a_current_green_pr_is_merged_at_its_head_and_tip() -> None:
     assert owner.discovered_steps() == [MergeIntoIntegration(
         issue_number=228, issue_key=owner.discovered_steps()[0].issue_key, pr_number=318,  # type: ignore[union-attr]
         pr_url="https://github.com/owner/repo/pull/318", pr_title="Fix 228", head_sha=HEAD_A,
-        integration_branch="integration", integration_tip=TIP, merge_method="merge", gate_label="code-reviewed",
+        integration_branch="integration", integration_tip=TIP, gate_label="code-reviewed",
     )]
 
 
@@ -456,8 +455,15 @@ def _apply(world: _World, step) -> object:
 def _merge_step(**overrides) -> MergeIntoIntegration:
     step = MergeIntoIntegration(
         issue_number=228, issue_key="owner/repo#228", pr_number=318, pr_url="u", pr_title="Fix 228",
-        head_sha=HEAD_A, integration_branch="integration", integration_tip=TIP, merge_method="merge",
-        gate_label="code-reviewed",
+        head_sha=HEAD_A, integration_branch="integration", integration_tip=TIP, gate_label="code-reviewed",
+    )
+    return replace(step, **overrides)
+
+
+def _update_step(**overrides) -> UpdatePullRequestBranch:
+    step = UpdatePullRequestBranch(
+        issue_number=228, pr_number=318, head_sha=HEAD_A, integration_tip=TIP,
+        integration_branch="integration", gate_label="code-reviewed",
     )
     return replace(step, **overrides)
 
@@ -477,8 +483,8 @@ def test_the_merge_runs_at_the_checked_head_with_a_merge_commit() -> None:
 
     assert result.success  # type: ignore[attr-defined]
     [merge] = world.host.pr_merges
-    assert (merge["pr_number"], merge["head_sha"], merge["method"]) == (318, HEAD_A, "merge")
-    assert merge["title"] == "Merge #318: Fix 228"
+    assert (merge["branch"], merge["tip_sha"], merge["head_sha"]) == ("integration", TIP, HEAD_A)
+    assert merge["message"].startswith("Merge #318: Fix 228\n\n")
     assert [event.event_type for event in world.events.events] == [EventName.INTEGRATION_STEP_APPLIED]
 
 
@@ -505,7 +511,7 @@ def test_a_tip_that_moved_after_discovery_stops_the_merge() -> None:
 
 def test_a_refused_merge_is_a_failure_the_liveness_owner_bounds() -> None:
     world = _ready_world()
-    world.host.integration_failures["merge_pull_request"] = RepositoryHostError("405 not mergeable")
+    world.host.integration_failures["merge_head_onto"] = RepositoryHostError("422 Update is not a fast forward")
 
     result = _apply(world, _merge_step())
 
@@ -513,11 +519,64 @@ def test_a_refused_merge_is_a_failure_the_liveness_owner_bounds() -> None:
 
 
 def test_the_update_is_guarded_by_the_expected_head() -> None:
-    world = _World()
+    world = _ready_world()
 
-    _apply(world, UpdatePullRequestBranch(issue_number=228, pr_number=318, head_sha=HEAD_A, integration_tip=TIP))
+    _apply(world, _update_step())
 
     assert world.host.pr_branch_updates == [(318, HEAD_A)]
+
+
+@pytest.mark.parametrize("change", ["hold", "gate_label", "retarget", "head", "closed"])
+def test_an_update_re_judges_the_pr_at_the_write(change: str) -> None:
+    """Review r2 F2: what discovery saw may change before the update is written."""
+    world = _ready_world()
+    pr = world.host.get_pr(318)
+    assert pr is not None
+    if change == "hold":
+        world.host.labels[228] = {world.labels.needs_human}
+    elif change == "gate_label":
+        world.host.labels[318] = set()
+    elif change == "retarget":
+        pr.base_branch = "main"
+    elif change == "head":
+        pr.head_sha = HEAD_C
+    else:
+        pr.state = "closed"
+
+    result = _apply(world, _update_step())
+
+    assert world.host.pr_branch_updates == []
+    assert result.result_type is ActionResultType.SKIPPED  # type: ignore[attr-defined]
+
+
+def test_an_update_is_written_whatever_the_tip_moved_to() -> None:
+    """An update brings the PR to the CURRENT tip: a moved tip is no reason to skip it."""
+    world = _ready_world()
+    world.host.branches["integration"] = HEAD_C
+
+    _apply(world, _update_step())
+
+    assert world.host.pr_branch_updates == [(318, HEAD_A)]
+
+
+def test_a_tip_moved_between_the_check_and_the_write_is_refused_atomically() -> None:
+    """Review r2 F1: the branch moves only from the checked tip, so a merge that
+    raced another writer fails instead of landing on an unchecked base."""
+    world = _ready_world()
+    real_branch_head = world.host.branch_head
+
+    def tip_moves_after_the_check(branch: str) -> str | None:
+        head = real_branch_head(branch)
+        world.host.branches["integration"] = HEAD_C  # another writer, right after io's read
+        return head
+
+    world.host.branch_head = tip_moves_after_the_check  # type: ignore[method-assign]
+
+    result = _apply(world, _merge_step())
+
+    assert world.host.pr_merges == []
+    assert result.result_type is ActionResultType.FAILURE  # type: ignore[attr-defined]
+    assert world.host.branches["integration"] == HEAD_C
 
 
 def test_a_fast_forward_only_moves_the_branch_it_compared() -> None:
@@ -559,7 +618,7 @@ def test_the_delivery_pr_is_opened_and_refreshed_through_the_host() -> None:
 
 
 def test_each_step_becomes_one_action_naming_its_subject() -> None:
-    update = UpdatePullRequestBranch(issue_number=228, pr_number=318, head_sha=HEAD_A, integration_tip=TIP)
+    update = _update_step()
     create = CreateIntegrationBranch(branch="integration", from_sha=MAIN)
 
     actions = plan_integration_steps([update, create])
@@ -662,3 +721,58 @@ def test_a_truncated_merged_listing_marks_the_delivery_body_incomplete() -> None
 
     [step] = owner.discovered_steps()
     assert isinstance(step, OpenDeliveryPullRequest) and "may be incomplete" in step.body
+
+
+# -- no launch before the integration branch exists (review r2 F4) ---------------
+
+
+def test_launches_wait_until_the_upkeep_has_seen_the_branch() -> None:
+    from issue_orchestrator.control.integration_branch import integration_branch_missing
+
+    world = _World()
+    del world.host.branches["integration"]
+    assert integration_branch_missing(world.config, world.state) == "integration"
+
+    world.owner().upkeep(world.state)  # plans the create; the branch is not there yet
+    assert integration_branch_missing(world.config, world.state) == "integration"
+
+    world.host.branches["integration"] = MAIN  # the create was applied
+    world.host.comparisons[("main", MAIN)] = BranchComparison(ahead_by=0, behind_by=0)
+    world.clock.now += INTEGRATION_UPKEEP_INTERVAL_SECONDS
+    world.owner().upkeep(world.state)
+    assert integration_branch_missing(world.config, world.state) is None
+
+
+def test_a_failed_create_keeps_every_launch_waiting() -> None:
+    """The planner launches nothing while the branch is missing, so a refused
+    create cannot strand worktrees fetching a branch that is not there."""
+    from unittest.mock import MagicMock
+
+    from issue_orchestrator.control.host_rate_limit_launch_gate import plan_launches_or_wait
+    from issue_orchestrator.control.planner_types import OrchestratorSnapshot
+    from issue_orchestrator.domain.issue_key import FakeIssueKey
+    from issue_orchestrator.domain.models import PendingRework
+
+    snapshot = OrchestratorSnapshot(
+        issues=(), active_sessions=(), pending_reviews=(), pending_tech_lead=(), paused=False,
+        pending_reworks=(PendingRework(issue_number=228, pr_number=318, agent_type="agent:backend",
+                                       issue_key=FakeIssueKey(name="228")),),
+        integration_branch_missing="integration",
+    )
+    plan_launches = MagicMock(side_effect=AssertionError("must not plan a launch"))
+
+    actions, skipped = plan_launches_or_wait(
+        snapshot, launch_log=MagicMock(), plan_launches=plan_launches, withdrawals=lambda items: [],
+    )
+
+    assert actions == []
+    assert [(item.item_type, item.number) for item in skipped] == [("rework", 228)]
+    assert "integration" in skipped[0].reason
+
+
+def test_with_the_mode_off_nothing_waits_for_a_branch() -> None:
+    from issue_orchestrator.control.integration_branch import integration_branch_missing
+
+    world = _World()
+    world.config.integration = IntegrationConfig()
+    assert integration_branch_missing(world.config, world.state) is None

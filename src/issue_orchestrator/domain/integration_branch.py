@@ -122,7 +122,6 @@ class MergeIntoIntegration:
     head_sha: str
     integration_branch: str
     integration_tip: str
-    merge_method: str
     #: The PR label ``merge_after`` requires; re-checked at the write.
     gate_label: str
 
@@ -141,6 +140,9 @@ class UpdatePullRequestBranch:
     pr_number: int
     head_sha: str
     integration_tip: str
+    integration_branch: str
+    #: The PR label ``merge_after`` requires; re-checked at the write.
+    gate_label: str
 
 
 @dataclass(frozen=True)
@@ -330,6 +332,9 @@ class IntegrationDeliveryView:
     ahead_by: int
     merged_pr_numbers: tuple[int, ...]
     observed_at: str
+    #: False when GitHub listed only part of what the PR delivers (its commit
+    #: comparison or the merged-PR listing hit a cap): the numbers are a floor.
+    listing_complete: bool = True
 
 
 __all__ = [

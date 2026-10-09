@@ -74,6 +74,7 @@ from .human_gates import holds_merge
 if TYPE_CHECKING:
     from ..domain.models import DiscoveredAwaitingMergeEscalation, OrchestratorState
     from ..events import EventContext
+    from ..infra.config import Config
     from ..infra.config_models import IntegrationConfig
     from ..ports import EventSink
     from ..ports.issue import Issue
@@ -270,6 +271,7 @@ class IntegrationBranchOwner:
             # a head that contains the tip. Never an agent rework cycle.
             self.steps.append(UpdatePullRequestBranch(
                 issue_number=issue.number, pr_number=pr.number, head_sha=head, integration_tip=tip,
+                integration_branch=self.branch, gate_label=self.gate_label(),
             ))
             return IntegrationRouting(_NOTHING)
         if action == "WAIT_FOR_CHECKS":
@@ -309,7 +311,7 @@ class IntegrationBranchOwner:
         self._merge_candidates.append(MergeIntoIntegration(
             issue_number=issue.number, issue_key=issue.key.stable_id(), pr_number=pr.number,
             pr_url=pr.url, pr_title=pr.title, head_sha=head, integration_branch=self.branch,
-            integration_tip=tip, merge_method=self.config.merge_method, gate_label=self.gate_label(),
+            integration_tip=tip, gate_label=self.gate_label(),
         ))
         return IntegrationRouting(_NOTHING)
 
@@ -354,6 +356,7 @@ class IntegrationBranchOwner:
         if default_tip is None:
             raise RepositoryHostError(f"the default branch {default!r} has no head")
         tip = self._integration_tip()
+        state.integration_branch_confirmed = self.branch if tip is not None else None
         if tip is None:
             self.steps.append(CreateIntegrationBranch(branch=self.branch, from_sha=default_tip))
             state.integration_delivery = None
@@ -402,8 +405,24 @@ class IntegrationBranchOwner:
             pr_number=delivery.number, url=delivery.url, head=self.branch, base=default,
             integration_tip=tip, ahead_by=ahead_by,
             merged_pr_numbers=tuple(pr.number for pr in merged),
+            listing_complete=complete and listing.complete,
             observed_at=datetime.fromtimestamp(self.clock(), tz=UTC).isoformat(),
         )
+
+
+# -- the launch hold -------------------------------------------------------------
+
+
+def integration_branch_missing(config: "Config", state: "OrchestratorState") -> str | None:
+    """The integration branch no session may launch before the upkeep has seen it.
+
+    Every worktree and PR is based on it (it implies the base override), so a
+    launch before it exists - its creation not applied yet, or refused - would
+    fail fetching it. None when the mode is off or the branch is confirmed.
+    """
+    integration = config.integration
+    confirmed = state.integration_branch_confirmed == integration.branch
+    return integration.branch if integration.enabled and not confirmed else None
 
 
 # -- the plan ------------------------------------------------------------------
@@ -467,7 +486,7 @@ def _refusal(step: IntegrationStep, *, gatekeeper: MergeGatekeeper) -> str | Non
     whose checks passed; every gate must still be open; and the tip it was
     checked against must still be the tip.
     """
-    if not isinstance(step, MergeIntoIntegration):
+    if not isinstance(step, (MergeIntoIntegration, UpdatePullRequestBranch)):
         return None
     host = gatekeeper.host
     try:
@@ -481,6 +500,11 @@ def _refusal(step: IntegrationStep, *, gatekeeper: MergeGatekeeper) -> str | Non
     if moved is not None:
         return moved
     assert pr is not None
+    if isinstance(step, UpdatePullRequestBranch):
+        # Updating needs no green checks or ruling check, only that io may
+        # still act on the PR at all: no person's hold, the gate still passed.
+        gate = gatekeeper.person_or_gate(issue_labels=issue_labels, pr_labels=pr_labels, gate_label=step.gate_label)
+        return None if gate is MergeGate.OPEN else f"PR #{step.pr_number}: io may not act on it now ({gate.value})"
     verdict = gatekeeper.judge(
         issue_number=step.issue_number, issue_labels=issue_labels,
         pr=replace(pr, labels=list(pr_labels)), gate_label=step.gate_label,
@@ -490,13 +514,17 @@ def _refusal(step: IntegrationStep, *, gatekeeper: MergeGatekeeper) -> str | Non
     return None
 
 
-def _moved_since_discovery(step: MergeIntoIntegration, pr: "PRInfo | None", tip: str | None) -> str | None:
+def _moved_since_discovery(
+    step: "MergeIntoIntegration | UpdatePullRequestBranch", pr: "PRInfo | None", tip: str | None,
+) -> str | None:
     if pr is None or (pr.state or "").strip().lower() != "open":
         return f"PR #{step.pr_number} is no longer open"
     if pr.base_branch != step.integration_branch:
         return f"PR #{step.pr_number} now targets {pr.base_branch!r}, not {step.integration_branch!r}"
     if pr.head_sha != step.head_sha:
-        return f"PR #{step.pr_number} head moved since its checks passed; re-checked next pass"
+        return f"PR #{step.pr_number} head moved since it was judged; re-checked next pass"
+    if isinstance(step, UpdatePullRequestBranch):
+        return None  # an update brings the PR to whatever the tip is now
     if tip != step.integration_tip:
         return (f"{step.integration_branch} moved ({step.integration_tip[:8]} -> {(tip or 'gone')[:8]})"
                 f" since PR #{step.pr_number} was checked against it; re-checked next pass")
@@ -510,8 +538,10 @@ def _write(step: IntegrationStep, host: "RepositoryHost") -> str | None:
             pr_number=step.pr_number, title=step.pr_title, branch=step.integration_branch,
             head_sha=step.head_sha, tip=step.integration_tip,
         )
-        host.merge_pull_request(step.pr_number, head_sha=step.head_sha, method=step.merge_method,
-                                title=title, message=message)
+        # Atomic on the base: the branch moves only from the tip the PR's
+        # checks ran on (review r2 F1), never past a tip that moved meanwhile.
+        host.merge_head_onto(step.integration_branch, tip_sha=step.integration_tip,
+                             head_sha=step.head_sha, message=f"{title}\n\n{message}")
     elif isinstance(step, UpdatePullRequestBranch):
         host.update_pull_request_branch(step.pr_number, expected_head_sha=step.head_sha)
     elif isinstance(step, CreateIntegrationBranch):
@@ -556,5 +586,6 @@ __all__ = [
     "MergeGate",
     "MergeGatekeeper",
     "apply_integration_step",
+    "integration_branch_missing",
     "plan_integration_steps",
 ]

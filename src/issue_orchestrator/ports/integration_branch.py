@@ -49,10 +49,16 @@ class IntegrationBranchHost(Protocol):
         """
         ...
 
-    def merge_pull_request(
-        self, pr_number: int, *, head_sha: str, method: str, title: str, message: str
-    ) -> str:
-        """Merge the PR, only at *head_sha*; returns the merge commit SHA."""
+    def merge_head_onto(self, branch: str, *, tip_sha: str, head_sha: str, message: str) -> str:
+        """Merge *head_sha* into *branch* only while *branch* is still at *tip_sha*.
+
+        Atomic on the base: a merge commit (parents tip, head) is made with the
+        head's tree - exact, because the head contains the tip - and *branch*
+        is moved to it as a fast-forward from *tip_sha*, which GitHub refuses
+        if anything else moved the branch first. GitHub then marks the PR whose
+        head it is merged. Returns the merge commit SHA; fails if the head does
+        not contain the tip or the branch moved.
+        """
         ...
 
     def find_open_pull_request(self, *, head: str, base: str) -> OpenPullRequestRef | None:

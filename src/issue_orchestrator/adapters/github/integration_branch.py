@@ -87,15 +87,19 @@ class GitHubIntegrationBranchMixin:
     def update_pull_request_branch(self, pr_number: int, *, expected_head_sha: str) -> None:
         self._client.update_pull_request_branch(pr_number, expected_head_sha=expected_head_sha)
 
-    def merge_pull_request(
-        self, pr_number: int, *, head_sha: str, method: str, title: str, message: str
-    ) -> str:
-        payload = self._client.merge_pull_request(
-            pr_number, head_sha=head_sha, method=method, title=title, message=message
+    def merge_head_onto(self, branch: str, *, tip_sha: str, head_sha: str, message: str) -> str:
+        if not self.compare_commits(tip_sha, head_sha).contains_base:
+            # The head's tree is the merge result only when the head contains the tip.
+            raise GitHubHttpError(f"{head_sha[:12]} does not contain {branch} at {tip_sha[:12]}; not merged")
+        tree = (self._client.get_git_commit(head_sha).get("tree") or {}).get("sha")
+        commit = self._client.create_git_commit(
+            message=message, tree_sha=_sha(tree, what="head commit tree"), parents=[tip_sha, head_sha],
         )
-        if payload.get("merged") is not True:
-            raise GitHubHttpError(f"GitHub did not merge PR #{pr_number}: {payload.get('message')!r}")
-        return _sha(payload.get("sha"), what="PR merge")
+        merged = _sha(commit.get("sha"), what="merge commit")
+        # force=false: GitHub refuses unless the merge commit descends from the
+        # branch's CURRENT head, i.e. unless the branch is still at tip_sha.
+        self._client.update_git_ref(ref=f"refs/heads/{branch}", sha=merged, force=False)
+        return merged
 
     def find_open_pull_request(self, *, head: str, base: str) -> OpenPullRequestRef | None:
         pulls = self._client.list_pulls(state="open", base=base, head=head)

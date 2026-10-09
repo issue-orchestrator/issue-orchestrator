@@ -400,12 +400,16 @@ def _delivery(delivery: "IntegrationDeliveryView") -> TechLeadWaitingItemPayload
     head, base = delivery.head, delivery.base
     count = len(delivery.merged_pr_numbers)
     listed = ", ".join(f"#{number}" for number in delivery.merged_pr_numbers) or "None listed"
+    # A capped GitHub listing makes the numbers a floor: say so, never a count.
+    count_text = str(count) if delivery.listing_complete else f"at least {count}"
+    if not delivery.listing_complete:
+        listed += " (GitHub listed only part; see the PR)"
     return TechLeadWaitingItemPayload(
         kind="delivery_pr",
         number=delivery.pr_number,
         operation="deliver",
         title=f"Deliver {head} to {base}",
-        recommendation=f"Delivers {count} pull request(s) merged into {head} to {base}.",
+        recommendation=f"Delivers {count_text} pull request(s) merged into {head} to {base}.",
         approval_effect=(
             f"Merge this PR on GitHub with a merge commit (not squash or rebase); io then"
             f" fast-forwards {head} to {base}. Never delete {head}."

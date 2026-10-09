@@ -96,6 +96,8 @@ class OrchestratorSnapshot:
     ] = field(default_factory=tuple)
     discovered_ci_reruns: tuple[DiscoveredCiRerun, ...] = field(default_factory=tuple)
     discovered_integration_steps: tuple[IntegrationStep, ...] = field(default_factory=tuple)
+    #: Integration mode's branch while the upkeep has not seen it exist: no launch (#8144).
+    integration_branch_missing: str | None = None
     discovered_failures: tuple[DiscoveredFailure, ...] = field(default_factory=tuple)
     # Unacknowledged stuck-sweep escalations to (re-)label needs-human; the
     # planner emits the idempotent label via the Applier (#6824 R1, label-only).

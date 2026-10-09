@@ -2253,10 +2253,11 @@ class OrchestratorState:
     discovered_integration_steps: list[IntegrationStep] = field(default_factory=list)
     # ... the delivery PR as last observed, for the Tech lead page ...
     integration_delivery: IntegrationDeliveryView | None = None
-    # ... when the branch upkeep last ran, and the (integration, default) tips
-    # whose sync merge conflicted, so it is not retried until either moves.
+    # ... when the branch upkeep last ran, and the integration branch the upkeep
+    # last SAW exist: until then no session launches, since every worktree is
+    # based on it (review r2 F4).
     integration_upkeep_at: float = 0.0
-    integration_sync_refused: tuple[str, str] | None = None
+    integration_branch_confirmed: str | None = None
     # Each failed Actions job's assessment, by job id: a job's log is read once
     # (#8692). Job ids are per attempt, so a re-run's new failure is read anew.
     ci_job_assessments: OrderedDict[int, CiJobAssessment] = field(default_factory=OrderedDict)

@@ -48,6 +48,7 @@ from .config_models_tech_lead_charter import (
 from .budgeted_validation_config import budgeted_validation_reference
 from .config_models import (
     INTEGRATION_DELIVER_MODES,
+    INTEGRATION_MERGE_METHODS,
     MERGE_QUEUE_PROVIDERS,
     TECH_LEAD_AUTHORITY_MODES,
     TECH_LEAD_MAX_EXPEDITED_LIMIT,
@@ -2312,13 +2313,17 @@ class IntegrationSettings(BaseModel):
             "restart_required": True,
         },
     )
-    merge_method: Literal["merge", "squash", "rebase"] = Field(
+    merge_method: str = Field(
         "merge",
         title="Merge Method",
         description="How io merges an approved PR into the integration branch",
         json_schema_extra={
-            "doc_examples": ["merge", "squash", "rebase"],
-            "doc_notes": "GitHub's merge method for io's merges into integration.",
+            "enum": list(INTEGRATION_MERGE_METHODS),
+            "doc_examples": ["merge"],
+            "doc_notes": (
+                "merge: a merge commit, made atomically on the tip the PR was checked against"
+                " (the branch is fast-forwarded only from that tip)."
+            ),
             "section": "Integration Branch",
             "config_attr": "integration.merge_method",
             "yaml_path": "integration.merge_method",
@@ -2347,6 +2352,13 @@ class IntegrationSettings(BaseModel):
     def _validate_deliver(cls, value: str) -> str:
         if value not in INTEGRATION_DELIVER_MODES:
             raise ValueError(f"deliver must be one of {list(INTEGRATION_DELIVER_MODES)}, got {value!r}")
+        return value
+
+    @field_validator("merge_method")
+    @classmethod
+    def _validate_merge_method(cls, value: str) -> str:
+        if value not in INTEGRATION_MERGE_METHODS:
+            raise ValueError(f"merge_method must be one of {list(INTEGRATION_MERGE_METHODS)}, got {value!r}")
         return value
 
     @field_validator("branch")

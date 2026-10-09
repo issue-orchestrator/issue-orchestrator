@@ -648,20 +648,19 @@ class MockGitHubAdapter:
         self._integration_failure("update_pull_request_branch")
         self.pr_branch_updates.append((pr_number, expected_head_sha))
 
-    def merge_pull_request(
-        self, pr_number: int, *, head_sha: str, method: str, title: str, message: str
-    ) -> str:
-        """Record the merge and mark the stored PR merged (mock)."""
-        self._integration_failure("merge_pull_request")
-        self.pr_merges.append({
-            "pr_number": pr_number, "head_sha": head_sha, "method": method,
-            "title": title, "message": message,
-        })
+    def merge_head_onto(self, branch: str, *, tip_sha: str, head_sha: str, message: str) -> str:
+        """Record the merge, move the branch only from *tip_sha*, mark the PR merged (mock)."""
+        self._integration_failure("merge_head_onto")
+        if self.branches.get(branch) != tip_sha:
+            raise RepositoryHostError(f"{branch} moved: not a fast-forward from {tip_sha}")
+        merged = f"{len(self.pr_merges) + 1:040x}"
+        self.pr_merges.append({"branch": branch, "tip_sha": tip_sha, "head_sha": head_sha, "message": message})
+        self.branches[branch] = merged
         for prs in self.prs.values():
             for pr in prs:
-                if pr.number == pr_number:
+                if pr.head_sha == head_sha and pr.base_branch == branch:
                     pr.state = "merged"
-        return f"{pr_number:040x}"
+        return merged
 
     def find_open_pull_request(self, *, head: str, base: str) -> OpenPullRequestRef | None:
         self._integration_failure("find_open_pull_request")

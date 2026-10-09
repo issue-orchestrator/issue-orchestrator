@@ -521,23 +521,26 @@ def create_board_snapshot_builder(
         tech_lead_write_health_reader=_make_tech_lead_write_health_reader(
             config, timeline_store
         ),
-        session_activity_reader=_make_session_activity_reader(working_copy, _worktree_base_branch(config)),
+        session_activity_reader=_make_session_activity_reader(working_copy, _worktree_base_branch(config, working_copy)),
         clock=datetime.now,
     )
 
 
-def _worktree_base_branch(config: "Config") -> Callable[[], str]:
+def _worktree_base_branch(config: "Config", working_copy: "WorkingCopy") -> Callable[[], str]:
     """The branch session worktrees are based on, resolved once on first use.
 
-    The worktree adapter's own resolution (``worktrees.base_branch_override`` -
-    integration mode's branch, #8144 - else the repository's default branch),
+    The same resolution worktree creation uses (``worktrees.base_branch_override``
+    - integration mode's branch, #8144 - else the repository's default branch),
     so "commits ahead of base" counts this session's commits, not its base's.
     """
     from functools import cache
 
-    from ..adapters.worktree._worktree import _resolve_base_branch
+    from ..infra.worktree_base import resolve_base_branch
 
-    return cache(lambda: _resolve_base_branch(config.repo_root, config.worktree_base_branch_override))
+    return cache(lambda: resolve_base_branch(
+        config.repo_root, config_override=config.worktree_base_branch_override,
+        default_branch_resolver=working_copy.default_branch,
+    ).branch)
 
 
 def _make_session_activity_reader(

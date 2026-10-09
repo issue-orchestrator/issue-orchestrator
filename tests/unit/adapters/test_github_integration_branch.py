@@ -162,23 +162,47 @@ def test_update_branch_refused_raises(make_host) -> None:
         host.update_pull_request_branch(7, expected_head_sha=SHA_A)
 
 
-def test_merge_pull_request_passes_the_head_sha_and_method(make_host) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert (request.method, request.url.path) == ("PUT", "/repos/owner/repo/pulls/7/merge")
-        assert _body(request) == {
-            "sha": SHA_A, "merge_method": "merge", "commit_title": "Merge #7: x", "commit_message": "why",
-        }
-        return httpx.Response(200, json={"merged": True, "sha": SHA_C, "message": "merged"})
+TREE = "e" * 40
 
-    sha = make_host(handler).merge_pull_request(7, head_sha=SHA_A, method="merge", title="Merge #7: x", message="why")
+
+def _merge_handler(*, behind_by: int = 0, ref_status: int = 200):
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.startswith("/repos/owner/repo/compare/"):
+            assert path.endswith(f"{SHA_A}...{SHA_B}")
+            return httpx.Response(200, json={"ahead_by": 1, "behind_by": behind_by, "total_commits": 1,
+                                             "commits": [{"sha": SHA_B}]})
+        if (request.method, path) == ("GET", f"/repos/owner/repo/git/commits/{SHA_B}"):
+            return httpx.Response(200, json={"sha": SHA_B, "tree": {"sha": TREE}})
+        if (request.method, path) == ("POST", "/repos/owner/repo/git/commits"):
+            assert _body(request) == {"message": "Merge #7: x\n\nwhy", "tree": TREE, "parents": [SHA_A, SHA_B]}
+            return httpx.Response(201, json={"sha": SHA_C})
+        assert (request.method, path) == ("PATCH", "/repos/owner/repo/git/refs/heads/integration")
+        assert _body(request) == {"sha": SHA_C, "force": False}
+        return httpx.Response(ref_status, json={"message": "Update is not a fast forward"} if ref_status != 200 else {})
+    return handler
+
+
+def test_merge_head_onto_makes_the_merge_commit_and_fast_forwards_from_the_tip(make_host) -> None:
+    """#8144 review r2 F1: parents (tip, head), the head's tree, and a force=false ref update."""
+    sha = make_host(_merge_handler()).merge_head_onto(
+        "integration", tip_sha=SHA_A, head_sha=SHA_B, message="Merge #7: x\n\nwhy",
+    )
     assert sha == SHA_C
 
 
-@pytest.mark.parametrize("status", [405, 409])
-def test_merge_pull_request_refusals_raise(make_host, status) -> None:
-    host = make_host(lambda request: httpx.Response(status, json={"message": "Head branch was modified"}))
+def test_merge_head_onto_refuses_when_the_branch_moved(make_host) -> None:
+    host = make_host(_merge_handler(ref_status=422))
     with pytest.raises(RepositoryHostError):
-        host.merge_pull_request(7, head_sha=SHA_A, method="merge", title="t", message="m")
+        host.merge_head_onto("integration", tip_sha=SHA_A, head_sha=SHA_B, message="Merge #7: x\n\nwhy")
+
+
+def test_merge_head_onto_refuses_a_head_that_lacks_the_tip(make_host) -> None:
+    """The head's tree is the merge result only when the head contains the tip."""
+    host = make_host(_merge_handler(behind_by=1))
+    with pytest.raises(RepositoryHostError, match="does not contain"):
+        host.merge_head_onto("integration", tip_sha=SHA_A, head_sha=SHA_B, message="Merge #7: x\n\nwhy")
+    assert [request.method for request in make_host.seen] == ["GET"]  # nothing written
 
 
 def test_find_open_pull_request_filters_by_owner_head_and_base(make_host) -> None:

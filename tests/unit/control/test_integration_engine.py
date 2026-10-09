@@ -66,18 +66,19 @@ class _GitHub(MockGitHubAdapter):
         return BranchComparison(ahead_by=len(ahead), behind_by=len(base_commits - head_commits),
                                 commit_shas=tuple(sorted(ahead)))
 
-    def merge_pull_request(self, pr_number: int, *, head_sha: str, method: str, title: str, message: str) -> str:
-        pr = self.get_pr(pr_number)
-        assert pr is not None and pr.head_sha == head_sha and pr.state == "open"
-        base = pr.base_branch
-        assert base is not None
-        merged = self.commit(self.branches[base], head_sha)
-        self.branches[base] = merged
+    def merge_head_onto(self, branch: str, *, tip_sha: str, head_sha: str, message: str) -> str:
+        """A merge commit fast-forwarded from *tip_sha* only; GitHub then marks the PR merged."""
+        if self.branches[branch] != tip_sha:
+            raise RepositoryHostError("Update is not a fast forward")
+        assert tip_sha in self.ancestry[head_sha], "io merged a head that does not contain the tip"
+        merged = self.commit(tip_sha, head_sha)
+        self.branches[branch] = merged
+        [pr] = [pr for prs in self.prs.values() for pr in prs if pr.head_sha == head_sha]
         pr.state, pr.merged_at = "merged", "2026-10-08T12:00:00Z"
-        self.merged_into[base] = (*self.merged_into.get(base, ()), MergedIntoBranch(
+        self.merged_into[branch] = (*self.merged_into.get(branch, ()), MergedIntoBranch(
             number=pr.number, title=pr.title, url=pr.url, merge_commit_sha=merged,
         ))
-        self.pr_merges.append({"pr_number": pr_number, "head_sha": head_sha, "method": method, "title": title})
+        self.pr_merges.append({"pr_number": pr.number, "head_sha": head_sha, "message": message})
         return merged
 
     def update_pull_request_branch(self, pr_number: int, *, expected_head_sha: str) -> None:

@@ -372,3 +372,12 @@ def test_no_delivery_pr_waits_when_nothing_awaits_delivery() -> None:
     assert _section(delivery=None).waiting == []
     item = _section(delivery=_delivery(merged_pr_numbers=())).waiting[0]
     assert {row.label: row.value for row in item.details}["Pull requests"] == "None listed"
+
+
+def test_a_partial_github_listing_makes_the_delivery_count_a_floor() -> None:
+    """#8144 review r2 F3: a capped listing never reads as an exact count."""
+    (item,) = _section(delivery=_delivery(merged_pr_numbers=(), listing_complete=False)).waiting
+    assert "Delivers at least 0 pull request(s)" in item.recommendation
+    assert {row.label: row.value for row in item.details}["Pull requests"] == (
+        "None listed (GitHub listed only part; see the PR)"
+    )

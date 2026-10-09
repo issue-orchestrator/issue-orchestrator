@@ -2008,27 +2008,6 @@ class GitHubHttpClient:
         )
         self.invalidate_pr_etag(pr_number)
 
-    def merge_pull_request(
-        self, pr_number: int, *, head_sha: str, method: str, title: str, message: str
-    ) -> dict[str, Any]:
-        """PUT /pulls/{n}/merge, only at *head_sha*; 405/409 raise."""
-        payload = self._request_json(
-            "PUT",
-            f"/repos/{self._config.repo}/pulls/{pr_number}/merge",
-            json_body={
-                "sha": head_sha,
-                "merge_method": method,
-                "commit_title": title,
-                "commit_message": message,
-            },
-            use_cache=False,
-            caller="merge_pull_request",
-        )
-        self.invalidate_pr_etag(pr_number)
-        if not isinstance(payload, dict):
-            raise GitHubHttpError("GitHub PR merge payload was not an object")
-        return payload
-
     def list_pulls(
         self,
         *,

@@ -36,11 +36,11 @@ def test_every_field_parses(tmp_path: Path) -> None:
     config = _load(
         tmp_path,
         "integration:\n  enabled: true\n  branch: staging\n  deliver: manual\n"
-        "  merge_method: squash\n  merge_after: tech-lead-reviewed\n",
+        "  merge_method: merge\n  merge_after: tech-lead-reviewed\n",
     )
     assert config.integration == IntegrationConfig(
         enabled=True, branch="staging", deliver="manual",
-        merge_method="squash", merge_after="tech-lead-reviewed",
+        merge_method="merge", merge_after="tech-lead-reviewed",
     )
 
 
@@ -50,6 +50,7 @@ def test_every_field_parses(tmp_path: Path) -> None:
         ("  deliver: cadence\n", "integration.deliver"),
         ("  deliver: milestone\n", "integration.deliver"),
         ("  merge_method: octopus\n", "integration.merge_method"),
+        ("  merge_method: squash\n", "integration.merge_method"),
         ("  merge_after: approved\n", "integration.merge_after"),
         ("  branch: origin/integration\n", "integration.branch"),
         ("  branch: ''\n", "integration.branch"),
@@ -96,9 +97,9 @@ def test_merge_queue_and_integration_cannot_both_be_enabled(tmp_path: Path) -> N
 
 
 def test_yaml_round_trip_does_not_pin_the_implied_override(tmp_path: Path) -> None:
-    config = _load(tmp_path, "integration:\n  enabled: true\n  branch: staging\n  merge_method: rebase\n")
+    config = _load(tmp_path, "integration:\n  enabled: true\n  branch: staging\n  merge_after: tech-lead-reviewed\n")
     serialized = config.to_dict()
-    assert serialized["integration"] == {"enabled": True, "branch": "staging", "merge_method": "rebase"}
+    assert serialized["integration"] == {"enabled": True, "branch": "staging", "merge_after": "tech-lead-reviewed"}
     assert "base_branch_override" not in serialized.get("worktrees", {})
     # Changing the branch after a round trip must not trip the conflict check.
     serialized["integration"]["branch"] = "next"
@@ -123,22 +124,22 @@ def test_settings_tab_round_trips_and_requires_restart() -> None:
     tabs = from_config(config)
     assert isinstance(tabs["integration"], IntegrationSettings)
     tabs["integration"] = IntegrationSettings(
-        enabled=True, branch="staging", deliver="manual", merge_method="squash",
+        enabled=True, branch="staging", deliver="manual", merge_method="merge",
         merge_after="tech-lead-reviewed",
     )
     target = Config()
     assert apply_to(tabs, target) is True
     assert target.integration.enabled is True
     assert target.integration.branch == "staging"
-    assert target.integration.merge_method == "squash"
+    assert target.integration.merge_method == "merge"
     assert target.integration.merge_after == "tech-lead-reviewed"
     paths = {entry.yaml_path for entry in build_save_plan(from_config(config), tabs).entries}
-    assert {"integration.enabled", "integration.branch", "integration.merge_method",
-            "integration.merge_after"} <= paths
+    assert {"integration.enabled", "integration.branch", "integration.merge_after"} <= paths
 
 
 @pytest.mark.parametrize(
-    "field, value", [("deliver", "cadence"), ("branch", "origin/x"), ("merge_method", "octopus")]
+    "field, value",
+    [("deliver", "cadence"), ("branch", "origin/x"), ("merge_method", "octopus"), ("merge_method", "squash")],
 )
 def test_settings_tab_rejects_unsupported_values(field: str, value: str) -> None:
     with pytest.raises(ValueError):

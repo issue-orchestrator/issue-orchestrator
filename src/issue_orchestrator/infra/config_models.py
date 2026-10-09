@@ -474,8 +474,10 @@ class MergeQueueConfig:
 #: semantics (io keeps the delivery PR current; the operator merges it when
 #: they choose); ``cadence`` and ``milestone`` are deferred to #9062.
 INTEGRATION_DELIVER_MODES = ("manual",)
-#: GitHub's merge methods; io merges each approved PR into integration with one.
-INTEGRATION_MERGE_METHODS = ("merge", "squash", "rebase")
+#: How io merges an approved PR into integration. Only a merge commit can be
+#: made atomically on the checked tip (a merge commit with the head's tree, the
+#: branch fast-forwarded from that tip only) and still mark the PR merged.
+INTEGRATION_MERGE_METHODS = ("merge",)
 
 
 @dataclass

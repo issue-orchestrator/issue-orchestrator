@@ -205,6 +205,10 @@ class WorkingCopy(ExactGit, Protocol):
         """
         ...
 
+    def default_branch(self, repo_root: Path, remote: str = "origin") -> str:
+        """The repository's default branch name, as the remote reports it."""
+        ...
+
     def get_commits_ahead_of(self, worktree: Path, base_branch: str) -> list[CommitInfo]:
         """Get commits that are ahead of the worktree's base branch.
 
