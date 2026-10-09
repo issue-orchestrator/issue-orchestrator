@@ -127,7 +127,11 @@ class EngineCommandForwarder:
         status_info = self._supervisor.status(repo_root)
         if status_info.state != "running" or status_info.port is None:
             return ActionResult(
-                {"error": "not_running", "state": status_info.state},
+                {
+                    "error": "not_running",
+                    "state": status_info.state,
+                    "detail": f"The repository engine is not running (state: {status_info.state}).",
+                },
                 status_code=400,
             )
         base_url = f"http://127.0.0.1:{status_info.port}"

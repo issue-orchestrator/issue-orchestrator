@@ -1916,7 +1916,9 @@ async function pauseRepo(path) {
             body: JSON.stringify({ repo_root: path })
         });
         if (!response.ok) {
-            throw new Error('Failed to pause repository engine');
+            // The Control Center says why the engine did not pause (#8222).
+            const cause = await window.uiContractJson.errorMessage(response);
+            throw new Error('Failed to pause repository engine: ' + cause);
         }
         showToast('Repository engine paused', 'success');
         await loadRepos();
@@ -1933,7 +1935,9 @@ async function resumeRepo(path) {
             body: JSON.stringify({ repo_root: path })
         });
         if (!response.ok) {
-            throw new Error('Failed to resume repository engine');
+            // The Control Center says why the engine did not resume (#8222).
+            const cause = await window.uiContractJson.errorMessage(response);
+            throw new Error('Failed to resume repository engine: ' + cause);
         }
         showToast('Repository engine resumed', 'success');
         await loadRepos();

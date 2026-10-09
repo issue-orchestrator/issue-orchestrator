@@ -213,14 +213,21 @@
     // Returns a string, never a payload: nothing here can reach a
     // renderer. Callers pass their own fallback for a body that is
     // absent, unreadable, or not JSON.
+    //
+    // A Control Center failure pairs a machine ``error`` code with a human
+    // ``detail`` (``passthrough_failed`` + why the engine did not answer,
+    // #8222), so a non-empty string ``detail`` wins when both are present:
+    // the code alone tells the operator nothing they can act on.
     async function errorMessage(response, fallback) {
         const status = response && response.status;
         const defaultText = fallback || 'HTTP ' + (status || 'error');
         if (!response || typeof response.text !== 'function') return defaultText;
         try {
             const body = JSON.parse(await response.text());
+            const hasDetailText = body && typeof body === 'object'
+                && typeof body.detail === 'string' && body.detail.trim() !== '';
             const message = body && typeof body === 'object'
-                ? body.error || body.detail
+                ? (hasDetailText ? body.detail : body.error || body.detail)
                 : null;
             return String(message || defaultText);
         } catch (_) {
