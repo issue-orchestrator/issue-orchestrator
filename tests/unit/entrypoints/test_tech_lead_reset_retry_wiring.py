@@ -155,6 +155,7 @@ def _build(
         config=Config(),
         state=state,
         repository_host=repository_host,
+        run_locked=lambda fn: fn(),
     )
     # Spy the reused reset pipeline: if it is ever called, the reset boundary
     # (and thus every termination/abandon) ran. A stale downgrade must not call

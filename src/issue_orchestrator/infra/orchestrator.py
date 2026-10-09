@@ -244,9 +244,9 @@ class Orchestrator:
         state and must settle them in that order, which is not a rule a
         transport can be trusted to re-derive twice (#6999 F5).
         """
-        return self.deps.operator_issue_command_factory(state=lambda: self.state, run_locked=self._run_locked)
+        return self.deps.operator_issue_command_factory(state=lambda: self.state, run_locked=self.run_locked)
 
-    def _run_locked(self, fn):
+    def run_locked(self, fn):
         with self.state_lock:
             return fn()
 

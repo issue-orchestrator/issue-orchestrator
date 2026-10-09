@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Callable, Sequence
@@ -33,6 +34,7 @@ from .web_session_context import WebOrchestratorDependency
 
 if TYPE_CHECKING:
     from ..control.maintenance import ResetResult
+    from ..ports.operator_issue_commands import LockedRunner
     from ..domain.models import OrchestratorState
 
 logger = logging.getLogger(__name__)
@@ -256,8 +258,8 @@ async def reset_and_retry(
     pending_label = lm.reset_retry_pending
     scratch_pending_label = lm.reset_retry_scratch_pending
 
-    for issue_number in issue_numbers:
-        success_payload, failure_payload = reset_and_retry_issue(
+    def _reset_one(issue_number: int) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        return reset_and_retry_issue(
             issue_number=issue_number,
             from_scratch=from_scratch,
             pending_label=pending_label,
@@ -268,7 +270,12 @@ async def reset_and_retry(
             deps=deps,
             config=config,
             reset_issue_fn=reset_issue,
+            run_locked=orchestrator.run_locked,
         )
+
+    for issue_number in issue_numbers:
+        # Off the event loop: the reset waits for the tick's state lock (#8219).
+        success_payload, failure_payload = await asyncio.to_thread(_reset_one, issue_number)
         if success_payload is not None:
             reset_results.append(success_payload)
             continue
@@ -307,183 +314,220 @@ def reset_and_retry_issue(  # noqa: PLR0913
     config: Any,
     reset_issue_fn: Callable[..., "ResetResult"],
     current_labels: Sequence[str] | None = None,
+    run_locked: "LockedRunner",
     extra_pending_labels: Sequence[str] = (),
     source: str = "web.reset-retry",
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    # AddLabelAction is lazy for the same reason as RemoveLabelAction above.
-    from ..control.actions import AddLabelAction
+    """Reset one issue and queue its retry, as ONE transition under the state lock.
 
-    issue_started_at = time.monotonic()
-    try:
-        logger.debug(
-            "[reset-retry] Begin issue reset: issue=%d from_scratch=%s",
-            issue_number,
-            from_scratch,
-        )
-        # Refuse before terminating anything: an open PR carrying published
-        # validated work would be closed by the reset (#7293).
-        deps.runtime_lifecycle.require_published_work_released(issue_number)
-        # Reset is a hard issue-runtime boundary. Stop visible issue/rework
-        # terminals and hidden review-exchange pair/job work before local
-        # state or worktrees are removed, otherwise a live subprocess can keep
-        # writing into a reset attempt or leave stale active-session gating.
-        termination = _terminate_reset_retry_runtime(
-            issue_number=issue_number,
-            state=state,
-            deps=deps,
-        )
-        if termination.validated_work.unresolved:
-            raise UnresolvedValidatedWork(termination.validated_work)
+    The reset spans GitHub (labels, branches, PRs) and the local state the
+    planner reads, and the tick holds ``run_locked``'s lock for its whole
+    observe-plan-apply pass. Run outside it, a tick that observed the issue
+    before the reset applied its plan after it: porchpin #364's closed-PR
+    drift repair, planned while ``pr-pending`` was still on, found the reset
+    had removed it and paused the issue for reconciliation (#8219). Under it,
+    every tick sees the issue wholly before or wholly after the reset, as the
+    operator's retry and dismiss already do (#6999 F5).
+    """
+    def transition() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        # AddLabelAction is lazy for the same reason as RemoveLabelAction above.
+        from ..control.actions import AddLabelAction
 
-        provided_marks = current_labels
-        if provided_marks is None:
-            labels_started_at = time.monotonic()
-            current_marks = repository_host.get_issue_labels(issue_number)
+        issue_started_at = time.monotonic()
+        try:
             logger.debug(
-                "[reset-retry] Current labels fetched: issue=%d labels=%s "
+                "[reset-retry] Begin issue reset: issue=%d from_scratch=%s",
+                issue_number,
+                from_scratch,
+            )
+            # Refuse before terminating anything: an open PR carrying published
+            # validated work would be closed by the reset (#7293).
+            deps.runtime_lifecycle.require_published_work_released(issue_number)
+            # Reset is a hard issue-runtime boundary. Stop visible issue/rework
+            # terminals and hidden review-exchange pair/job work before local
+            # state or worktrees are removed, otherwise a live subprocess can keep
+            # writing into a reset attempt or leave stale active-session gating.
+            termination = _terminate_reset_retry_runtime(
+                issue_number=issue_number,
+                state=state,
+                deps=deps,
+            )
+            if termination.validated_work.unresolved:
+                raise UnresolvedValidatedWork(termination.validated_work)
+
+            current_marks = _labels_to_reset(issue_number, current_labels, repository_host)
+            reset_started_at = time.monotonic()
+            result = reset_issue_fn(
+                issue_number=issue_number,
+                config=config,
+                worktree_manager=deps.worktree_manager,
+                working_copy=deps.working_copy,
+                action_applier=deps.action_applier,
+                label_manager=deps.label_manager,
+                current_labels=current_marks,
+                session_history=state.session_history,
+                completed_today=state.completed_today,
+                label_store=deps.label_store,
+                timeline_store=deps.timeline_store if from_scratch else None,
+                from_scratch=from_scratch,
+                repository_host=repository_host,
+            )
+            logger.debug(
+                "[reset-retry] Reset operation returned: issue=%d success=%s "
+                "labels_removed=%s superseded_prs=%s deleted_branches=%s "
+                "timeline_events_deleted=%s duration_ms=%d",
+                issue_number,
+                result.success,
+                result.labels_removed or [],
+                result.superseded_prs or [],
+                result.deleted_branches or [],
+                result.timeline_events_deleted,
+                elapsed_ms(reset_started_at),
+            )
+            if not result.success:
+                return None, _make_reset_failure(
+                    issue_number,
+                    result,
+                    result.error or "Unknown error",
+                )
+            if from_scratch:
+                retire_abandoned_queued_work(
+                    state=state,
+                    claims=deps.pending_work_claims,
+                    tech_lead_authority=deps.tech_lead_authority,
+                    issue_number=issue_number,
+                    # The reset's runtime termination already settled the claims of
+                    # the issue/rework terminals it ended (#7380); it never stops a
+                    # tech-lead run.
+                    ended_sessions=(),
+                    superseded_prs=result.superseded_prs or (),
+                )
+                _clear_scratch_retry_pending_state(state, issue_number, result)
+            _settle_pre_reset_observations(state=state, deps=deps, issue_number=issue_number)
+
+            pending_labels_to_add = _pending_labels_for_retry(
+                from_scratch=from_scratch,
+                pending_label=pending_label,
+                scratch_pending_label=scratch_pending_label,
+                extra_pending_labels=extra_pending_labels,
+            )
+            pending_label_error = _apply_reset_retry_pending_labels(
+                issue_number=issue_number,
+                labels=pending_labels_to_add,
+                action_applier=deps.action_applier,
+                add_label_action_cls=AddLabelAction,
+            )
+            if pending_label_error is not None:
+                failure = _make_reset_failure(
+                    issue_number,
+                    result,
+                    pending_label_error,
+                    from_scratch=from_scratch,
+                )
+                return None, failure
+
+            enqueue_error = _enqueue_reset_retry_issue(
+                issue_number=issue_number,
+                repository_host=repository_host,
+                queue_cache=queue_cache,
+                state=state,
+                pending_labels_to_add=pending_labels_to_add,
+                from_scratch=from_scratch,
+                result=result,
+            )
+            if enqueue_error is not None:
+                return None, enqueue_error
+
+            _emit_reset_retry_unblocked(
+                issue_number=issue_number,
+                from_scratch=from_scratch,
+                pending_label=pending_label,
+                pending_labels_to_add=pending_labels_to_add,
+                events=deps.events,
+                source=source,
+            )
+            success = _make_reset_success(
+                issue_number,
+                result,
+                from_scratch,
+                pending_label,
+                pending_labels_to_add,
+            )
+            logger.debug(
+                "[reset-retry] Reset issue #%d: worktree=%s branch=%s labels=%s "
+                "pending=%s from_scratch=%s queued_now=true",
+                issue_number,
+                result.deleted_worktree or "(none)",
+                result.deleted_branch or "(none)",
+                result.labels_removed or "(none)",
+                pending_label,
+                from_scratch,
+            )
+            logger.debug(
+                "[reset-retry] Issue reset complete: issue=%d from_scratch=%s "
                 "duration_ms=%d",
                 issue_number,
-                current_marks,
-                elapsed_ms(labels_started_at),
+                from_scratch,
+                elapsed_ms(issue_started_at),
             )
-        else:
-            current_marks = list(provided_marks)
-            logger.debug(
-                "[reset-retry] Current labels reused: issue=%d labels=%s",
+            return success, None
+        except PublishedValidatedWorkHeld as exc:
+            logger.warning("[reset-retry] Refused reset of issue #%d: %s", issue_number, exc)
+            return None, {"issue": issue_number, "error": str(exc), "stale_reason": exc.STALE_REASON,
+                "published_review": exc.observation()}
+        except UnresolvedValidatedWork as exc:
+            from ..domain.validated_work_observation import disposition_observation
+            return None, {"issue": issue_number, "error": str(exc), "stale_reason": "validated_work_unresolved",
+                "validated_work": disposition_observation(exc.batch)}
+        except Exception as exc:
+            logger.error(
+                "[reset-retry] Failed to reset issue #%d (from_scratch=%s): %s",
                 issue_number,
-                current_marks,
+                from_scratch,
+                exc,
+                exc_info=True,
             )
-        reset_started_at = time.monotonic()
-        result = reset_issue_fn(
-            issue_number=issue_number,
-            config=config,
-            worktree_manager=deps.worktree_manager,
-            working_copy=deps.working_copy,
-            action_applier=deps.action_applier,
-            label_manager=deps.label_manager,
-            current_labels=current_marks,
-            session_history=state.session_history,
-            completed_today=state.completed_today,
-            label_store=deps.label_store,
-            timeline_store=deps.timeline_store if from_scratch else None,
-            from_scratch=from_scratch,
-            repository_host=repository_host,
-        )
-        logger.debug(
-            "[reset-retry] Reset operation returned: issue=%d success=%s "
-            "labels_removed=%s superseded_prs=%s deleted_branches=%s "
-            "timeline_events_deleted=%s duration_ms=%d",
-            issue_number,
-            result.success,
-            result.labels_removed or [],
-            result.superseded_prs or [],
-            result.deleted_branches or [],
-            result.timeline_events_deleted,
-            elapsed_ms(reset_started_at),
-        )
-        if not result.success:
-            return None, _make_reset_failure(
-                issue_number,
-                result,
-                result.error or "Unknown error",
-            )
-        if from_scratch:
-            retire_abandoned_queued_work(
-                state=state,
-                claims=deps.pending_work_claims,
-                tech_lead_authority=deps.tech_lead_authority,
-                issue_number=issue_number,
-                # The reset's runtime termination already settled the claims of
-                # the issue/rework terminals it ended (#7380); it never stops a
-                # tech-lead run.
-                ended_sessions=(),
-                superseded_prs=result.superseded_prs or (),
-            )
-            _clear_scratch_retry_pending_state(state, issue_number, result)
+            return None, {"issue": issue_number, "error": str(exc)}
 
-        pending_labels_to_add = _pending_labels_for_retry(
-            from_scratch=from_scratch,
-            pending_label=pending_label,
-            scratch_pending_label=scratch_pending_label,
-            extra_pending_labels=extra_pending_labels,
-        )
-        pending_label_error = _apply_reset_retry_pending_labels(
-            issue_number=issue_number,
-            labels=pending_labels_to_add,
-            action_applier=deps.action_applier,
-            add_label_action_cls=AddLabelAction,
-        )
-        if pending_label_error is not None:
-            failure = _make_reset_failure(
-                issue_number,
-                result,
-                pending_label_error,
-                from_scratch=from_scratch,
-            )
-            return None, failure
+    return run_locked(transition)
 
-        enqueue_error = _enqueue_reset_retry_issue(
-            issue_number=issue_number,
-            repository_host=repository_host,
-            queue_cache=queue_cache,
-            state=state,
-            pending_labels_to_add=pending_labels_to_add,
-            from_scratch=from_scratch,
-            result=result,
-        )
-        if enqueue_error is not None:
-            return None, enqueue_error
 
-        _emit_reset_retry_unblocked(
-            issue_number=issue_number,
-            from_scratch=from_scratch,
-            pending_label=pending_label,
-            pending_labels_to_add=pending_labels_to_add,
-            events=deps.events,
-            source=source,
-        )
-        success = _make_reset_success(
-            issue_number,
-            result,
-            from_scratch,
-            pending_label,
-            pending_labels_to_add,
-        )
+def _labels_to_reset(
+    issue_number: int, provided_marks: Sequence[str] | None, repository_host: Any
+) -> list[str]:
+    """The caller's labels when it read them, else a read of GitHub's now."""
+    if provided_marks is None:
+        labels_started_at = time.monotonic()
+        current_marks = repository_host.get_issue_labels(issue_number)
         logger.debug(
-            "[reset-retry] Reset issue #%d: worktree=%s branch=%s labels=%s "
-            "pending=%s from_scratch=%s queued_now=true",
-            issue_number,
-            result.deleted_worktree or "(none)",
-            result.deleted_branch or "(none)",
-            result.labels_removed or "(none)",
-            pending_label,
-            from_scratch,
-        )
-        logger.debug(
-            "[reset-retry] Issue reset complete: issue=%d from_scratch=%s "
+            "[reset-retry] Current labels fetched: issue=%d labels=%s "
             "duration_ms=%d",
             issue_number,
-            from_scratch,
-            elapsed_ms(issue_started_at),
+            current_marks,
+            elapsed_ms(labels_started_at),
         )
-        return success, None
-    except PublishedValidatedWorkHeld as exc:
-        logger.warning("[reset-retry] Refused reset of issue #%d: %s", issue_number, exc)
-        return None, {"issue": issue_number, "error": str(exc), "stale_reason": exc.STALE_REASON,
-            "published_review": exc.observation()}
-    except UnresolvedValidatedWork as exc:
-        from ..domain.validated_work_observation import disposition_observation
-        return None, {"issue": issue_number, "error": str(exc), "stale_reason": "validated_work_unresolved",
-            "validated_work": disposition_observation(exc.batch)}
-    except Exception as exc:
-        logger.error(
-            "[reset-retry] Failed to reset issue #%d (from_scratch=%s): %s",
-            issue_number,
-            from_scratch,
-            exc,
-            exc_info=True,
-        )
-        return None, {"issue": issue_number, "error": str(exc)}
+        return current_marks
+    current_marks = list(provided_marks)
+    logger.debug(
+        "[reset-retry] Current labels reused: issue=%d labels=%s",
+        issue_number,
+        current_marks,
+    )
+    return current_marks
+
+
+def _settle_pre_reset_observations(*, state: "OrchestratorState", deps: Any, issue_number: int) -> None:
+    """Nothing observed of the issue before its reset may act on it after (#8219).
+
+    Every mode of reset removes the issue's orchestrator labels, so a fact
+    discovered before it (a closed-PR drift repair that requires
+    ``pr-pending``) is refused at the gate as drift if a later plan acts on
+    it - and a paused tick keeps its facts. A pause or park the liveness owner
+    still owes the issue was decided on the same pre-reset facts; the reset is
+    the answer to it, as an operator's retry is.
+    """
+    RetryHistoryState(state).forget_observations(issue_number)
+    deps.action_liveness.owner.release_issue(issue_number)
 
 
 def has_active_reset_retry_runtime(*, issue_number: int, state: "OrchestratorState", deps: Any) -> bool:
