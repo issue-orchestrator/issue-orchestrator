@@ -232,6 +232,24 @@ def _aggregate_check_runs(payload: object) -> _RollupSignal:
     return failure, pending, present
 
 
+def _well_formed_check_runs(payload: object) -> bool:
+    """A `/check-runs` page GitHub actually answered: a list of run objects."""
+    runs = payload.get("check_runs") if isinstance(payload, dict) else None
+    return isinstance(runs, list) and all(isinstance(run, dict) for run in runs)
+
+
+def _well_formed_combined_status(payload: object) -> bool:
+    """A `/status` answer: a state string and a list of status objects."""
+    if not isinstance(payload, dict):
+        return False
+    statuses = payload.get("statuses")
+    return (
+        isinstance(payload.get("state"), str)
+        and isinstance(statuses, list)
+        and all(isinstance(status, dict) for status in statuses)
+    )
+
+
 def _aggregate_combined_status(payload: object) -> _RollupSignal:
     """Reduce a REST `/commits/{sha}/status` response to a `_RollupSignal`.
 
@@ -2399,6 +2417,11 @@ class GitHubHttpClient:
                     exc,
                 )
                 return _SourceReadout((False, False, False), outcome=outcome)
+            if not _well_formed_check_runs(payload):
+                # A 200 without a list of run objects is not "no runs": an
+                # unread failure could hide behind it (#8144 review r4 F1).
+                logger.warning("check-runs payload for %s (page %d) is malformed; unreadable", encoded_sha, page)
+                return _SourceReadout((False, False, False), outcome="transient_error")
             page_failure, page_pending, page_present = _aggregate_check_runs(payload)
             failure = failure or page_failure
             pending = pending or page_pending
@@ -2457,8 +2480,10 @@ class GitHubHttpClient:
                 "Combined commit status unavailable for %s (%s): %s", sha, outcome, exc
             )
             return _CommitStatusReadout(payload=None, outcome=outcome)
-        normalized = payload if isinstance(payload, dict) else None
-        return _CommitStatusReadout(payload=normalized, outcome="ok")
+        if not _well_formed_combined_status(payload):
+            logger.warning("Combined commit status payload for %s is malformed; unreadable", sha)
+            return _CommitStatusReadout(payload=None, outcome="transient_error")
+        return _CommitStatusReadout(payload=payload, outcome="ok")
 
     def list_prs(
         self, *, state: str = "open", limit: int = 100

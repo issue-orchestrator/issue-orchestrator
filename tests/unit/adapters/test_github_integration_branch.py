@@ -308,3 +308,34 @@ def test_read_commit_check_rollup_reads_exactly_that_commit(make_host, monkeypat
 
     assert asked == [SHA_A]
     assert (result.state, result.capability) == expected
+
+
+@pytest.mark.parametrize(
+    ("check_runs", "status"),
+    [
+        ({}, {"state": "success", "statuses": [{"state": "success"}]}),  # no check_runs list
+        ({"check_runs": "nope"}, {"state": "success", "statuses": [{"state": "success"}]}),
+        ({"check_runs": []}, {"statuses": "nope"}),  # malformed combined status
+    ],
+)
+def test_a_malformed_check_answer_is_never_green(make_host, check_runs, status) -> None:
+    """#8144 review r4 F1: a 200 GitHub did not really answer is unreadable, not empty."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.startswith(f"/repos/owner/repo/commits/{SHA_A}/")
+        return httpx.Response(200, json=check_runs if request.url.path.endswith("/check-runs") else status)
+
+    result = make_host(handler).read_commit_check_rollup(SHA_A)
+
+    assert result.capability != "ok"
+    assert result.state is None
+
+
+def test_a_well_formed_green_check_answer_is_green(make_host) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/check-runs"):
+            return httpx.Response(200, json={"check_runs": [{"status": "completed", "conclusion": "success"}]})
+        return httpx.Response(200, json={"state": "pending", "statuses": []})
+
+    result = make_host(handler).read_commit_check_rollup(SHA_A)
+
+    assert (result.state, result.capability) == ("SUCCESS", "ok")

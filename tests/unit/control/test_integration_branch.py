@@ -795,3 +795,38 @@ def test_the_checks_judged_are_those_of_the_exact_head_io_merges() -> None:
 
     assert read == [HEAD_A]
     assert len(world.host.pr_merges) == 1
+
+
+@pytest.mark.parametrize("where", ["issue", "pr"])
+def test_rework_asked_for_on_either_item_blocks_the_merge(where: str) -> None:
+    """Review r4 F2: needs-rework disqualifies, at discovery and at the write."""
+    world = _World()
+    pr = world.approved_pr(228, 318, HEAD_A)
+    (world.host.issues[0].labels if where == "issue" else pr.labels).append(world.labels.needs_rework)
+    owner = world.owner()
+    world.discover(owner)
+    assert owner.discovered_steps() == []
+
+    world = _ready_world()
+    world.host.labels.setdefault(228 if where == "issue" else 318, set()).add(world.labels.needs_rework)
+    result = _apply(world, _merge_step())
+    assert world.host.pr_merges == []
+    assert "rework_requested" in result.details["skip_reason"]  # type: ignore[attr-defined]
+
+
+def test_a_rulings_read_the_host_refuses_merges_nothing_and_keeps_the_scan() -> None:
+    """Review r4 F3: the rulings owner's fresh issue read can fail with a host
+    error; that fails closed instead of aborting the awaiting-merge scan."""
+    world = _World()
+    world.approved_pr(228, 318, HEAD_A)
+
+    def refuse(number: int):
+        raise RepositoryHostError("502 reading the issue body")
+
+    world.rulings.read_issue = refuse  # type: ignore[method-assign]
+    owner = world.owner()
+
+    result = world.discover(owner)
+
+    assert owner.discovered_steps() == []
+    assert result.escalations == () and result.reworks == ()

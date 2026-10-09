@@ -120,6 +120,7 @@ class MergeGate(StrEnum):
     OPEN = "open"
     HELD = "held"  # needs-human of either scope on the issue or the PR (#7678)
     GATE_NOT_PASSED = "gate_not_passed"  # the merge_after label is missing
+    REWORK_REQUESTED = "rework_requested"  # needs-rework on the issue or the PR
     CHECKS_FAILED = "checks_failed"
     CHECKS_PENDING = "checks_pending"  # running, or none reported yet
     CHECKS_UNREADABLE = "checks_unreadable"
@@ -148,10 +149,14 @@ class MergeGatekeeper:
     standing_rulings: "StandingRulings"
 
     def person_or_gate(self, *, issue_labels: "Sequence[str]", pr_labels: "Sequence[str]", gate_label: str) -> MergeGate:
-        """The label-only part (no reads): a person's hold, then the gate label."""
+        """The label-only part (no reads): a person's hold, rework asked for on
+        either item (the review-validity rule, review r4 F2), then the gate label."""
         held = holds_merge(self.label_manager, issue_labels, pr_labels)
+        rework = self.label_manager.needs_rework in (*issue_labels, *pr_labels)
         gated = gate_label in pr_labels
-        return MergeGate.HELD if held else MergeGate.OPEN if gated else MergeGate.GATE_NOT_PASSED
+        if held or rework:
+            return MergeGate.HELD if held else MergeGate.REWORK_REQUESTED
+        return MergeGate.OPEN if gated else MergeGate.GATE_NOT_PASSED
 
     def judge(
         self, *, issue_number: int, issue_labels: "Sequence[str]", pr: "PRInfo", gate_label: str,
@@ -173,7 +178,8 @@ class MergeGatekeeper:
             return MergeEligibility(MergeGate.CHECKS_UNREADABLE if unreadable else checks, rollup=rollup)
         try:
             rulings = self.standing_rulings.active(issue_number)
-        except StandingRulingsUnavailable as error:
+        except (StandingRulingsUnavailable, RepositoryHostError) as error:
+            # Fail closed: unread rulings never merge, and never abort the scan (review r4 F3).
             logger.warning(issue_log(issue_number, "Integration: rulings unreadable, PR #%d not merged: %s"),
                            pr.number, error)
             return MergeEligibility(MergeGate.RULINGS_UNREADABLE, rollup=rollup)
