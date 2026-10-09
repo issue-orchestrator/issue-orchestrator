@@ -111,19 +111,7 @@ def target_scope_violation(
                     f" scope for an act-level mutation:"
                     f" {_act_level_scope_description(authority)}"
                 )
-            if (
-                action.action_type == "recover_validated_work"
-                and authority.observed_validated_work_authority(
-                    action.target_number or 0
-                )
-                is None
-            ):
-                return (
-                    f"proposed action {action.id} (recover_validated_work) has"
-                    " no launch-observed retained-work authority for"
-                    f" #{action.target_number}"
-                )
-            unbound = _unbound_rework_step(action, authority)
+            unbound = _unbound_validated_work(action, authority) or _unbound_rework_step(action, authority)
             if unbound is not None:
                 return unbound
             continue
@@ -135,6 +123,26 @@ def target_scope_violation(
                 f" #{action.target_number}, outside this session's launch"
                 f" scope: {_launch_scope_description(authority, allowed)}"
             )
+    return None
+
+
+def _unbound_validated_work(action: "ProposedTechLeadAction", authority: TechLeadLaunchAuthority) -> str | None:
+    """A validated-work op binds launch-observed retained-work authority: a
+    recovery its issue's single grant, a release each record it names (#9092)."""
+    target = action.target_number or 0
+    if action.action_type == "recover_validated_work" and authority.observed_validated_work_authority(target) is None:
+        return (
+            f"proposed action {action.id} (recover_validated_work) has"
+            f" no launch-observed retained-work authority for #{action.target_number}"
+        )
+    if action.action_type == "release_validated_work" and (
+        action.release is None or authority.bind_validated_work_release(target, action.release) is None
+    ):
+        return (
+            f"proposed action {action.id} (release_validated_work) names a record of"
+            f" #{action.target_number} that this session did not observe releasable at"
+            " launch (tech-lead-data/validated-work-release-targets.json)"
+        )
     return None
 
 

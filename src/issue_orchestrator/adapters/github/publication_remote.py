@@ -173,6 +173,27 @@ class GitHubValidatedWorkCaptureObserver:
             raise PublicationRemoteError(str(exc)) from exc
 
 
+    def issue_pull_request(
+        self, repo_slug: str, issue_number: int, number: int
+    ) -> PublicationPullRequest | None:
+        """The issue's own PR ``number`` from its reference timeline, read uncached (#9092)."""
+        if repo_slug != self._repo_slug:
+            raise PublicationRemoteError("Capture repository does not match configured remote")
+        try:
+            branch = dict(self._client.pull_requests_referencing_issue(issue_number)).get(number)
+            if branch is None or extract_issue_number_from_branch(branch) != issue_number:
+                return None
+            raw = self._client.read_publication_pr(number)
+            if raw is None:
+                raise PublicationRemoteError(f"Referencing PR #{number} is unreadable")
+            pr = _pull_request(raw)
+            if pr.number != number:
+                raise PublicationRemoteError("PR response number does not match request")
+            return pr
+        except (RepositoryHostError, KeyError, TypeError, ValueError) as exc:
+            raise PublicationRemoteError(str(exc)) from exc
+
+
 class GitHubPublicationRemote:
     def __init__(self, client: GitHubHttpClient, *, repo_slug: str) -> None:
         if client.config.repo != repo_slug:

@@ -49,8 +49,11 @@ TECH_LEAD_AUTHORITY_MODES = ("execute", "propose")
 TECH_LEAD_AUTHORITY_FLOOR_ACTIONS = ("escalate_to_human", "defer_to_tracker")
 
 # Always filed for the operator to approve (#7593): the decision is the
-# operator's, so no setting can let the tech lead execute it.
-TECH_LEAD_AUTHORITY_OPERATOR_DECISION_ACTIONS = ("propose_decision",)
+# operator's, so no setting can let the tech lead execute it. Releasing
+# validated work no proof connects to its rebuild (#9092) is the operator's
+# call in the same way: it has no authority key, because no value but
+# ``propose`` could ever be honored.
+TECH_LEAD_AUTHORITY_OPERATOR_DECISION_ACTIONS = ("propose_decision", "release_validated_work")
 
 # Action types whose authority mode is configurable — the complement of the
 # floor set above.

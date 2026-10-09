@@ -35,6 +35,7 @@ from .scoped_rework import ReworkRequest, ReworkTarget
 
 if TYPE_CHECKING:
     from .validated_work_commands import ValidatedWorkAuthoritySnapshot
+    from .validated_work_release import ValidatedWorkRelease, ValidatedWorkReleaseIntent
 
 TECH_LEAD_ASSIGNMENT_FILENAME = "tech-lead-assignment.json"
 
@@ -514,6 +515,12 @@ class TechLeadLaunchAuthority:
     observed_validated_work_authorities: tuple[
         ValidatedWorkAuthoritySnapshot, ...
     ] = ()
+    # Every unresolved retained record a release may name (#9092), sorted by
+    # (issue, record id). An issue may hold several; the agent names record
+    # ids and this trusted tuple binds each to the snapshot observed here.
+    observed_validated_work_releases: tuple[
+        ValidatedWorkAuthoritySnapshot, ...
+    ] = ()
     recovery_tracker_numbers: tuple[int, ...] = ()
     # The blocked items this health review must triage (#7593), each with its
     # blocking state as observed at launch. Recorded, never inferred: the
@@ -574,6 +581,7 @@ class TechLeadLaunchAuthority:
             )
         _validate_rework_targets(self)
         _validate_validated_work_authorities(self)
+        _validate_validated_work_releases(self)
         _validate_recovery_tracker_grants(self)
         if self.observed_session_generations != tuple(
             sorted(
@@ -687,6 +695,20 @@ class TechLeadLaunchAuthority:
         )
         return matches[0] if len(matches) == 1 else None
 
+    def bind_validated_work_release(
+        self, issue_number: int, intent: "ValidatedWorkReleaseIntent"
+    ) -> "tuple[ValidatedWorkAuthoritySnapshot, ...] | None":
+        """The launch-observed grant of each record a release names (#9092).
+
+        None when any named record was not observed releasable for this
+        issue at launch: the agent can never reach a record it was not shown.
+        """
+        from .validated_work_release import bind_release
+
+        return bind_release(
+            intent, issue_number=issue_number, grants=self.observed_validated_work_releases
+        )
+
     def to_dict(self) -> dict[str, object]:
         return {
             "schema_version": self.schema_version,
@@ -698,6 +720,10 @@ class TechLeadLaunchAuthority:
             "observed_validated_work_authorities": [
                 authority.to_dict()
                 for authority in self.observed_validated_work_authorities
+            ],
+            "observed_validated_work_releases": [
+                authority.to_dict()
+                for authority in self.observed_validated_work_releases
             ],
             "problem_issue_numbers": list(self.problem_issue_numbers),
             "recovery_tracker_numbers": list(self.recovery_tracker_numbers),
@@ -765,25 +791,14 @@ class TechLeadLaunchAuthority:
                 "tech_lead authority observed_session_generations must be a "
                 f"list of objects, got {raw_generations!r}"
             )
-        raw_validated_work = data.get("observed_validated_work_authorities", [])
-        if not isinstance(raw_validated_work, list) or any(
-            not isinstance(item, dict) for item in raw_validated_work
-        ):
-            raise ValueError(
-                "tech_lead authority observed_validated_work_authorities must"
-                f" be a list of objects, got {raw_validated_work!r}"
-            )
-        from .validated_work_commands import ValidatedWorkAuthoritySnapshot
         return cls(
             flavor=flavor,
             anchor_issue_number=anchor,
             focus_issue_number=focus,
             manifest_pr_numbers=tuple(raw_prs),
             observed_rework_targets=tuple(ReworkTarget.from_dict(item) for item in cast(list[dict[str, Any]], data.get("observed_rework_targets", []))),
-            observed_validated_work_authorities=tuple(
-                ValidatedWorkAuthoritySnapshot.from_dict(item)
-                for item in cast(list[dict[str, Any]], raw_validated_work)
-            ),
+            observed_validated_work_authorities=_snapshots_from(data, "observed_validated_work_authorities"),
+            observed_validated_work_releases=_snapshots_from(data, "observed_validated_work_releases"),
             problem_issue_numbers=tuple(raw_problems),
             recovery_tracker_numbers=tuple(raw_trackers),
             triage_grants=_triage_grants_from(data.get("triage_grants", [])),
@@ -827,6 +842,31 @@ def _validate_validated_work_authorities(
         raise ValueError("Validated-work recovery grants must belong to act-level scope")
     if grants != tuple(sorted(grants, key=lambda grant: grant.issue_number)):
         raise ValueError("Observed validated-work authorities must be sorted by issue")
+
+
+def _snapshots_from(data: dict[str, object], key: str) -> "tuple[ValidatedWorkAuthoritySnapshot, ...]":
+    """A persisted list of validated-work snapshots; malformed content raises."""
+    from .validated_work_commands import ValidatedWorkAuthoritySnapshot
+
+    raw = data.get(key, [])
+    if not isinstance(raw, list) or any(not isinstance(item, dict) for item in cast(list[object], raw)):
+        raise ValueError(f"tech_lead authority {key} must be a list of objects, got {raw!r}")
+    return tuple(ValidatedWorkAuthoritySnapshot.from_dict(item) for item in cast(list[dict[str, Any]], raw))
+
+
+def _validate_validated_work_releases(authority: TechLeadLaunchAuthority) -> None:
+    from .validated_work_commands import ValidatedWorkAuthoritySnapshot
+
+    grants = cast(object, authority.observed_validated_work_releases)
+    if not isinstance(grants, tuple) or any(
+        not isinstance(grant, ValidatedWorkAuthoritySnapshot) for grant in grants
+    ):
+        raise ValueError("Observed validated-work releases must be typed immutable facts")
+    keys = [(grant.issue_number, grant.record_id) for grant in authority.observed_validated_work_releases]
+    if keys != sorted(set(keys)):
+        raise ValueError("Observed validated-work releases must be sorted and unique by record")
+    if any(issue not in authority.allowed_act_level_targets() for issue, _record in keys):
+        raise ValueError("Validated-work release grants must belong to act-level scope")
 
 
 def _triage_grants_from(raw: object) -> tuple[TriageGrant, ...]:
@@ -918,6 +958,9 @@ class StoredTechLeadOp:
     finding_ids: tuple[str, ...] = ()
     rework_request: ReworkRequest | None = None
     validated_work_authority: ValidatedWorkAuthoritySnapshot | None = None
+    # The records a ``release_validated_work`` op resolves and the PR that
+    # rebuilt their work, each bound to its launch-observed snapshot (#9092).
+    validated_work_release: "ValidatedWorkRelease | None" = None
     # When the proposing session observed the board (ISO-8601). Required for
     # ``release_withheld_review``: a failure recorded for its target since
     # then is newer than the block the tech lead diagnosed (#7399).
@@ -976,6 +1019,7 @@ class StoredTechLeadOp:
         if self.rework_request is not None and self.target_issue_number != self.rework_request.target.issue_number:
             raise ValueError("Stored rework target issue must match its request")
         _validate_stored_op_recovery_authority(self)
+        _validate_stored_op_release(self)
         _validate_stored_op_observation(self)
         findings = cast(object, self.finding_ids)
         if not isinstance(findings, tuple) or any(
@@ -1007,6 +1051,11 @@ class StoredTechLeadOp:
                 if self.validated_work_authority is not None
                 else None
             ),
+            "validated_work_release": (
+                self.validated_work_release.to_dict()
+                if self.validated_work_release is not None
+                else None
+            ),
             "decision": self.decision.to_dict() if self.decision is not None else None,
             "resolution": self.resolution.to_dict() if self.resolution is not None else None,
             "follow_through": self.follow_through.to_dict(),
@@ -1020,6 +1069,7 @@ class StoredTechLeadOp:
         input to fail-safe around (mirrors TechLeadLaunchAuthority.from_dict).
         """
         from .validated_work_commands import ValidatedWorkAuthoritySnapshot
+        from .validated_work_release import ValidatedWorkRelease
 
         raw_schema = data.get("schema_version")
         if isinstance(raw_schema, bool) or not isinstance(raw_schema, int):
@@ -1050,6 +1100,13 @@ class StoredTechLeadOp:
                     cast(dict[str, Any], data["validated_work_authority"])
                 )
                 if data.get("validated_work_authority") is not None
+                else None
+            ),
+            validated_work_release=(
+                ValidatedWorkRelease.from_dict(
+                    cast(dict[str, Any], data["validated_work_release"])
+                )
+                if data.get("validated_work_release") is not None
                 else None
             ),
             decision=(
@@ -1143,6 +1200,24 @@ def _validate_stored_op_recovery_authority(op: StoredTechLeadOp) -> None:
         and op.target_issue_number != op.validated_work_authority.issue_number
     ):
         raise ValueError("Stored recovery target issue must match its authority")
+
+
+def _validate_stored_op_release(op: StoredTechLeadOp) -> None:
+    from .validated_work_release import (
+        RELEASE_VALIDATED_WORK_ACTION,
+        ValidatedWorkRelease,
+    )
+
+    release = cast(object, op.validated_work_release)
+    if (op.op_type == RELEASE_VALIDATED_WORK_ACTION) != isinstance(release, ValidatedWorkRelease):
+        raise ValueError(
+            "Only release_validated_work carries, and requires, a bound ValidatedWorkRelease"
+        )
+    if (
+        op.validated_work_release is not None
+        and op.target_issue_number != op.validated_work_release.issue_number
+    ):
+        raise ValueError("Stored release target issue must match its records")
 
 
 def _validate_stored_op_observation(op: StoredTechLeadOp) -> None:

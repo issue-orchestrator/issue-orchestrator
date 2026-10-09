@@ -583,6 +583,7 @@ def generate_tech_lead_completion_actions(
                 observed_validated_work_authority=(
                     authority.observed_validated_work_authority
                 ),
+                bind_validated_work_release=authority.bind_validated_work_release,
                 rework_targets=authority.observed_rework_targets,
                 report_text=load_result.report_text,
                 dedup_corpus=open_issue_corpus.load(),
