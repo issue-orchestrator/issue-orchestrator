@@ -3524,10 +3524,28 @@ class TestClaimGateAudit:
             ActionType.QUEUE_REVIEW: "_apply_queue_review",
             ActionType.ENQUEUE_TO_MERGE_QUEUE: "_apply_enqueue_to_merge_queue",
             ActionType.RERUN_FAILED_CHECKS: "_apply_rerun_failed_checks",
-            ActionType.ADVANCE_INTEGRATION: "_apply_advance_integration",
         }
+        # Handlers extracted to their owner module receive the applier's claim
+        # verifier explicitly: the owner must call it, and the dispatch must
+        # pass the applier's own _verify_claim_before_write (#8144).
+        from issue_orchestrator.control import integration_branch
+
+        extracted = {
+            ActionType.ADVANCE_INTEGRATION: integration_branch.apply_advance_integration,
+        }
+        applier_source = inspect.getsource(ActionApplier)
 
         for action_type in self.GITHUB_WRITE_ACTIONS:
+            if action_type in extracted:
+                owner = extracted[action_type]
+                assert "verify_claim(" in inspect.getsource(owner), (
+                    f"{owner.__qualname__} for {action_type} does not call its claim verifier"
+                )
+                assert (
+                    f"{owner.__name__}(\n                action, self, verify_claim=self._verify_claim_before_write)"
+                    in applier_source
+                ), f"ActionApplier does not pass _verify_claim_before_write to {owner.__name__}"
+                continue
             handler_name = handler_map.get(action_type)
             assert handler_name, f"No handler mapping for {action_type}"
 
