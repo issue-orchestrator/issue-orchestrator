@@ -6,7 +6,7 @@ from collections.abc import Iterator
 import sqlite3
 from ..domain.completion_intake import CompletionIntakeError
 from ..domain.validated_work import ValidatedWorkKey, ValidatedWorkState
-from ..domain.validated_work_remote_authority import PullRequestPublication
+from ..domain.validated_work_remote_authority import CarriedByIssuePullRequest, PullRequestPublication
 from ..domain.validated_work_commands import ValidatedWorkDispositionBatch
 from ..domain.validated_work_store import (
     AdmissionOutcome, EvidenceAdmission, EvidenceAdmissionSelection, EvidenceLookup, EvidenceRow,
@@ -37,9 +37,11 @@ class SqliteValidatedWorkIntakeStore:
         except sqlite3.Error as exc:
             raise CompletionIntakeError("parked admission unavailable") from exc
 
-    def admit(self, admission: EvidenceAdmission) -> AdmissionOutcome:
+    def admit(
+        self, admission: EvidenceAdmission, *, carried: CarriedByIssuePullRequest | None = None,
+    ) -> AdmissionOutcome:
         with self._admission_write(admission) as conn:
-            status = self._admission.admit(conn, admission)
+            status = self._admission.admit(conn, admission, carried=carried)
             return AdmissionOutcome(status, disposition(conn, admission.evidence.record_id))
 
     def record_pr_publication(
@@ -54,9 +56,11 @@ class SqliteValidatedWorkIntakeStore:
             raise CompletionIntakeError("open-PR publication record unavailable") from exc
 
     def admit_selected(self, admission: EvidenceAdmission, expected_current: str | None,
-                       selection: EvidenceAdmissionSelection) -> AdmissionOutcome | None:
+                       selection: EvidenceAdmissionSelection,
+                       *, carried: CarriedByIssuePullRequest | None = None) -> AdmissionOutcome | None:
         with self._admission_write(admission) as conn:
-            status = self._admission.admit_selected(conn, admission, expected_current, selection)
+            status = self._admission.admit_selected(
+                conn, admission, expected_current, selection, carried=carried)
             return None if status is None else AdmissionOutcome(status, disposition(conn, admission.evidence.record_id))
 
     def for_issue(self, issue_number: int) -> ValidatedWorkDispositionBatch:

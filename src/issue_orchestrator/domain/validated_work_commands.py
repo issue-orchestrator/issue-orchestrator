@@ -311,6 +311,15 @@ class ValidatedWorkDisposition:
     # RECOVERED inside a head its issue's open PR publishes (§2.7): the
     # completion's own push published it, and recovery routed nothing.
     published_by_its_pr: bool = False
+    # The branch of the PR that publishes the work, when it is not the
+    # record's own: the work was republished on another branch (#8137).
+    # '' is the record's own branch - the only one before #8137.
+    published_branch: str = ""
+
+    @property
+    def publication_branch(self) -> str:
+        """The branch whose PR publishes this record's work."""
+        return self.published_branch or self.key.branch_name
 
     @property
     def unresolved(self) -> bool:
@@ -329,6 +338,8 @@ class ValidatedWorkDisposition:
             require_sha(self.published_head_sha)
         if self.pr_number is not None:
             require_positive(self.pr_number, "pr_number")
+        if type(self.published_branch) is not str:
+            raise ValueError("published_branch must be a branch name or ''")
         if (
             self.state is ValidatedWorkState.RECOVERED
             and self.published_head_sha is None

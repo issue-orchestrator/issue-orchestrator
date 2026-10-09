@@ -1,0 +1,438 @@
+"""Work republished on another branch's PR of its issue is published (#8137).
+
+porchpin#262, 2026-10-04: a review exchange validated slice 2 on the issue's
+branch, whose PR (#457) had already merged. The completion's PR collided, so it
+moved to ``<branch>-r1`` and opened PR #479 there. Every validated head was
+captured under the ORIGINAL branch, and both the proof route and published-
+review custody looked for a PR only on that branch. Three records stayed
+parked ``divergent_validated_heads`` for days, ``recovery-pending`` kept coming
+back, and the stuck sweep read the issue as abandoned.
+
+The right answer is content, not the branch name: a record whose validated
+head an open or merged PR of the same issue contains is published, wherever
+that PR's branch is. The same real-Git rig as porchpin #186's
+(``test_validated_work_published_rework``): a bare ``origin``, SQLite, intake,
+escrow and the aggregate recovery block; only GitHub's PR listing is a fake,
+and it reads the real bare remote.
+"""
+
+from pathlib import Path
+
+import pytest
+
+from issue_orchestrator.control.published_review_custody import (
+    PublishedReviewCustody, PublishedValidatedWorkHeld,
+)
+from issue_orchestrator.domain.models import OrchestratorState
+from issue_orchestrator.domain.publication_remote import PublicationPrState, PublicationPullRequest
+from issue_orchestrator.domain.recovery_drain import RecoveryDrainMode
+from issue_orchestrator.domain.session_kind import SessionKind
+from issue_orchestrator.domain.validated_work import (
+    PublicationProvenance, ResolutionKind, ValidatedWorkFailure, ValidatedWorkKey, ValidatedWorkState,
+    canonical_lineage_key,
+)
+from issue_orchestrator.domain.validated_work_remote_authority import (
+    CarriedByIssuePullRequest, carried_by_issue_pull_request,
+)
+from issue_orchestrator.domain.validated_work_store import AncestryRelation, PrPublicationStatus
+from issue_orchestrator.ports.pull_request_tracker import PRInfo
+from tests.unit.test_validated_work_published_rework import (
+    BRANCH, ISSUE, PR, RECOVERY_PENDING, REPO, _commit, _drain, _fact, _legacy_parked_records, _run, _sweep,
+    _validate, build_rig,
+)
+
+REPUBLISHED = f"{BRANCH}-r1"
+ELSEWHERE = 479
+HEAD = "a" * 40
+OTHER = "b" * 40
+
+
+@pytest.fixture
+def rig(tmp_path):
+    return build_rig(tmp_path)
+
+
+def _republish(rig, *, on_top: bool = True) -> str:
+    """The completion's collision remediation: the branch's own PR is gone, and
+    the validated work is pushed to ``-r1`` where PR #479 opens. ``on_top``
+    adds a later commit there, as the slice's next session did."""
+    rig.github.open = False  # the original branch has no open PR any more
+    if on_top:
+        _commit(rig.git, rig.worktree, "next-slice", "a later commit on the republished branch")
+    head = rig.git.head_sha(rig.worktree)
+    rig.git.run(rig.worktree, ["push", "-q", "origin", f"HEAD:refs/heads/{REPUBLISHED}"])
+    rig.git.run(rig.origin, ["update-ref", f"refs/pull/{ELSEWHERE}/head", head])
+    rig.github.elsewhere[ELSEWHERE] = (REPUBLISHED, PublicationPrState.OPEN)
+    return head
+
+
+class _OpenPulls:
+    """GitHub's uncached open-PR read by branch, for published-review custody."""
+
+    def __init__(self, rig) -> None:
+        self._rig = rig
+        self.reads: list[str] = []
+
+    def get_open_prs_for_branch_complete(self, branch: str) -> list[PRInfo]:
+        self.reads.append(branch)
+        return [
+            PRInfo(number=number, title=f"#{ISSUE}", url="", branch=pr_branch, body="", state="open", labels=[],
+                   head_sha=self._rig.github.pull_head(number))
+            for number, (pr_branch, state) in self._rig.github.elsewhere.items()
+            if pr_branch == branch and state is PublicationPrState.OPEN
+        ]
+
+
+def _resolved_elsewhere(rig, parked, *, head: str, kind: ResolutionKind) -> None:
+    for disposition in parked:
+        record = rig.store.record_for_id(disposition.record_id)
+        assert record.disposition.state is ValidatedWorkState.RECOVERED, record.disposition
+        assert record.resolution_kind is kind
+        assert record.disposition.published_head_sha == head
+        assert record.disposition.pr_number == ELSEWHERE
+        # Custody reads the PR on the branch that actually publishes the work.
+        assert record.disposition.publication_branch == REPUBLISHED
+        assert record.disposition.key.branch_name == BRANCH  # the record keeps its own branch
+        # No validated commit is released.
+        pinned = record.current_evidence.admission.pinned_ref
+        assert rig.git.run(rig.repo, ["rev-parse", pinned]).stdout.strip() == disposition.key.validated_head_sha
+
+
+def test_parked_records_another_branchs_open_pr_carries_resolve_and_release_the_issue(
+    rig, make_session, monkeypatch,
+):
+    """porchpin#262: the drain's scope sweep finds the issue's PR on ``-r1``,
+    the records resolve as contained in its head, ``recovery-pending`` comes
+    off, and published-review custody holds the issue for that PR."""
+    w1, _, parked = _legacy_parked_records(rig, make_session, monkeypatch)
+    head = _republish(rig)
+
+    report = _drain(rig, _sweep(rig)).tick(OrchestratorState(), lambda: RecoveryDrainMode.ACTIVE)
+
+    assert report.scope_sweep.retired == ()
+    assert report.scope_sweep.published
+    assert not rig.store.has_unresolved_work(ISSUE)
+    _resolved_elsewhere(rig, parked, head=head, kind=ResolutionKind.CONTAINED_IN_PUBLISHED_HEAD)
+    # The carrier sits beside the branch's own fact; it never replaces it.
+    assert _fact(rig).published_head_sha == w1
+    assert RECOVERY_PENDING not in rig.labels.labels
+    # The stuck sweep and reset_retry ask this owner (#7293): PR #479 holds the issue.
+    pulls = _OpenPulls(rig)
+    custody = PublishedReviewCustody(rig.store, pulls)
+    assert [(hold.pr_number, hold.branch_name) for hold in custody.holds(ISSUE)] == [(ELSEWHERE, REPUBLISHED)]
+    # W1, which recovery published on the branch itself, is read there.
+    assert pulls.reads == sorted([BRANCH, REPUBLISHED])
+    with pytest.raises(PublishedValidatedWorkHeld):
+        custody.require_released(ISSUE)
+
+
+def test_parked_records_another_branchs_merged_pr_landed_resolve(rig, make_session, monkeypatch):
+    """The same PR after it squash-merged: its head at merge lands the work,
+    although neither its branch nor the base contains the record's commits."""
+    _, _, parked = _legacy_parked_records(rig, make_session, monkeypatch)
+    head = _republish(rig)
+    rig.git.run(rig.origin, ["update-ref", "-d", f"refs/heads/{REPUBLISHED}"])
+    rig.github.elsewhere[ELSEWHERE] = (REPUBLISHED, PublicationPrState.MERGED)
+
+    _drain(rig, _sweep(rig)).tick(OrchestratorState(), lambda: RecoveryDrainMode.ACTIVE)
+
+    assert not rig.store.has_unresolved_work(ISSUE)
+    _resolved_elsewhere(rig, parked, head=head, kind=ResolutionKind.LANDED_VIA_MERGED_PR)
+    assert RECOVERY_PENDING not in rig.labels.labels
+    # A merged PR holds nothing open.
+    assert PublishedReviewCustody(rig.store, _OpenPulls(rig)).holds(ISSUE) == ()
+
+
+@pytest.mark.parametrize("doubt", ["rebased-away", "closed-unmerged", "fork", "batch-pr", "unreadable"])
+def test_a_pr_elsewhere_not_proven_to_carry_the_work_leaves_it_parked(rig, make_session, monkeypatch, doubt):
+    """porchpin#262 as it stands now: PR #479 was later rebased with conflict
+    resolution, so its head no longer contains the parked heads. Content is
+    the proof, so they stay held - as they do for a PR closed unmerged, a
+    fork's PR, a batch PR that only names the issue, or an unreadable GitHub."""
+    _, _, parked = _legacy_parked_records(rig, make_session, monkeypatch)
+    _republish(rig)
+    if doubt == "rebased-away":
+        rig.git.run(rig.worktree, ["checkout", "-q", "--detach", "main"])
+        _commit(rig.git, rig.worktree, "rebuilt", "the slice rebuilt with a conflict resolved")
+        rig.git.run(rig.worktree, ["push", "-q", "--force", "origin", f"HEAD:refs/pull/{ELSEWHERE}/head"])
+    elif doubt == "closed-unmerged":
+        rig.github.elsewhere[ELSEWHERE] = (REPUBLISHED, PublicationPrState.CLOSED)
+    elif doubt == "fork":
+        rig.github.head_repo = "fork/repo"
+    elif doubt == "batch-pr":
+        # An integration PR whose body names the issue carries the work, but
+        # it is not the issue's PR: the issue's review never routes to it.
+        rig.git.run(rig.origin, ["update-ref", "refs/pull/480/head", f"refs/pull/{ELSEWHERE}/head"])
+        rig.github.elsewhere = {480: ("integration", PublicationPrState.OPEN)}
+    else:
+        rig.github.unreadable = True
+
+    _drain(rig, _sweep(rig)).tick(OrchestratorState(), lambda: RecoveryDrainMode.ACTIVE)
+
+    for disposition in parked:
+        record = rig.store.get(disposition.record_id)
+        assert (record.state, record.failure) == (
+            ValidatedWorkState.PARKED, ValidatedWorkFailure.DIVERGENT_VALIDATED_HEADS)
+    assert RECOVERY_PENDING in rig.labels.labels
+
+
+def test_a_capture_whose_pr_collided_onto_another_branch_is_published_not_parked(rig):
+    """The capture route, the moment porchpin#262's records were made: the
+    completion's PR collided onto ``-r1``. The capture records PR #479's
+    carriage before it admits, so the record never parks and the issue is
+    never blocked."""
+    coding = _run(rig, SessionKind.CODE, "coding-1", f"issue-{ISSUE}")
+    _commit(rig.git, rig.worktree, "journey", "slice two")
+    validated = _validate(rig, coding, "coding-1")
+    head = _republish(rig, on_top=False)
+    assert head == validated
+
+    assert rig.lifecycle.preserve_completed_run(
+        ISSUE, f"issue-{ISSUE}", "session-completion", run=coding) is False
+
+    (record,) = rig.store.for_issue(ISSUE).dispositions
+    assert (record.state, record.pr_number, record.publication_branch) == (
+        ValidatedWorkState.RECOVERED, ELSEWHERE, REPUBLISHED)
+    assert rig.store.record_for_id(record.record_id).resolution_kind is ResolutionKind.CONTAINED_IN_PUBLISHED_HEAD
+    assert rig.labels.operations == []
+
+
+def test_the_branchs_own_pr_is_never_read_as_another_branchs(rig, make_session, monkeypatch):
+    """A PR on the record's own branch is judged by the stricter same-branch
+    routes only. Listed among the issue's PRs, it proves nothing new."""
+    _, _, parked = _legacy_parked_records(rig, make_session, monkeypatch)
+    rig.github.open = False  # the own-branch open route proves nothing ...
+    head = rig.git.head_sha(rig.worktree)
+    rig.git.run(rig.origin, ["update-ref", f"refs/pull/{PR}/head", head])
+    rig.github.elsewhere[PR] = (BRANCH, PublicationPrState.OPEN)  # ... and the issue read lists it
+
+    _drain(rig, _sweep(rig)).tick(OrchestratorState(), lambda: RecoveryDrainMode.ACTIVE)
+
+    for disposition in parked:
+        assert rig.store.get(disposition.record_id).state is ValidatedWorkState.PARKED
+
+
+# -- the proof (domain) --------------------------------------------------------
+
+
+def _pull(*, state=PublicationPrState.OPEN, branch=REPUBLISHED, head_repo=REPO, base_repo=REPO, head=HEAD):
+    return PublicationPullRequest(ELSEWHERE, f"https://github.com/{REPO}/pull/{ELSEWHERE}", head_repo, base_repo,
+                                  branch, "main", head, state, f"Refs #{ISSUE}")
+
+
+@pytest.mark.parametrize(("pr", "fetched", "relation"), [
+    (_pull(state=PublicationPrState.CLOSED), HEAD, AncestryRelation.EQUAL),
+    (_pull(branch=BRANCH), HEAD, AncestryRelation.EQUAL),
+    (_pull(head_repo="fork/repo"), HEAD, AncestryRelation.EQUAL),
+    (_pull(base_repo="fork/repo"), HEAD, AncestryRelation.EQUAL),
+    (_pull(), OTHER, AncestryRelation.EQUAL),
+    (_pull(), None, None),
+    (_pull(), HEAD, AncestryRelation.DESCENDANT),
+    (_pull(), HEAD, AncestryRelation.DIVERGENT),
+    (_pull(), HEAD, AncestryRelation.RIGHT_UNREACHABLE),
+    (_pull(branch="integration"), HEAD, AncestryRelation.ANCESTOR),
+    (_pull(branch=f"{ISSUE + 1}-sibling"), HEAD, AncestryRelation.ANCESTOR),
+], ids=["closed-unmerged", "own-branch", "fork-head", "fork-base", "pull-ref-moved", "pull-ref-unfetchable",
+        "head-ahead-of-pr", "divergent", "unreachable", "batch-pr-naming-the-issue", "another-issues-branch"])
+def test_only_every_fact_agreeing_proves_another_branchs_carriage(pr, fetched, relation):
+    assert carried_by_issue_pull_request(
+        pr, repo_slug=REPO, issue_number=ISSUE, branch_name=BRANCH, fetched_head_sha=fetched,
+        relation=relation) is None
+
+
+@pytest.mark.parametrize("state", [PublicationPrState.OPEN, PublicationPrState.MERGED])
+@pytest.mark.parametrize("relation", [AncestryRelation.EQUAL, AncestryRelation.ANCESTOR])
+def test_an_open_or_merged_pr_elsewhere_whose_head_carries_the_work_proves_it(state, relation):
+    proof = carried_by_issue_pull_request(
+        _pull(state=state), repo_slug=REPO, issue_number=ISSUE, branch_name=BRANCH, fetched_head_sha=HEAD,
+        relation=relation)
+    merged = state is PublicationPrState.MERGED
+    assert proof == CarriedByIssuePullRequest(ELSEWHERE, HEAD, REPUBLISHED, merged=merged)
+    assert proof.provenance is (
+        PublicationProvenance.OBSERVED_MERGE if merged else PublicationProvenance.OBSERVED_OPEN_PR)
+    assert f"PR #{ELSEWHERE} ({REPUBLISHED})" in proof.describe(OTHER)
+
+
+# -- the store -----------------------------------------------------------------
+
+
+def test_a_carrier_follows_an_open_pr_and_freezes_when_it_merges(tmp_path):
+    """An open PR's carriage follows its head and every proof reclassifies; a
+    merged one cannot move, and the same merged proof again is recorded."""
+    from tests.unit.validated_work_support import L, ROOT, TIP, Rig, capture
+
+    store = Rig(tmp_path / "work.sqlite").open()
+    key = capture(L).evidence.identity.key
+    open_at_l = CarriedByIssuePullRequest(91, L, "feature-r1", merged=False)
+
+    assert store.record_pr_publication(key, published=open_at_l, observed_at="2026-10-04T09:00:00+00:00") \
+        is PrPublicationStatus.ADVANCED
+    assert store.record_pr_publication(key, published=open_at_l, observed_at="2026-10-04T09:15:00+00:00") \
+        is PrPublicationStatus.ADVANCED
+    assert store.record_pr_publication(
+        key, published=CarriedByIssuePullRequest(91, TIP, "feature-r1", merged=False),
+        observed_at="2026-10-04T10:00:00+00:00") is PrPublicationStatus.ADVANCED
+    assert store.record_pr_publication(
+        key, published=CarriedByIssuePullRequest(91, TIP, "feature-r1", merged=True),
+        observed_at="2026-10-04T11:00:00+00:00") is PrPublicationStatus.ADVANCED
+    assert store.record_pr_publication(
+        key, published=CarriedByIssuePullRequest(91, TIP, "feature-r1", merged=True),
+        observed_at="2026-10-04T11:30:00+00:00") is PrPublicationStatus.ALREADY_PUBLISHED
+    assert store.record_pr_publication(
+        key, published=CarriedByIssuePullRequest(91, L, "feature-r1", merged=True),
+        observed_at="2026-10-04T12:00:00+00:00") is PrPublicationStatus.CONTAINMENT_UNPROVEN
+    # The lineage's own fact is untouched: the carrier is another branch's PR.
+    assert store.lineage_publication(canonical_lineage_key(key)) is None
+    # A capture the merged carrier contains is landed at admission, any time later.
+    late = capture(L, run="run-late", expected=ROOT, at="2026-10-05T09:00:00+00:00")
+    store.admit(late)
+    record = store.record_for_id(late.evidence.record_id)
+    assert (record.disposition.state, record.resolution_kind, record.disposition.publication_branch) == (
+        ValidatedWorkState.RECOVERED, ResolutionKind.LANDED_VIA_MERGED_PR, "feature-r1")
+
+
+@pytest.mark.parametrize("admitted_at", ["2026-10-04T09:00:00+00:00", "2026-10-04T12:00:00+00:00"],
+                         ids=["replay-at-the-proving-instant", "later"])
+def test_an_open_carrier_resolves_an_admission_only_with_its_own_proof(tmp_path, admitted_at):
+    """Review r1 F1 / r2 F1: PR 91 was proven open at TIP, then force-pushed or
+    closed before the capture's evidence was admitted (a crash, then a replay
+    at the same persisted capture instant; or simply a later capture). No
+    stored row or timestamp resolves it: only an admission handed this
+    capture's own fresh proof does."""
+    from tests.unit.validated_work_support import L, ROOT, TIP, Rig, capture
+
+    store = Rig(tmp_path / "work.sqlite").open()
+    proof = CarriedByIssuePullRequest(91, TIP, "feature-r1", merged=False)
+    assert store.record_pr_publication(
+        capture(TIP).evidence.identity.key, published=proof, observed_at="2026-10-04T09:00:00+00:00",
+    ) is PrPublicationStatus.ADVANCED
+
+    held = capture(L, run="run-held", expected=ROOT, state=ValidatedWorkState.PARKED,
+                   failure=ValidatedWorkFailure.WORKTREE_AHEAD_OF_VALIDATION, reason="ahead", at=admitted_at)
+    store.admit(held)
+    assert store.get(held.evidence.record_id).state is ValidatedWorkState.PARKED
+
+    fresh = capture(L, run="run-fresh", expected=ROOT, state=ValidatedWorkState.PARKED,
+                    failure=ValidatedWorkFailure.WORKTREE_AHEAD_OF_VALIDATION, reason="ahead",
+                    at="2026-10-04T12:30:00+00:00")
+    store.admit(fresh, carried=proof)
+    resolved = store.record_for_id(fresh.evidence.record_id)
+    assert (resolved.disposition.state, resolved.resolution_kind, resolved.disposition.publication_branch) == (
+        ValidatedWorkState.RECOVERED, ResolutionKind.CONTAINED_IN_PUBLISHED_HEAD, "feature-r1")
+
+
+def test_an_older_open_proof_arriving_late_never_replaces_a_newer_one(tmp_path):
+    """Review r3: worker A observed PR 91 at DIVERGENT, then the PR was
+    force-pushed to TIP and worker B proved and stored TIP. A's proof arriving
+    afterwards cannot be ordered after B's, so it proves nothing: the row keeps
+    TIP and the record only DIVERGENT carries stays held."""
+    from tests.unit.validated_work_support import DIVERGENT, ROOT, TIP, Rig, capture
+
+    store = Rig(tmp_path / "work.sqlite").open()
+    only_in_a = capture(DIVERGENT, run="run-a", expected=ROOT, state=ValidatedWorkState.PARKED,
+                        failure=ValidatedWorkFailure.WORKTREE_AHEAD_OF_VALIDATION, reason="ahead")
+    store.admit(only_in_a)
+    key = only_in_a.evidence.identity.key
+    newer = CarriedByIssuePullRequest(91, TIP, "feature-r1", merged=False)
+    older = CarriedByIssuePullRequest(91, DIVERGENT, "feature-r1", merged=False)
+
+    assert store.record_pr_publication(
+        capture(TIP).evidence.identity.key, published=newer, observed_at="2026-10-04T09:05:00+00:00",
+    ) is PrPublicationStatus.ADVANCED
+    assert store.record_pr_publication(key, published=older, observed_at="2026-10-04T09:00:00+00:00") \
+        is PrPublicationStatus.CONTAINMENT_UNPROVEN
+
+    assert store.get(only_in_a.evidence.record_id).state is ValidatedWorkState.PARKED
+    # A force-push back, observed AFTER the recorded proof, is current again.
+    assert store.record_pr_publication(key, published=older, observed_at="2026-10-04T09:10:00+00:00") \
+        is PrPublicationStatus.ADVANCED
+    assert store.get(only_in_a.evidence.record_id).state is ValidatedWorkState.RECOVERED
+
+
+@pytest.mark.parametrize("sequence", ["forced-back-then-late-descendant", "late-same-head-then-late-divergent"])
+def test_only_a_strictly_later_observation_moves_an_open_carrier(tmp_path, sequence):
+    """Review r4: (1) the PR was forced back from TIP to its ancestor L, and
+    that later observation is recorded; an earlier proof of TIP arriving late
+    descends from L but is obsolete. (2) A late, older proof of the recorded
+    head must not re-stamp it, or an obsolete divergent proof observed in
+    between would then pass. Either way the obsolete head stays unrecorded and
+    the work only it carries stays held."""
+    from tests.unit.validated_work_support import DIVERGENT, L, ROOT, TIP, Rig, capture
+
+    store = Rig(tmp_path / "work.sqlite").open()
+    obsolete = TIP if sequence.startswith("forced") else DIVERGENT
+    held = capture(obsolete, run="run-held", expected=ROOT, state=ValidatedWorkState.PARKED,
+                   failure=ValidatedWorkFailure.WORKTREE_AHEAD_OF_VALIDATION, reason="ahead")
+    store.admit(held)
+    key = held.evidence.identity.key
+    current = CarriedByIssuePullRequest(91, L, "feature-r1", merged=False)
+    assert store.record_pr_publication(
+        capture(L).evidence.identity.key, published=current, observed_at="2026-10-04T09:10:00+00:00",
+    ) is PrPublicationStatus.ADVANCED
+    if sequence.startswith("late-same-head"):
+        assert store.record_pr_publication(
+            capture(L).evidence.identity.key, published=current, observed_at="2026-10-04T09:00:00+00:00",
+        ) is PrPublicationStatus.ALREADY_PUBLISHED
+
+    assert store.record_pr_publication(
+        key, published=CarriedByIssuePullRequest(91, obsolete, "feature-r1", merged=False),
+        observed_at="2026-10-04T09:05:00+00:00",
+    ) is PrPublicationStatus.CONTAINMENT_UNPROVEN
+
+    assert store.get(held.evidence.record_id).state is ValidatedWorkState.PARKED
+
+
+def test_an_existing_store_gains_the_carriers_table_and_published_branch_on_open(tmp_path):
+    import sqlite3
+
+    from tests.unit.validated_work_support import Rig
+
+    path = tmp_path / "work.sqlite"
+    Rig(path).open()
+    with sqlite3.connect(path) as conn:
+        conn.execute("DROP TABLE validated_work_lineage_carriers")
+        conn.execute("ALTER TABLE validated_work_records DROP COLUMN published_branch")
+
+    Rig(path).open()
+
+    with sqlite3.connect(path) as conn:
+        assert "published_branch" in {row[1] for row in conn.execute("PRAGMA table_info(validated_work_records)")}
+        assert conn.execute("SELECT count(*) FROM validated_work_lineage_carriers").fetchone() == (0,)
+
+
+def test_a_carriers_pin_is_permanent(rig):
+    """The carried head is pinned under a ref escrow reconciliation never
+    enumerates and nothing may release."""
+    from issue_orchestrator.execution.git_exact_operations import GitExactOperations
+    from issue_orchestrator.domain.validated_work_store import carrier_ref
+
+    head = rig.git.head_sha(rig.repo)
+    ref = carrier_ref(canonical_lineage_key(ValidatedWorkKey(REPO, ISSUE, BRANCH, head)), ELSEWHERE, head)
+    ops = GitExactOperations(rig.git, None)
+    ops.pin_ref(Path(rig.repo), ref=ref, sha=head)
+
+    assert ops.verify_ref(Path(rig.repo), ref=ref, sha=head)
+    assert ref not in {pin.ref for pin in ops.retained_refs(Path(rig.repo))}
+    with pytest.raises(ValueError, match="only escrow"):
+        ops.delete_pinned_ref(Path(rig.repo), ref=ref, sha=head)
+
+
+def test_a_cold_reader_refuses_a_store_without_the_published_branch_column(tmp_path):
+    """Review r1 F2: the mapper reads ``published_branch``, so a read-only
+    reader of a store the engine has not yet migrated reports an unsupported
+    schema instead of raising ``IndexError``."""
+    import sqlite3
+
+    from issue_orchestrator.domain.read_only_sqlite import ReadOnlySqliteAccessError, ReadOnlySqliteFailure
+    from issue_orchestrator.infra.validated_work_read_schema import require_supported_validated_work_schema
+    from issue_orchestrator.infra.validated_work_rows import DispositionDatabase
+
+    path = tmp_path / "work.sqlite"
+    DispositionDatabase(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE validated_work_records DROP COLUMN published_branch")
+        conn.row_factory = sqlite3.Row
+        with pytest.raises(ReadOnlySqliteAccessError) as refused:
+            require_supported_validated_work_schema(conn)
+    assert refused.value.reason is ReadOnlySqliteFailure.UNSUPPORTED_SCHEMA
+    assert "published_branch" in str(refused.value)

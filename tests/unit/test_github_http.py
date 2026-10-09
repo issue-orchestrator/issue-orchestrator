@@ -3269,6 +3269,63 @@ def test_merged_prs_referencing_issues_refuses_a_malformed_answer(repository, ma
         client.merged_prs_referencing_issues([5])
 
 
+def _state_ref(number: int, state: str | None, *, cross_repo: bool = False, branch: str | None = "262-x") -> dict:
+    return {"isCrossRepository": cross_repo,
+            "source": {"__typename": "PullRequest", "number": number, "state": state, "headRefName": branch}}
+
+
+def test_pull_requests_referencing_issue_keeps_open_and_merged_same_repo_prs() -> None:
+    """#8137: the issue's PRs on any branch - open and merged, each named once,
+    across pages - never one closed unmerged, another repository's, or an
+    issue's mention."""
+    afters: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _graphql_body(request)
+        assert "number state headRefName" in body["query"]
+        after = body["variables"].get("after")
+        afters.append(after)
+        if after is None:
+            page = _references(_state_ref(479, "OPEN"), _state_ref(457, "MERGED"),
+                               _state_ref(450, "CLOSED"), _state_ref(900, "OPEN", cross_repo=True),
+                               _issue_ref(), more=True, cursor="c1")
+        else:
+            page = _references(_state_ref(511, "MERGED"), _state_ref(479, "OPEN"))
+        return httpx.Response(200, json={"data": {"repository": {"i262": page}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    assert client.pull_requests_referencing_issue(262) == ((457, "262-x"), (479, "262-x"), (511, "262-x"))
+    assert afters == [None, "c1"]
+
+
+@pytest.mark.parametrize(
+    ("repository", "match"),
+    [
+        pytest.param({"i5": _references(_state_ref(9, None))}, "malformed node", id="state-missing"),
+        pytest.param({"i5": _references(_state_ref(9, "OPEN", branch=None))}, "malformed node",
+                     id="branch-missing"),
+        pytest.param({"i5": _references(_state_ref(9, "OPEN"), more=True)}, "without a cursor",
+                     id="next-page-without-cursor"),
+    ],
+)
+def test_pull_requests_referencing_issue_refuses_a_partial_answer(repository, match) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"repository": repository}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match=match):
+        client.pull_requests_referencing_issue(5)
+
+
+def test_pull_requests_referencing_a_missing_issue_is_empty() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"repository": {"i5": None}}})
+
+    assert _client_with_transport(httpx.MockTransport(handler)).pull_requests_referencing_issue(5) == ()
+
+
 def _pulls_pages(prs: list[dict], *, fail_page: int | None = None):
     """Serve ``/pulls`` newest-first in pages of 100, like GitHub."""
     ordered = sorted(prs, key=lambda pr: -pr["number"])

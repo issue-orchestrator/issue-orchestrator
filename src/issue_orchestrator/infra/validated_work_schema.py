@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS validated_work_records (
     publishing_started_at TEXT NOT NULL DEFAULT '',   -- set by the first attempt claim
     published_head_sha    TEXT NOT NULL DEFAULT '',
     published_pr_number   INTEGER NOT NULL DEFAULT 0,  -- contained in an OBSERVED_OPEN_PR head: that PR
+    published_branch      TEXT NOT NULL DEFAULT '',   -- that PR's branch; '' = the record's own (#8137)
     resolution_kind       TEXT NOT NULL DEFAULT '',   -- ResolutionKind
     resolved_by           TEXT NOT NULL DEFAULT '',   -- OperatorResolution.actor
     resolution_reason     TEXT NOT NULL DEFAULT '',
@@ -122,6 +123,21 @@ CREATE TABLE IF NOT EXISTS validated_work_lineage_landings (
     pr_number     INTEGER NOT NULL,
     head_sha      TEXT NOT NULL,
     landed_at     TEXT NOT NULL,
+    PRIMARY KEY (lineage_key, pr_number)
+);
+
+-- PRs of the same issue on ANOTHER branch that carry this lineage's validated
+-- work (#8137): an open PR (merged=0, its latest proven head) or a merged one
+-- (merged=1, its head at merge; immutable). The work was republished there - a
+-- completion whose PR collided, a slice rebuilt on a fresh branch - so the
+-- lineage's own fact never names it. Each head is pinned like a landing.
+CREATE TABLE IF NOT EXISTS validated_work_lineage_carriers (
+    lineage_key   TEXT NOT NULL,
+    pr_number     INTEGER NOT NULL,
+    branch_name   TEXT NOT NULL,
+    head_sha      TEXT NOT NULL,
+    merged        INTEGER NOT NULL,
+    observed_at   TEXT NOT NULL,
     PRIMARY KEY (lineage_key, pr_number)
 );
 

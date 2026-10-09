@@ -57,6 +57,16 @@ def migrate_published_pr_number(conn: sqlite3.Connection) -> None:
             )
 
 
+def migrate_published_branch(conn: sqlite3.Connection) -> None:
+    """Add the branch a record's publishing PR is on (#8137). Every record
+    resolved before it was published on its own branch, which '' names."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(validated_work_records)")}
+    if "published_branch" not in columns:
+        conn.execute(
+            "ALTER TABLE validated_work_records ADD COLUMN published_branch TEXT NOT NULL DEFAULT ''"
+        )
+
+
 def migrate_remote_baseline_authority(conn: sqlite3.Connection) -> None:
     """Remove authority that predates the observed/unobserved provenance bit.
 

@@ -406,3 +406,22 @@ def test_the_board_names_the_review_hold_the_sweep_observed():
     assert custody.state is CustodyState.HELD
     assert "open PR whose review owns it" in custody.reason
     assert not custody.needs_attention
+
+
+def test_work_republished_on_another_branch_is_not_investigated_as_stuck():
+    """#8137, porchpin#262: the record kept its original branch, but its work
+    is published on the issue's PR on ``-r1``. That PR holds the issue, so the
+    sweep hands it to review instead of funding investigations of an issue it
+    reads as abandoned."""
+    republished = f"{HELD}-validated-r1"
+    records = {HELD: (disposition(HELD, ValidatedWorkState.RECOVERED, pr_number=479,
+                                  published_branch=republished),)}
+    prs = {HELD: [pr(HELD, 479, branch_name=republished)]}
+    gatherer = _gatherer([_failed(HELD), _failed(PLAIN)], records=records, prs=prs)
+
+    snapshot = gatherer.create_snapshot(OrchestratorState(), issues=[])
+
+    injected = {failure.issue_number for failure in snapshot.discovered_failures}
+    assert HELD not in injected
+    assert snapshot.stuck_sweep_review_releases == (HELD,)
+    assert PLAIN in injected
