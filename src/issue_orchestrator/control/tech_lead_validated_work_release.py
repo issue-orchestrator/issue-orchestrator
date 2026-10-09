@@ -98,7 +98,7 @@ class TechLeadValidatedWorkReleaseExecutor:
             f"{verdict.describe()} on tech-lead proposal"
             f" #{action.proposal_issue_number}"
         )
-        reason = release.resolution_reason()
+        reason = release.resolution_reason(action.proposal_issue_number)
         commands = tuple(
             AbandonValidatedWorkCommand(authority, actor, reason)
             for authority in release.authorities

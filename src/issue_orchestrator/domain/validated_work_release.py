@@ -86,10 +86,19 @@ class ValidatedWorkRelease:
         """The records' own branches, sorted and distinct."""
         return tuple(sorted({item.branch_name for item in self.authorities}))
 
-    def resolution_reason(self) -> str:
-        """The durable resolution reason: names the PR that rebuilt the work."""
+    def resolution_reason(self, proposal_issue_number: int) -> str:
+        """The durable resolution reason, which is also the operation's identity.
+
+        It names the approved proposal, the PR that rebuilt the work and the
+        rationale. The store recognizes a replay only by this exact reason
+        (with each record's snapshot), so a retry of the same approved
+        proposal replays, and no other proposal over the same records ever
+        passes as its replay.
+        """
+        require_positive(proposal_issue_number, "proposal_issue_number")
         return (
-            f"Released on operator approval: the work was rebuilt in merged PR"
+            f"Released on operator approval of tech-lead proposal"
+            f" #{proposal_issue_number}: the work was rebuilt in merged PR"
             f" #{self.superseding_pr_number} with rewritten history, so no"
             f" ancestry proof connects it. Rationale: {self.rationale}"
         )

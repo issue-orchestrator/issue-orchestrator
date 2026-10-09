@@ -89,14 +89,14 @@ def _executor(rig) -> tuple[TechLeadValidatedWorkReleaseExecutor, ValidatedWorkR
     ), grants
 
 
-def _approved_release(grants, parked) -> ReleaseValidatedWorkAction:
+def _approved_release(grants, parked, *, proposal: int = PROPOSAL) -> ReleaseValidatedWorkAction:
     """What launch binds and approval runs: the parked records' launch grants."""
     intent = ValidatedWorkReleaseIntent(tuple(d.record_id for d in parked), ELSEWHERE)
     authorities = bind_release(intent, issue_number=ISSUE, grants=grants.release_grants_for((ISSUE,)))
     assert authorities is not None
     return ReleaseValidatedWorkAction(
         release=ValidatedWorkRelease(ELSEWHERE, authorities, "PR #479 rebuilt slice 2 after a conflicted rebase"),
-        proposal_id="A1", anchor_issue_number=PROPOSAL, proposal_issue_number=PROPOSAL,
+        proposal_id="A1", anchor_issue_number=proposal, proposal_issue_number=proposal,
         expected=build_expected_for_mutation(),
     )
 
@@ -166,3 +166,23 @@ def test_a_retry_after_a_failed_reprojection_completes_the_release(rig, make_ses
     assert RECOVERY_PENDING not in rig.labels.labels
     for disposition in parked:
         assert rig.store.get(disposition.record_id).state is ValidatedWorkState.ABANDONED
+
+
+def test_another_proposal_over_the_same_records_is_never_taken_for_a_replay(rig, make_session, monkeypatch):
+    """Review r3 F1: a full release by #485 and a subset by #486 with the same
+    PR and rationale. Once #485 commits, #486 is not its replay: it stays
+    unexecuted and retryable (GitHub is unreadable), while a retry of #485
+    itself still replays without reading GitHub."""
+    parked = _rebuilt_with_rewritten_history(rig, make_session, monkeypatch)
+    executor, grants = _executor(rig)
+    full = _approved_release(grants, parked, proposal=PROPOSAL)
+    subset = _approved_release(grants, parked[:1], proposal=PROPOSAL + 1)
+    assert executor.apply(full).success
+    rig.github.unreadable = True
+
+    other = executor.apply(subset)
+
+    assert other.result_type is ActionResultType.FAILURE
+    assert "could not be read" in (other.error or "")
+    retried = executor.apply(full)
+    assert retried.success and retried.details["replayed"] is True

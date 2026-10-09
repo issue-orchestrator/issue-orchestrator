@@ -1704,16 +1704,20 @@ only the operator can release them. The tech-lead action
   `VALIDATED_WORK_ABANDONED`, and the issue's aggregate block reprojects once,
   dropping `recovery-pending` when nothing unresolved remains.
 - **A retry completes, never contradicts.** The approved snapshot and the
-  reason are written in the transaction that resolves each record. A batch
-  whose every record was resolved by exactly those commands is a replay:
+  reason are written in the transaction that resolves each record. The
+  reason names the approved proposal, the PR and the rationale, so it
+  identifies the operation. A batch whose every record was resolved by
+  exactly those commands is a replay:
   committed, `replayed`, with no write. The executor asks the owner
   (`committed`) before any remote read. So when reprojection or the
   proposal's outcome comment fails after the commit, the retried op
   reprojects again and closes the proposal as executed, whatever GitHub
   answers by then. It does not read its own write as stale. A replay audits
   nothing twice, and it reports the actor the store recorded, not whoever
-  re-approved the retry. Proposal reuse, which writes nothing, checks the
-  bound snapshots against the current release grants instead.
+  re-approved the retry. Another proposal over the same records (a subset, the
+  same PR and rationale) is never taken for that replay. Proposal reuse,
+  which writes nothing, checks the bound snapshots against the current
+  release grants instead.
 
 ## 3. Composition and control flow
 
