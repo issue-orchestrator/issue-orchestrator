@@ -51,16 +51,20 @@ def persist_stuck_sweep_state(
     if store is None:
         return
     try:
-        store.save_last_stuck_sweep_at(state.last_stuck_sweep_at)
-        store.save_recovery_attempts(state.recovery_attempts)
-        store.save_pending_escalations(state.pending_stuck_sweep_escalations)
-        store.save_review_release_budgets(state.review_release_budgets)
+        _save(state, store)
     except Exception:
         logger.warning(
             "[STUCK_SWEEP] failed to persist recovery counters; a restart "
             "re-hydrates them from the queue-cache store",
             exc_info=True,
         )
+
+
+def _save(state: "OrchestratorState", store: "QueueCacheStore") -> None:
+    store.save_last_stuck_sweep_at(state.last_stuck_sweep_at)
+    store.save_recovery_attempts(state.recovery_attempts)
+    store.save_pending_escalations(state.pending_stuck_sweep_escalations)
+    store.save_review_release_budgets(state.review_release_budgets)
 
 
 def forget_stuck_sweep_issue(
@@ -73,8 +77,9 @@ def forget_stuck_sweep_issue(
     The recovery budget, the unlanded needs-human escalation and the one-shot
     escalation/release buffers were all decided on the attempt the reset
     discarded. Kept, the next plan would block the fresh retry behind
-    ``needs-human`` from the old budget. Persisted at once, so a restart does
-    not hydrate them back.
+    ``needs-human`` from the old budget. Persisted at once and strictly - unlike
+    a sweep's own save, a failure raises - so the reset is never reported
+    settled while a restart could still hydrate the old record back.
     """
     state.recovery_attempts.pop(issue_number, None)
     state.pending_stuck_sweep_escalations.discard(issue_number)
@@ -84,7 +89,8 @@ def forget_stuck_sweep_issue(
         n for n in state.stuck_sweep_review_releases if n != issue_number
     ]
     state.stuck_sweep_held_for_review = state.stuck_sweep_held_for_review - {issue_number}
-    persist_stuck_sweep_state(state, store)
+    if store is not None:
+        _save(state, store)
 
 
 __all__ = ["forget_stuck_sweep_issue", "hydrate_stuck_sweep_state", "persist_stuck_sweep_state"]

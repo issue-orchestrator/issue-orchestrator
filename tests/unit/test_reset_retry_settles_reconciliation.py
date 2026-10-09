@@ -271,3 +271,28 @@ def test_a_reset_ends_the_stuck_sweeps_record_of_the_old_attempt():
         tuple(state.stuck_sweep_escalations), labels.needs_human
     )
     assert [action.issue_number for action in escalations] == [OTHER]
+
+
+def test_a_reset_whose_sweep_record_did_not_persist_is_not_reported_settled():
+    """Review r2 F1: a swallowed save would let a restart hydrate the old escalation.
+
+    The sweep's own save degrades on failure (a lost write re-sweeps early);
+    the reset's retirement may not: reported settled, the old budget and
+    escalation would come back on restart and block the fresh retry.
+    """
+    orchestrator, labels = _dashboard()
+    orchestrator.state.recovery_attempts = {ISSUE: 3}
+    orchestrator.state.pending_stuck_sweep_escalations = {ISSUE}
+    store = orchestrator.deps.queue_cache_store
+    store.save_pending_escalations.side_effect = OSError("disk full")
+
+    with patch("issue_orchestrator.control.maintenance.reset_issue") as reset_issue:
+        reset_issue.return_value = _reset_result(labels)
+        response = TestClient(app).post("/api/reset-retry", json={"issues": [ISSUE]})
+
+    payload = response.json()
+    assert payload["reset"] == []
+    assert [failure["issue"] for failure in payload["failed"]] == [ISSUE]
+    assert "disk full" in payload["failed"][0]["error"]
+    # Not queued for retry: the operator sees the failure and resets again.
+    assert ISSUE not in orchestrator.state.priority_queue
