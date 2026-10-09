@@ -349,18 +349,37 @@ def test_an_older_open_proof_arriving_late_never_replaces_a_newer_one(tmp_path):
     assert store.get(only_in_a.evidence.record_id).state is ValidatedWorkState.RECOVERED
 
 
-def test_a_later_push_of_an_open_pr_is_current_whatever_its_stamp(tmp_path):
-    """A head descending from the recorded one is the PR moving forward."""
-    from tests.unit.validated_work_support import L, TIP, Rig, capture
+@pytest.mark.parametrize("sequence", ["forced-back-then-late-descendant", "late-same-head-then-late-divergent"])
+def test_only_a_strictly_later_observation_moves_an_open_carrier(tmp_path, sequence):
+    """Review r4: (1) the PR was forced back from TIP to its ancestor L, and
+    that later observation is recorded; an earlier proof of TIP arriving late
+    descends from L but is obsolete. (2) A late, older proof of the recorded
+    head must not re-stamp it, or an obsolete divergent proof observed in
+    between would then pass. Either way the obsolete head stays unrecorded and
+    the work only it carries stays held."""
+    from tests.unit.validated_work_support import DIVERGENT, L, ROOT, TIP, Rig, capture
 
     store = Rig(tmp_path / "work.sqlite").open()
-    key = capture(L).evidence.identity.key
+    obsolete = TIP if sequence.startswith("forced") else DIVERGENT
+    held = capture(obsolete, run="run-held", expected=ROOT, state=ValidatedWorkState.PARKED,
+                   failure=ValidatedWorkFailure.WORKTREE_AHEAD_OF_VALIDATION, reason="ahead")
+    store.admit(held)
+    key = held.evidence.identity.key
+    current = CarriedByIssuePullRequest(91, L, "feature-r1", merged=False)
     assert store.record_pr_publication(
-        key, published=CarriedByIssuePullRequest(91, L, "feature-r1", merged=False),
-        observed_at="2026-10-04T09:05:00+00:00") is PrPublicationStatus.ADVANCED
+        capture(L).evidence.identity.key, published=current, observed_at="2026-10-04T09:10:00+00:00",
+    ) is PrPublicationStatus.ADVANCED
+    if sequence.startswith("late-same-head"):
+        assert store.record_pr_publication(
+            capture(L).evidence.identity.key, published=current, observed_at="2026-10-04T09:00:00+00:00",
+        ) is PrPublicationStatus.ALREADY_PUBLISHED
+
     assert store.record_pr_publication(
-        key, published=CarriedByIssuePullRequest(91, TIP, "feature-r1", merged=False),
-        observed_at="2026-10-04T09:00:00+00:00") is PrPublicationStatus.ADVANCED
+        key, published=CarriedByIssuePullRequest(91, obsolete, "feature-r1", merged=False),
+        observed_at="2026-10-04T09:05:00+00:00",
+    ) is PrPublicationStatus.CONTAINMENT_UNPROVEN
+
+    assert store.get(held.evidence.record_id).state is ValidatedWorkState.PARKED
 
 
 def test_an_existing_store_gains_the_carriers_table_and_published_branch_on_open(tmp_path):
