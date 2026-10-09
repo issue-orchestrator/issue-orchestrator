@@ -69,7 +69,7 @@ from .tech_lead_charter_prompt import stage_tech_lead_charter
 from .tech_lead_evidence import build_evidence_map, write_evidence_map
 from .tech_lead_dispositions import recovery_tracker_grants
 from .tech_lead_manifest_builder import TechLeadCandidatePolicy, TechLeadManifestBuilder
-from .tech_lead_recovery_targets import prepare_validated_work_recovery_targets
+from .tech_lead_recovery_targets import prepare_validated_work_launch_grants
 from .tech_lead_run_inputs import (
     LaunchAuthorityTransfer,
     carry_tech_lead_inputs,
@@ -628,7 +628,7 @@ def prepare_tech_lead_session_data(
         if flavor is TechLeadSessionFlavor.HEALTH_REVIEW
         else ()
     )
-    validated_work_authorities = prepare_validated_work_recovery_targets(
+    validated_work_grants = prepare_validated_work_launch_grants(
         data_dir=run_dir / TECH_LEAD_DATA_DIRNAME,
         authority=validated_work_recovery_authority,
         issue_numbers=act_level_issue_numbers,
@@ -660,7 +660,8 @@ def prepare_tech_lead_session_data(
             problem_issue_numbers=problem_issue_numbers,
             observed_session_generations=observed_session_generations,
             observed_rework_targets=rework_targets,
-            observed_validated_work_authorities=validated_work_authorities,
+            observed_validated_work_authorities=validated_work_grants.recovery,
+            observed_validated_work_releases=validated_work_grants.release,
             recovery_tracker_numbers=tracker_grants,
             triage_grants=triage_agenda.grants,
             covered_work=tuple(sorted(covered_work.items())),

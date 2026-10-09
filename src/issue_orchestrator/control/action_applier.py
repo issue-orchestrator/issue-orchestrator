@@ -64,6 +64,7 @@ if TYPE_CHECKING:
     from .scoped_rework import RequestReworkExecutor
     from .tech_lead_reset_retry import TechLeadResetRetryExecutor
     from .tech_lead_validated_work_recovery import TechLeadValidatedWorkRecoveryExecutor
+    from .tech_lead_validated_work_release import TechLeadValidatedWorkReleaseExecutor
     from .tech_lead_review_release import TechLeadReviewReleaseExecutor
     from .tech_lead_operator_decision import OperatorDecisionExecutor
     from .tech_lead_block_resolution import TechLeadBlockResolutionExecutor
@@ -111,6 +112,7 @@ from .actions import (
     CreateTechLeadIssueAction,
     KillHungSessionAction,
     RecoverValidatedWorkAction,
+    ReleaseValidatedWorkAction,
     ReleaseWithheldReviewAction,
     ApplyOperatorDecisionAction,
     ResolveBlockAction,
@@ -151,6 +153,7 @@ _TechLeadOpAction = TypeVar(
     KillHungSessionAction,
     RequestReworkAction,
     RecoverValidatedWorkAction,
+    ReleaseValidatedWorkAction,
     ReleaseWithheldReviewAction,
     ApplyOperatorDecisionAction,
     ResolveBlockAction,
@@ -224,6 +227,8 @@ class ActionApplier:
     tech_lead_kill_session: Optional["TechLeadKillSessionExecutor"] = None
     request_rework: Optional["RequestReworkExecutor"] = None
     recover_validated_work: Optional["TechLeadValidatedWorkRecoveryExecutor"] = None
+    # Approved-only release of records rebuilt elsewhere (#9092).
+    release_validated_work: Optional["TechLeadValidatedWorkReleaseExecutor"] = None
     release_withheld_review: Optional["TechLeadReviewReleaseExecutor"] = None
     apply_operator_decision: Optional["OperatorDecisionExecutor"] = None
     resolve_block: Optional["TechLeadBlockResolutionExecutor"] = None
@@ -330,6 +335,8 @@ class ActionApplier:
                 kill_hung_session=self._tech_lead_op(KillHungSessionAction, lambda: self.tech_lead_kill_session),
                 request_rework=self._apply_request_rework,
                 recover_validated_work=self._tech_lead_op(RecoverValidatedWorkAction, lambda: self.recover_validated_work),
+                release_validated_work=self._tech_lead_op(
+                    ReleaseValidatedWorkAction, lambda: self.release_validated_work),
                 release_withheld_review=self._tech_lead_op(
                     ReleaseWithheldReviewAction, lambda: self.release_withheld_review),
                 apply_operator_decision=self._tech_lead_op(ApplyOperatorDecisionAction, lambda: self.apply_operator_decision),
@@ -604,7 +611,8 @@ class ActionApplier:
             events=self.events, authority=self.tech_lead_ops,
             reset=self.tech_lead_reset_retry, kill=self.tech_lead_kill_session,
             rework=self.request_rework, recovery=self.recover_validated_work,
-            release=self.release_withheld_review, resolution=self.resolve_block)
+            release=self.release_withheld_review, resolution=self.resolve_block,
+            work_release=self.release_validated_work)
 
     def _apply_supersede_pr(self, action: Action) -> ActionResult:
         """Comment on and close a PR that has been superseded by a reset."""

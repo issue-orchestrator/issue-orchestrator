@@ -222,6 +222,24 @@ class TestCacheAndRevocation:
         assert approvals.verify(_issue(500, CLAIMED)).approved  # cached
         assert not approvals.verify(_issue(500, CLAIMED), fresh=True).approved
 
+    def test_the_verified_approval_names_its_maintainer_until_revoked(self) -> None:
+        """#9092: an executor records WHO approved; it reads the verdict the
+        apply-time consent check just verified, and there is none to read
+        before a verification or after a revocation."""
+        evidence = FakeApprovalEvidence()
+        evidence.label(500, by=MAINTAINER)
+        approvals = make_approvals(evidence)
+        with pytest.raises(LookupError):
+            approvals.verified_approval(500)
+
+        assert approvals.confirm(_issue(500, CLAIMED))
+        verdict = approvals.verified_approval(500)
+        assert (verdict.kind, verdict.actor) == (ApprovalVerdictKind.MAINTAINER, MAINTAINER)
+
+        approvals.observe([_issue(500, ["tech-lead-proposal"])])
+        with pytest.raises(LookupError):
+            approvals.verified_approval(500)
+
     def test_approved_added_then_removed_revokes_admission(self) -> None:
         """Escape vector: a maintainer adds `approved`, then it is removed.
         Observing the issue without it drops the verified approval, so a later

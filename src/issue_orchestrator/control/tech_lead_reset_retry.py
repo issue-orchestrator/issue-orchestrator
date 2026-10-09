@@ -73,6 +73,7 @@ from .actions import (
     AddLabelAction,
     KillHungSessionAction,
     RecoverValidatedWorkAction,
+    ReleaseValidatedWorkAction,
     ReleaseWithheldReviewAction,
     ResolveBlockAction,
     ApplyOperatorDecisionAction,
@@ -565,6 +566,13 @@ def _failure_surface_identity(
             action.issue_number,
             "recover_validated_work",
             f"retained validated work for issue #{action.issue_number}",
+        )
+    if isinstance(action, ReleaseValidatedWorkAction):
+        return (
+            action.issue_number,
+            "release_validated_work",
+            f"retained validated work of issue #{action.issue_number}"
+            f" rebuilt in PR #{action.release.superseding_pr_number}",
         )
     if isinstance(action, ReleaseWithheldReviewAction):
         return (

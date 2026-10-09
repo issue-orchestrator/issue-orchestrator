@@ -37,6 +37,19 @@ class ValidatedWorkCaptureObserver(Protocol):
         """
         ...
 
+    def issue_pull_request(
+        self, repo_slug: str, issue_number: int, number: int
+    ) -> PublicationPullRequest | None:
+        """PR ``number`` when it is an open or merged same-repository PR of the
+        issue on any of the issue's own branches, read uncached; else None,
+        or raise when the answer is incomplete (#9092).
+
+        Association is the issue's reference timeline, as for
+        :meth:`issue_pull_requests`, but no branch is excluded: a release
+        names its superseding PR, which may be on the records' own branch.
+        """
+        ...
+
 
 class UnavailableValidatedWorkCaptureObserver:
     def observe(self, request: ValidatedWorkRemoteRequest) -> ValidatedWorkRemoteFacts:
@@ -50,4 +63,9 @@ class UnavailableValidatedWorkCaptureObserver:
     def issue_pull_requests(
         self, request: ValidatedWorkRemoteRequest
     ) -> tuple[PublicationPullRequest, ...]:
+        raise PublicationRemoteError("validated-work remote observation is unavailable")
+
+    def issue_pull_request(
+        self, repo_slug: str, issue_number: int, number: int
+    ) -> PublicationPullRequest | None:
         raise PublicationRemoteError("validated-work remote observation is unavailable")

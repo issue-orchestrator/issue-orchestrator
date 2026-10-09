@@ -130,7 +130,7 @@ def test_abandonment_cannot_cross_a_busy_issue_mutation_gate(tmp_path):
         assert status is IssueDispositionGateStatus.ACQUIRED
         outcome = rig.abandonment.abandon(command)
 
-    assert outcome.status is AbandonStatus.REFUSED_STATE
+    assert outcome.status is AbandonStatus.BUSY
     assert rig.base.store.get(command.authority.record_id).state is State.FAILED
     assert rig.events.events == []
 
@@ -145,7 +145,7 @@ def test_same_thread_execution_reentry_refuses_abandonment_without_effects(tmp_p
     with lease:
         outcome = rig.abandonment.abandon(command)
 
-    assert outcome.status is AbandonStatus.REFUSED_STATE
+    assert outcome.status is AbandonStatus.BUSY
     assert rig.base.store.get(command.authority.record_id).state is State.FAILED
     assert rig.remote.labels == before_labels
     assert rig.events.events == []
@@ -172,7 +172,7 @@ def test_other_thread_execution_refuses_then_release_allows_abandonment(tmp_path
         join_or_fail(thread, 5)
 
     assert result.error is None
-    assert refused.status is AbandonStatus.REFUSED_STATE
+    assert refused.status is AbandonStatus.BUSY
     assert rig.base.store.get(command.authority.record_id).state is State.FAILED
     assert rig.events.events == []
     assert rig.abandonment.abandon(command).status is AbandonStatus.ABANDONED

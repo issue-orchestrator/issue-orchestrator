@@ -91,6 +91,7 @@ TECH_LEAD_MUTATING_ACTION_TYPES: frozenset[ActionType] = (
             ActionType.KILL_HUNG_SESSION,
             ActionType.REQUEST_REWORK,
             ActionType.RECOVER_VALIDATED_WORK,
+            ActionType.RELEASE_VALIDATED_WORK,
             ActionType.RELEASE_WITHHELD_REVIEW,
             ActionType.APPLY_OPERATOR_DECISION,
             ActionType.RESOLVE_BLOCK,
@@ -167,6 +168,7 @@ def tech_lead_action_handlers(
     pattern_registry: "PatternCaseFileRegistry | None" = None,
     promotion_target: "PromotionTargetHost | None",
     recover_validated_work: ActionHandler | None = None,
+    release_validated_work: ActionHandler | None = None,
     release_withheld_review: ActionHandler | None = None,
     apply_operator_decision: ActionHandler | None = None,
     resolve_block: ActionHandler | None = None,
@@ -189,6 +191,14 @@ def tech_lead_action_handlers(
             if recover_validated_work is not None
             else lambda action: ActionResult.fail(
                 action, "validated-work recovery executor is not wired"
+            )
+        ),
+        # Approved-only release of records rebuilt elsewhere (#9092).
+        ActionType.RELEASE_VALIDATED_WORK: (
+            release_validated_work
+            if release_validated_work is not None
+            else lambda action: ActionResult.fail(
+                action, "validated-work release executor is not wired"
             )
         ),
         # Review release re-verifies every precondition in its owner (#7399).

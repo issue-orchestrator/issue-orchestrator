@@ -68,7 +68,7 @@ from issue_orchestrator.domain.validated_work import (
     DispositionPhase, LineageRole, PublicationProvenance, ResolutionKind, ValidatedWorkFailure,
     ValidatedWorkKey, ValidatedWorkState, canonical_lineage_key,
 )
-from issue_orchestrator.domain.validated_work_capture import ValidatedWorkRemoteFacts
+from issue_orchestrator.domain.validated_work_capture import ValidatedWorkRemoteFacts, ValidatedWorkRemoteRequest
 from issue_orchestrator.domain.validated_work_remote_authority import (
     LandedViaMergedPullRequest, PublishedOnOpenPullRequest, carried_by_open_pull_request,
     landed_via_merged_pull_request,
@@ -144,6 +144,23 @@ class GitHubPulls:
             )
             for number, (branch, state) in sorted(self.elsewhere.items())
         )
+
+    def issue_pull_request(self, repo_slug, issue_number, number):
+        """PR ``number`` if the issue's timeline lists it from an issue branch (#9092)."""
+        self.reads += 1
+        if self.unreadable:
+            raise PublicationRemoteError("GitHub is unreadable")
+        assert (repo_slug, issue_number) == (REPO, ISSUE)
+        own = self.merged_pull_requests(ValidatedWorkRemoteRequest(REPO, ISSUE, BRANCH)) if self.merged else ()
+        listed = own + tuple(
+            PublicationPullRequest(
+                n, f"https://github.com/{REPO}/pull/{n}", self.head_repo, REPO, branch, "main",
+                self.pull_head(n), state, f"Refs #{ISSUE}",
+            )
+            for n, (branch, state) in sorted(self.elsewhere.items())
+            if branch.startswith(f"{ISSUE}-")
+        )
+        return next((pr for pr in listed if pr.number == number), None)
 
     def merged_pull_requests(self, request):
         self.reads += 1
