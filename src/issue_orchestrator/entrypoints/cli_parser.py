@@ -580,6 +580,16 @@ def _register_hook_commands(subparsers, handlers: CLICommandHandlers) -> None:
         help="Override validation.publish.cmd when generating scripts/verify-pr.sh",
     )
     setup_guardrails_parser.add_argument(
+        "--python",
+        type=Path,
+        default=None,
+        help=(
+            "Absolute issue-orchestrator interpreter to bake into scripts/verify-pr.sh "
+            "(default: $ISSUE_ORCHESTRATOR_PYTHON, else the running interpreter). "
+            "Refused when inside a linked git worktree or a temp dir."
+        ),
+    )
+    setup_guardrails_parser.add_argument(
         "--config", type=Path, help="Path to config file (default: auto-detect)"
     )
     setup_guardrails_parser.set_defaults(func=handlers.setup_guardrails)

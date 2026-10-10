@@ -2,11 +2,13 @@
 
 from collections.abc import Mapping
 import logging
+import os
 from pathlib import Path
 import shlex
 
 from ..types import Check
 from ...config import Config
+from ...hooks.durable_python import unstable_interpreter_reason
 from ...hooks.hooks import get_adapter, summarize_ai_gate_message
 from ...ai_gate_state import AiGateState, load_ai_gate_state, save_ai_gate_state
 from ...repo_guardrails import (
@@ -371,18 +373,16 @@ def check_repo_guardrails(config: Config) -> list[Check]:
         ]
 
     hooks_path = status.hooks_path_config or ".git/hooks"
-    if status.pre_push_managed and not status.pre_push_current:
-        # A warning, not an error: the old wrapper still gates pushes, so the
-        # engine may start. The repair (setup-guardrails) regenerates it.
+    warnings = _repo_guardrail_warnings(status, hooks_path)
+    if warnings:
+        # A warning, not an error: pushes are still gated today, so the engine
+        # may start. The repair (setup-guardrails) regenerates the files.
         setup_command = _setup_command(config, "setup-guardrails")
         return [
             Check(
                 name="Repo Guardrails",
                 status="warning",
-                detail=(
-                    f"{hooks_path}/pre-push is an older managed wrapper. "
-                    f"Run '{setup_command}' to regenerate it."
-                ),
+                detail="; ".join(warnings) + f". Run '{setup_command}' to regenerate.",
             )
         ]
     detail = f"{hooks_path}/pre-push -> scripts/verify-pr.sh"
@@ -397,6 +397,22 @@ def check_repo_guardrails(config: Config) -> list[Check]:
             detail=detail,
         )
     ]
+
+
+def _repo_guardrail_warnings(status, hooks_path: str) -> list[str]:
+    warnings: list[str] = []
+    if status.pre_push_managed and not status.pre_push_current:
+        warnings.append(f"{hooks_path}/pre-push is an older managed wrapper")
+    preferred = status.verify_preferred_python
+    if preferred is not None:
+        reason = unstable_interpreter_reason(preferred)
+        if reason is not None:
+            warnings.append(
+                f"scripts/verify-pr.sh prefers interpreter {preferred}, but {reason} "
+                "and will disappear with it; regenerate with --python naming a "
+                "stable installation"
+            )
+    return warnings
 
 
 def _requires_repo_local_hook_helper(agent_hooks: Mapping[str, object]) -> bool:
@@ -434,7 +450,25 @@ def _repo_pre_push_problems(config: Config, guardrails) -> list[str]:
             expected_selection = None
         if guardrails.verify_selected_config != expected_selection:
             problems.append("scripts/verify-pr.sh configuration selection drifted")
+    problems.extend(_verify_interpreter_problems(guardrails))
     return problems
+
+
+def _verify_interpreter_problems(guardrails) -> list[str]:
+    """A committed verify-pr.sh whose preferred interpreter is gone (#8087).
+
+    The script then silently falls through to the repo's .venv or bare
+    ``python3``, which usually cannot import issue_orchestrator.
+    """
+    preferred = guardrails.verify_preferred_python
+    if preferred is None:
+        return []
+    if preferred.is_file() and os.access(preferred, os.X_OK):
+        return []
+    return [
+        f"scripts/verify-pr.sh prefers interpreter {preferred}, which does not exist "
+        "or is not executable"
+    ]
 
 
 def _repo_helper_problems(status) -> list[str]:

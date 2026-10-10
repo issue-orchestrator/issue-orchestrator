@@ -499,6 +499,7 @@ class TestCmdSetupGuardrails:
         with pytest.raises(SystemExit):
             parser.parse_args(["harden-repo"])
 
+    @pytest.mark.usefixtures("durable_orchestrator_python")
     def test_cmd_setup_guardrails_installs_guardrails(self, tmp_path, monkeypatch):
         subprocess_repo = tmp_path / "repo"
         subprocess_repo.mkdir()
@@ -526,6 +527,7 @@ class TestCmdSetupGuardrails:
             validation_cmd=None,
             hooks_dir=None,
             config=None,
+            python=None,
         )
 
         result = cmd_setup_guardrails(args)
@@ -545,6 +547,7 @@ class TestCmdSetupGuardrails:
             target=str(tmp_path),
             validation_cmd=None,
             hooks_dir=None,
+            python=None,
         )
 
         result = cmd_setup_guardrails(args)
@@ -571,6 +574,7 @@ class TestCmdSetupGuardrails:
             validation_cmd=None,
             hooks_dir=None,
             config=None,
+            python=None,
         )
 
         result = cmd_setup_guardrails(args)

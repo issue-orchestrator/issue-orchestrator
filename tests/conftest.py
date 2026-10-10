@@ -1,6 +1,7 @@
 """Shared fixtures and configuration for tests."""
 
 import os
+import sys
 
 # Rich's rendering must be pinned BEFORE anything imports the CLI (#7155).
 #
@@ -185,6 +186,21 @@ def isolate_orchestrator_env(monkeypatch, tmp_path):
     safe_repo = tmp_path / "isolated-repo-root"
     safe_repo.mkdir(exist_ok=True)
     monkeypatch.setenv("ISSUE_ORCHESTRATOR_REPO_ROOT", str(safe_repo))
+
+
+@pytest.fixture
+def durable_orchestrator_python(monkeypatch) -> Path:
+    """Name a stable interpreter for setup-guardrails to bake into verify-pr.sh.
+
+    setup-guardrails refuses an interpreter inside a linked git worktree or a
+    temp dir (#8087), and the suite usually runs from a linked worktree's
+    venv. The venv's ``python`` resolves to the base installation, which is
+    neither, so tests that install guardrails without exercising the
+    interpreter choice export that one.
+    """
+    stable = Path(sys.executable).resolve()
+    monkeypatch.setenv("ISSUE_ORCHESTRATOR_PYTHON", str(stable))
+    return stable
 
 
 @pytest.fixture(autouse=True)

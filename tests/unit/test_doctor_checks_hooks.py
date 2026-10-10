@@ -4,6 +4,8 @@ from datetime import datetime, timedelta, timezone
 import subprocess
 from unittest.mock import MagicMock
 
+import pytest
+
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.doctor.checks import hooks as hook_checks
 from issue_orchestrator.infra.ai_gate_state import AiGateState, AiGateResult
@@ -12,6 +14,9 @@ from issue_orchestrator.infra.repo_guardrails import (
     setup_repo_guardrails,
 )
 from issue_orchestrator.domain.models import AgentConfig
+
+# setup-guardrails needs a stable interpreter to bake (#8087).
+pytestmark = pytest.mark.usefixtures("durable_orchestrator_python")
 
 
 def test_check_hook_verification_no_agents_reports_ai_agent_check():
