@@ -9,6 +9,10 @@ missing from the agenda of a review launched after it (#8094).
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import replace
+from pathlib import Path
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,12 +23,16 @@ from issue_orchestrator.adapters.github.http_client import GitHubHttpError
 from issue_orchestrator.control.actions import RemoveLabelAction
 from issue_orchestrator.control.blocked_item_triage import OpenProposals, StateBlockedItemTriage
 from issue_orchestrator.control.dependency_scope_label import plan_dependency_scope_labels
+from issue_orchestrator.control.issue_fetch_resilience import IssueFetchResilience
 from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.control.orchestrator_support import _fetch_and_update_queue
 from issue_orchestrator.control.queue_cache import QueueCacheLabelWrites
+from issue_orchestrator.control.queue_projection import QueueProjection
 from issue_orchestrator.control.scheduler import AvailabilityReason, IssueAvailabilityDecision
-from issue_orchestrator.domain.models import Issue, OrchestratorState
+from issue_orchestrator.domain.models import AgentConfig, Issue, OrchestratorState
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.verification import VerificationResult
+from tests.unit.threading_helpers import join_or_fail, run_in_thread, wait_for_event
 
 ANCHOR = 8095
 BLOCKED = 8089  # carried blocked-cross-milestone until tick 41 removed it
@@ -35,6 +43,7 @@ def _config() -> Config:
     config = Config()
     config.repo = "owner/repo"
     config.tech_lead_review_agent = "agent:tech-lead"
+    config.agents = {"agent:backend": AgentConfig(prompt_path=Path("/tmp/prompt.txt"))}
     return config
 
 
@@ -157,3 +166,89 @@ def test_a_failed_removal_leaves_the_block_on_the_agenda() -> None:
         _engine_adapter(config, state, http).remove_label(BLOCKED, "blocked-cross-milestone")
 
     assert _granted(config, state) == [BLOCKED]
+
+
+# -- a refresh in flight when the write lands (#8113 review F1) -----------------
+
+
+class _ReadThenHold:
+    """GitHub as a refresh reads it: the labels standing at the read, handed back when let go.
+
+    The refresh reads first and then holds until the test releases it, so the
+    label write is made, verified and reported strictly between the read and
+    the commit - every run, with nothing left to timing.
+    """
+
+    def __init__(self, github: list[Issue]) -> None:
+        self._github = github
+        self.has_read = threading.Event()
+        self.release = threading.Event()
+
+    def read(self, *args: object, **kwargs: object) -> list[Issue]:
+        snapshot = [replace(issue, labels=list(issue.labels)) for issue in self._github]
+        self.has_read.set()
+        wait_for_event(self.release, 10, label="the test letting the refresh commit")
+        return snapshot
+
+
+def _tick_refresh(config: Config, state: OrchestratorState, github: _ReadThenHold) -> Callable[[], object]:
+    """The planning cycle's refresh."""
+    scheduler = MagicMock()
+    scheduler.evaluate_issues.return_value = []
+    workflow = MagicMock()
+    workflow.fetch_all_issues.side_effect = github.read
+    return lambda: _fetch_and_update_queue(
+        config=config,
+        events=MagicMock(),
+        state=state,
+        repository_host=MagicMock(),
+        scheduler=scheduler,
+        github_workflow=workflow,
+        refresh_requested=True,
+        inflight_stable_ids={},
+        issue_fetch_resilience=IssueFetchResilience("owner/repo"),
+    )
+
+
+def _projection_refresh(config: Config, state: OrchestratorState, github: _ReadThenHold) -> Callable[[], object]:
+    """The queue projection's refresh."""
+    host = MagicMock()
+    host.list_issues.side_effect = github.read
+    return lambda: QueueProjection(config, host, MagicMock()).update_and_emit(state)
+
+
+_WRITES = {
+    # (issue, label, now standing, the agenda a review launched after it gets)
+    "removed-block": (BLOCKED, "blocked-cross-milestone", False, []),
+    "added-block": (FRESH, "needs-human", True, [FRESH, BLOCKED]),
+}
+
+
+def _labels(cached: list, number: int) -> list[str]:
+    return next(list(issue.labels) for issue in cached if issue.number == number)
+
+
+@pytest.mark.parametrize("refresh", [_tick_refresh, _projection_refresh], ids=["tick", "projection"])
+@pytest.mark.parametrize("write", list(_WRITES), ids=list(_WRITES))
+def test_a_write_landing_while_a_refresh_is_in_flight_survives_its_commit(refresh, write) -> None:
+    issue_number, label, present, granted = _WRITES[write]
+    config, state = _config(), _board()
+    github = _ReadThenHold(_board().cached_scope_issues)  # GitHub before the write
+    thread, outcome = run_in_thread(refresh(config, state, github))
+    wait_for_event(github.has_read, 10, label="the refresh reading GitHub")
+
+    adapter = _engine_adapter(config, state, MagicMock())
+    if present:
+        adapter.add_label(issue_number, label)
+    else:
+        adapter.remove_label(issue_number, label)
+    assert _granted(config, state) == granted
+
+    github.release.set()
+    join_or_fail(thread, 10, label="the refresh")
+    outcome.unwrap()
+
+    for cached in (state.cached_scope_issues, state.cached_queue_issues):
+        assert (label in _labels(cached, issue_number)) is present
+    assert _granted(config, state) == granted
+    assert state.issue_cache_ledger.kept_writes == 0

@@ -36,7 +36,7 @@ from ..ports.operator_issue_commands import (
     OperatorCommandStatus,
 )
 from .operator_unblock import OperatorUnblockOutcome, OperatorUnblocker
-from .queue_cache import QueueCache
+from .queue_cache import QueueCache, QueueCacheFetch
 from .retry_history_state import RetryHistoryState
 
 if TYPE_CHECKING:
@@ -86,13 +86,14 @@ class OperatorIssueCommandRunner:
         the tick: state lock, then the owner's effects lock.
         """
         def settle() -> OperatorCommandOutcome:
-            observed = tuple(self.fresh_labels.read_issue_labels(issue_number))
-            return self._settle(
-                issue_number,
-                OperatorCommandIntent.RETRY,
-                self.unblocker.retry(issue_number, observed, self.open_prs),
-                lambda settled: self._make_retryable(issue_number, observed, settled),
-            )
+            with self._queue_cache().fetch() as fetched:
+                observed = tuple(self.fresh_labels.read_issue_labels(issue_number))
+                return self._settle(
+                    issue_number,
+                    OperatorCommandIntent.RETRY,
+                    self.unblocker.retry(issue_number, observed, self.open_prs),
+                    lambda settled: self._make_retryable(issue_number, observed, settled, fetched),
+                )
 
         return self.run_locked(settle)
 
@@ -117,8 +118,9 @@ class OperatorIssueCommandRunner:
         the scheduler still refuses the issue for as long as it carries one.
         """
         def settle() -> tuple[str, ...]:
-            observed = tuple(self.fresh_labels.read_issue_labels(issue_number))
-            self._make_retryable(issue_number, observed, OperatorUnblockOutcome())
+            with self._queue_cache().fetch() as fetched:
+                observed = tuple(self.fresh_labels.read_issue_labels(issue_number))
+                self._make_retryable(issue_number, observed, OperatorUnblockOutcome(), fetched)
             return tuple(self.unblocker.labels.get_blocking(list(observed)))
 
         return self.run_locked(settle)
@@ -218,6 +220,7 @@ class OperatorIssueCommandRunner:
         issue_number: int,
         observed: tuple[str, ...],
         labels: OperatorUnblockOutcome,
+        fetched: QueueCacheFetch,
     ) -> None:
         """Clear the retry gates, then reconcile the cached copy behind them.
 
@@ -245,6 +248,8 @@ class OperatorIssueCommandRunner:
         from ``observed``, the pre-write snapshot this attempt actually acted
         on, cannot drift that way: it is authoritative for every label,
         including the non-gating ones the cache would otherwise be trusted for.
+        ``fetched`` was opened before ``observed`` was read, so a label another
+        thread wrote since then is carried onto it too (#8113).
         """
         state = self.state()
         RetryHistoryState(state).make_retryable(issue_number)
@@ -259,8 +264,8 @@ class OperatorIssueCommandRunner:
             label for label in labels.added if label not in observed
         )
         updated = replace(cached, labels=settled)
-        queue_cache = QueueCache(self.config, state, self.queue_cache_store)
-        queue_cache.upsert_refreshed_issue(updated)
+        queue_cache = self._queue_cache()
+        queue_cache.upsert_refreshed_issue(updated, fetched=fetched)
         queue_cache.save_snapshot()
         logger.debug(
             "[cache] Reset issue #%d for retry: removed=%s, settled labels=%s",
@@ -298,9 +303,10 @@ class OperatorIssueCommandRunner:
             entry for entry in state.session_history
             if entry.issue_number != issue_number
         ]
-        QueueCache(self.config, state, self.queue_cache_store).remove_issue_and_save(
-            issue_number
-        )
+        self._queue_cache().remove_issue_and_save(issue_number)
+
+    def _queue_cache(self) -> QueueCache:
+        return QueueCache(self.config, self.state(), self.queue_cache_store)
 
 
 __all__ = ["OperatorIssueCommandRunner"]

@@ -58,7 +58,7 @@ from .health_review_trigger import recover_pending_tech_lead_anchors
 from .stuck_sweep_state import hydrate_stuck_sweep_state
 from .action_applier import ActionApplier
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
-from .queue_cache import QueueCache, QueueMutationStatus, record_issue_refreshes
+from .queue_cache import QueueCache, QueueCacheFetch, QueueMutationStatus, record_issue_refreshes
 from .review_validity import evaluate_review_validity
 from .needs_human_block import NO_OTHER_NEEDS_HUMAN_CAUSES, SharedNeedsHumanBlock
 from .human_gates import HumanGates
@@ -73,7 +73,6 @@ from ..ports.session_runner import DiscoveredSession
 from ..infra import gh_audit
 from ..infra.repo_identity import get_repo_head_sha
 from ..infra.sqlite_maintenance import enforce_pragmas_on_startup, run_backups_if_due
-
 
 
 logger = logging.getLogger(__name__)
@@ -372,16 +371,16 @@ class StartupManager:
         """
         if state.cached_queue_issues:
             # Warm path: filter in-progress from cache (0 GitHub calls)
-            stale_in_progress = self._recover_stale_in_progress_from_label_store(state.cached_queue_issues)
             queue_cache = QueueCache(self.config, state, self._queue_cache_store)
-            for issue in stale_in_progress:
-                outcome = queue_cache.upsert_refreshed_issue(issue)
-                if outcome.status != QueueMutationStatus.ACCEPTED:
-                    logger.warning(
-                        "[startup] Recovered locally in-progress issue is out of dashboard queue scope: issue=%d status=%s",
-                        issue.number,
-                        outcome.status.value,
-                    )
+            with queue_cache.fetch() as fetched:
+                stale_in_progress = self._recover_stale_in_progress_from_label_store(state.cached_queue_issues)
+                for issue in stale_in_progress:
+                    outcome = queue_cache.upsert_refreshed_issue(issue, fetched=fetched)
+                    if outcome.status != QueueMutationStatus.ACCEPTED:
+                        logger.warning(
+                            "[startup] Recovered locally in-progress issue is out of dashboard queue scope: issue=%d status=%s",
+                            issue.number, outcome.status.value,
+                        )
             if stale_in_progress and self._queue_cache_store is not None:
                 queue_cache.save_snapshot()
             issues_by_number = {
@@ -844,29 +843,29 @@ class StartupManager:
             return
 
         state.startup_message = "Restoring queue cache..."
-        cached_issues = store.load_issues(self.config.repo or "")  # `load_issues` refuses a blank repo at its own boundary (#7255)
-        cached_watermark = store.load_watermark()
         queue_cache = QueueCache(self.config, state, store)
-
-        try:
-            # Guard *only* the issue-list fetch. A persistent repo-not-found or
-            # auth failure here raises PermanentIssueFetchError, which propagates
-            # out of run_startup so the orchestrator fails fast with an
-            # actionable message. A transient failure degrades-and-continues.
-            self._issue_fetch_resilience.guard(
-                lambda: self._sync_queue_from_github(
-                    state, queue_cache, cached_issues, cached_watermark,
+        with queue_cache.fetch() as fetched:  # before both reads, so later label writes reach the commit (#8113)
+            cached_issues = store.load_issues(self.config.repo or "")  # `load_issues` refuses a blank repo at its own boundary (#7255)
+            cached_watermark = store.load_watermark()
+            try:
+                # Guard *only* the issue-list fetch. A persistent repo-not-found or
+                # auth failure here raises PermanentIssueFetchError, which propagates
+                # out of run_startup so the orchestrator fails fast with an
+                # actionable message. A transient failure degrades-and-continues.
+                self._issue_fetch_resilience.guard(
+                    lambda: self._sync_queue_from_github(
+                        state, queue_cache, fetched, cached_issues, cached_watermark,
+                    )
                 )
-            )
-        except TransientIssueFetchError as exc:
-            # Degrade: come up on the last-known-good cached queue (if any) and
-            # let the main loop re-sync. Persist nothing so the good snapshot
-            # stays intact, and let the remaining startup phases still run.
-            if cached_issues:
-                queue_cache.replace_from_refresh(list(cached_issues))
-                state.queue_delta_watermark = cached_watermark
-            self._note_degraded_queue_fetch(exc, state)
-            return
+            except TransientIssueFetchError as exc:
+                # Degrade: come up on the last-known-good cached queue (if any) and
+                # let the main loop re-sync. Persist nothing so the good snapshot
+                # stays intact, and let the remaining startup phases still run.
+                if cached_issues:
+                    queue_cache.replace_from_refresh(list(cached_issues), fetched=fetched)
+                    state.queue_delta_watermark = cached_watermark
+                self._note_degraded_queue_fetch(exc, state)
+                return
 
         # The queue now reflects a successful GitHub-backed sync, so its labels
         # are safe to treat as source of truth during label_store reconciliation.
@@ -879,6 +878,7 @@ class StartupManager:
         self,
         state: OrchestratorState,
         queue_cache: QueueCache,
+        fetched: QueueCacheFetch,
         cached_issues: Sequence[Issue],
         cached_watermark: str | None,
     ) -> None:
@@ -920,7 +920,7 @@ class StartupManager:
                     issue_map.pop(issue.number, None)
 
             # Apply eligibility policy (scope + exclusion filters)
-            queue_cache.replace_from_refresh(list(issue_map.values()))
+            queue_cache.replace_from_refresh(list(issue_map.values()), fetched=fetched)
             state.queue_delta_watermark = next_watermark or cached_watermark
             logger.info(
                 "[STARTUP] Delta sync: %d delta issues, %d in queue after filter",

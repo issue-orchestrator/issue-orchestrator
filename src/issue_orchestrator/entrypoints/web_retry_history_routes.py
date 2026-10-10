@@ -562,15 +562,16 @@ def _enqueue_reset_retry_issue(
     result: Any,
 ) -> dict[str, Any] | None:
     enqueue_started_at = time.monotonic()
-    refreshed_issue = repository_host.get_issue(issue_number)
-    if refreshed_issue is None:
-        return _make_reset_failure(
-            issue_number,
-            result,
-            f"Issue #{issue_number} not found after reset",
-        )
-
-    outcome = queue_cache.upsert_refreshed_issue(refreshed_issue)
+    # Opened before the read: a label write landing meanwhile reaches the commit (#8113).
+    with queue_cache.fetch() as fetched:
+        refreshed_issue = repository_host.get_issue(issue_number)
+        if refreshed_issue is None:
+            return _make_reset_failure(
+                issue_number,
+                result,
+                f"Issue #{issue_number} not found after reset",
+            )
+        outcome = queue_cache.upsert_refreshed_issue(refreshed_issue, fetched=fetched)
     refreshed_at = time.time()
     if outcome.status == QueueMutationStatus.ACCEPTED:
         record_issue_refreshes(state, {issue_number}, refreshed_at)

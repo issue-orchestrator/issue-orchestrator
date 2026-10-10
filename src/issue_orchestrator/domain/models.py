@@ -18,6 +18,7 @@ from .ci_failure import CiJobAssessment
 from .integration_branch import IntegrationDeliveryView, IntegrationStep
 from .dependency_gates import DependencyGateSnapshot
 from .host_rate_limit import HostRateLimitWindow
+from .issue_cache_ledger import IssueCacheLedger
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from .session_key import SessionKey  # re-exported for callers
 from .issue_run_evidence import ReworkTarget
@@ -2217,6 +2218,10 @@ class OrchestratorState:
     startup_message: str = ""  # Current startup task description
     cached_scope_issues: list["IssueProtocol"] = field(default_factory=list)  # Cached full in-scope issue snapshot for dashboard/runtime recovery
     cached_queue_issues: list["IssueProtocol"] = field(default_factory=list)  # Cached runnable queue for instant pagination
+    # #8113: the one serial order of every change to the two caches above -
+    # refreshes, upserts and the engine's own label writes, from any thread.
+    # Written only through QueueCache, which every caller builds over this state.
+    issue_cache_ledger: IssueCacheLedger = field(default_factory=IssueCacheLedger, repr=False, compare=False)
     queue_last_refresh_at: float = 0.0  # Unix timestamp of last queue refresh
     queue_last_network_sync_at: float = 0.0  # Unix timestamp of last network sync attempt
     queue_last_full_scan_at: float = 0.0  # Unix timestamp of last full GitHub scan
