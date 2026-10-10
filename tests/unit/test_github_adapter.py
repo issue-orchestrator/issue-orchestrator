@@ -591,6 +591,73 @@ class TestLabelOperations:
         assert cache.get_issue_labels(42) is None
 
 
+class TestLabelWriteReports:
+    """Every completed label write is reported, so a label cache can follow it (#8113)."""
+
+    @pytest.fixture
+    def writes(self):
+        return _RecordedLabelWrites()
+
+    @pytest.fixture
+    def adapter(self, mock_config, mock_http_client, mock_verification_service, cache, writes):
+        return GitHubAdapter(
+            repo="owner/repo",
+            config=mock_config,
+            cache=cache,
+            verification_service=mock_verification_service,
+            http_client=mock_http_client,
+            verify_writes=True,
+            label_writes=writes,
+        )
+
+    def test_add_reports_the_label_present(self, adapter, writes):
+        adapter.add_label(42, "needs-human")
+
+        assert writes.seen == [(42, "needs-human", True)]
+
+    def test_remove_reports_the_label_absent(self, adapter, writes):
+        adapter.remove_label(42, "blocked-cross-milestone")
+
+        assert writes.seen == [(42, "blocked-cross-milestone", False)]
+
+    def test_remove_of_an_already_absent_label_reports_it_absent(
+        self, adapter, mock_http_client, writes
+    ):
+        """GitHub's 404 proves the label is gone; a cache still holding it would
+        re-plan the same remove on every tick."""
+        mock_http_client.remove_label.side_effect = GitHubHttpError("Not found", status_code=404)
+
+        adapter.remove_label(42, "blocked-cross-milestone")
+
+        assert writes.seen == [(42, "blocked-cross-milestone", False)]
+
+    def test_an_unverified_add_reports_nothing(
+        self, adapter, mock_verification_service, writes
+    ):
+        mock_verification_service.verify_condition.return_value = (VerificationResult.FAILED_FATAL, "state")
+
+        with pytest.raises(GitHubHttpError):
+            adapter.add_label(42, "needs-human")
+
+        assert writes.seen == []
+
+    def test_a_failed_remove_reports_nothing(self, adapter, mock_http_client, writes):
+        mock_http_client.remove_label.side_effect = GitHubHttpError("boom", status_code=500)
+
+        with pytest.raises(GitHubHttpError):
+            adapter.remove_label(42, "needs-human")
+
+        assert writes.seen == []
+
+
+class _RecordedLabelWrites:
+    def __init__(self) -> None:
+        self.seen: list[tuple[int, str, bool]] = []
+
+    def label_written(self, issue_number: int, label: str, *, present: bool) -> None:
+        self.seen.append((issue_number, label, present))
+
+
 class TestPROperations:
     """Test PR-related operations."""
 

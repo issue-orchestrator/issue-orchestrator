@@ -6,18 +6,21 @@ cannot bypass scope policy when updating ``state.cached_queue_issues``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, is_dataclass, replace
 from enum import Enum
 import logging
+import threading
 import time
 import traceback
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from ..history import issues_held_by_session_history
 from .issue_scope import issue_scope_skip_detail
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
     from ..infra.config import Config
     from ..domain.models import OrchestratorState
     from ..ports.issue import Issue
@@ -137,6 +140,48 @@ class QueueCache:
             return QueueMutationOutcome(status=status, in_queue=True, updated=was_present)
         return QueueMutationOutcome(status=status, in_queue=False, updated=False)
 
+    def reflect_label_write(self, issue_number: int, label: str, *, present: bool) -> bool:
+        """Carry a label write the engine just made onto the cached copies (#8113).
+
+        Without this the cache holds the labels of the last GitHub refresh, so
+        every reader of it - the triage agenda, the board snapshot, the
+        planners - lags the engine's own writes: a block removed this tick
+        still earned a triage grant and had its removal re-planned every tick,
+        and a block put on this tick was missing from the agenda of a review
+        launched after it (#8094).
+
+        Only issues already cached are touched; a number the cache does not
+        hold (a pull request, an issue outside scope) waits for a refresh to
+        decide whether it belongs. The cached copy is replaced in its slot
+        rather than the list rebound, so a write reported from another thread
+        can never put back a list a concurrent refresh has just replaced. If
+        the write takes the issue out of scope (a configured exclude label),
+        it leaves the cache by the same rule a refresh applies.
+
+        Returns whether a cached copy changed.
+        """
+        changed = False
+        in_scope = True
+        for cached in (self._state.cached_scope_issues, self._state.cached_queue_issues):
+            for index, issue in enumerate(cached):
+                if issue.number != issue_number:
+                    continue
+                updated = _with_label(issue, label, present=present)
+                if updated is None:
+                    continue
+                cached[index] = updated
+                changed = True
+                in_scope = in_scope and _matches_scope(self._config, updated)
+        if not in_scope:
+            self._state.cached_scope_issues = [
+                issue for issue in self._state.cached_scope_issues if issue.number != issue_number
+            ]
+            self._state.cached_queue_issues = [
+                issue for issue in self._state.cached_queue_issues if issue.number != issue_number
+            ]
+            self.prune_refresh_timestamps()
+        return changed
+
     def remove_issue(self, issue_number: int) -> None:
         """Remove issue from cached queue and refresh metadata."""
         self._state.cached_scope_issues = [
@@ -218,6 +263,32 @@ class QueueCache:
             self._state.queue_delta_watermark,
             repo=self._config.repo or "",  # cache/display value, not work identity; identity uses require_repo (#7255)
         )
+
+
+class QueueCacheLabelWrites:
+    """The issue cache's subscription to the engine's label writes (#8113).
+
+    The repository adapter reports every label add and remove it completes
+    (:class:`~..ports.label_write_observer.LabelWriteObserver`), from
+    whichever thread wrote it: the tick, a background review exchange, an
+    operator command. Reports are serialised here so two writes to one issue
+    cannot each start from the copy the other is replacing.
+    """
+
+    def __init__(self, config: "Config", state: "OrchestratorState") -> None:
+        self._cache = QueueCache(config, state)
+        self._lock = threading.Lock()
+
+    def label_written(self, issue_number: int, label: str, *, present: bool) -> None:
+        with self._lock:
+            changed = self._cache.reflect_label_write(issue_number, label, present=present)
+        if changed:
+            logger.debug(
+                "[QUEUE_CACHE] #%d cached labels follow the engine's write: %s %s",
+                issue_number,
+                "+" if present else "-",
+                label,
+            )
 
 
 def record_issue_refreshes(
@@ -313,6 +384,23 @@ def _record_pending_shrink(
         )
     state.queue_pending_shrink_prior_count = prior_count
     state.queue_pending_shrink_candidate_count = candidate_count
+
+
+def _with_label(issue: "Issue", label: str, *, present: bool) -> "Issue | None":
+    """``issue`` with ``label`` standing or not, or None when it already is.
+
+    Case-insensitive, as GitHub folds label names.
+    """
+    folded = label.casefold()
+    kept = [name for name in issue.labels if name.casefold() != folded]
+    standing = len(kept) < len(issue.labels)
+    if standing == present:
+        return None
+    if not is_dataclass(issue) or isinstance(issue, type):
+        raise TypeError(f"cached issue #{issue.number} is not a snapshot dataclass: {type(issue).__name__}")
+    # Each Issue implementation keeps its own sequence type (tuple or list).
+    rebuild = cast("Callable[[list[str]], Sequence[str]]", type(issue.labels))
+    return replace(issue, labels=rebuild([*kept, label] if present else kept))
 
 
 def _merge_issue_lists(

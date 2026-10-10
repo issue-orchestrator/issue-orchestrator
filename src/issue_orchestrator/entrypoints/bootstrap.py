@@ -75,6 +75,7 @@ from .bootstrap_validated_work import build_validated_work_escrow_maintenance as
 from ..infra.env import ENV_PREFIX
 from ..adapters.github.repo import get_repo_from_git, GitRepoError
 from ..ports.event_sink import EventSink, NullEventSink
+from ..ports.label_write_observer import LabelWriteObserver
 from ..ports.manual_publication import ManualPublisher
 from ..ports.validated_work_drain import NullValidatedWorkRecoveryDrain
 from ..ports.validated_work_verification import OrchestratorLivenessPort
@@ -112,6 +113,7 @@ from ..control import (
 )
 from ..control.action_applier import ActionApplier
 from ..control.governed_label_set import GovernedLabelSet
+from ..control.queue_cache import QueueCacheLabelWrites
 from ..control.fact_gatherer import FactGatherer
 from ..control.health_gate import HealthGate
 from ..control.human_gates import HumanGates
@@ -196,7 +198,7 @@ def _create_github_auth(repo: str, config: Config) -> GitHubAuth:
     )
 
 
-def _create_github_adapter(repo: str, config: Config, auth: GitHubAuth) -> GitHubAdapter:
+def _create_github_adapter(repo: str, config: Config, auth: GitHubAuth, label_writes: LabelWriteObserver) -> GitHubAdapter:
     """Create GitHub adapter with cache and verification service."""
     cache_ttl = float(max(0, getattr(config, "fetch_layer_network_sync_seconds", 0)))
     github_cache = GitHubCache(default_ttl=cache_ttl)
@@ -217,6 +219,7 @@ def _create_github_adapter(repo: str, config: Config, auth: GitHubAuth) -> GitHu
         cache=github_cache,
         verification_service=verification_service,
         auth=auth,
+        label_writes=label_writes,
     )
 
 
@@ -492,10 +495,11 @@ def build_orchestrator(
     timeline_writer = DefaultTimelineWriter(timeline_store)
     timeline_sink = TimelineEventSink(timeline_writer)
 
-    # Resolve repo and create GitHub adapter
+    # Resolve repo and create GitHub adapter; its label writes reach the engine's issue cache (#8113)
+    runtime_state = OrchestratorState()
     repo = _resolve_repo(config)
     github_auth = _create_github_auth(repo, config) if repo else None
-    github = _create_github_adapter(repo, config, github_auth) if repo and github_auth else None
+    github = _create_github_adapter(repo, config, github_auth, QueueCacheLabelWrites(config, runtime_state)) if repo and github_auth else None
 
     # Set up event sinks
     events, event_hub = _setup_event_sinks(base_events, github, timeline_sink)
@@ -622,7 +626,6 @@ def build_orchestrator(
     # port into it (#6924).
     agent_callback_endpoint = RuntimeAgentCallbackEndpoint()
 
-
     # Built here, before the completion pipeline, because that pipeline needs
     # the shared-block owner: the agent's typed needs_human outcome routes
     # through it (#6999 F2 round 4).
@@ -640,7 +643,6 @@ def build_orchestrator(
     if pr_scanner is not None:
         pr_scanner.attach_human_gates(human_gates)
 
-    runtime_state = OrchestratorState()
     issue_run_ledger, issue_run_allocator = build_issue_run_services(config, session_output, working_copy)
     assert action_applier is not None
     assert fresh_issue_reader is not None
@@ -659,9 +661,7 @@ def build_orchestrator(
     completion_intake = build_completion_intake(
         config, issue_run_ledger, issue_run_allocator, working_copy, command_runner, validated_work
     )
-    if action_applier is not None:
-        action_applier.completion_intake = completion_intake
-    assert action_applier is not None
+    action_applier.completion_intake = completion_intake
     completion_processor, session_controller_instance, completion_handler_factory = (
         create_completion_components(
             config,

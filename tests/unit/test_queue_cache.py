@@ -5,9 +5,11 @@ from unittest.mock import Mock
 
 import pytest
 
+from issue_orchestrator.adapters.github.github_issue import GitHubIssue
 from issue_orchestrator.control.queue_cache import (
     QUEUE_SHRINK_CONFIRM_DELAY_SECONDS,
     QueueCache,
+    QueueCacheLabelWrites,
     QueueMutationStatus,
     clear_issue_refresh,
     queue_shrink_confirmation_due,
@@ -442,3 +444,95 @@ def test_prune_refresh_timestamps_discards_stale_visible_issue_numbers(monkeypat
     assert state.issue_refresh_timestamps == {}
     assert state.issue_last_refreshed_at == {}
     assert state.awaiting_merge_drift_scan_timestamps == {}
+
+
+# -- the engine's own label writes (#8113) ------------------------------------
+
+
+def _blocked_board() -> OrchestratorState:
+    issues = [
+        Issue(number=1, title="A", labels=["agent:web"]),
+        Issue(number=2, title="B", labels=["agent:web", "blocked-cross-milestone", "priority:high"]),
+        Issue(number=3, title="C", labels=["agent:web"]),
+    ]
+    return OrchestratorState(cached_scope_issues=list(issues), cached_queue_issues=list(issues))
+
+
+def _labels_of(issues: list, number: int) -> list[str]:
+    return next(list(issue.labels) for issue in issues if issue.number == number)
+
+
+def test_a_removed_label_leaves_both_cached_copies_in_place():
+    state = _blocked_board()
+
+    changed = QueueCache(_make_config(), state).reflect_label_write(2, "blocked-cross-milestone", present=False)
+
+    assert changed is True
+    for cached in (state.cached_scope_issues, state.cached_queue_issues):
+        assert [issue.number for issue in cached] == [1, 2, 3]  # order is kept
+        assert _labels_of(cached, 2) == ["agent:web", "priority:high"]
+
+
+def test_an_added_label_reaches_both_cached_copies():
+    state = _blocked_board()
+
+    changed = QueueCache(_make_config(), state).reflect_label_write(1, "needs-human", present=True)
+
+    assert changed is True
+    assert _labels_of(state.cached_scope_issues, 1) == ["agent:web", "needs-human"]
+    assert _labels_of(state.cached_queue_issues, 1) == ["agent:web", "needs-human"]
+
+
+def test_a_write_already_reflected_changes_nothing_whatever_its_case():
+    """GitHub folds label names: removing ``Blocked-Cross-Milestone`` removes it."""
+    state = _blocked_board()
+    cache = QueueCache(_make_config(), state)
+
+    assert cache.reflect_label_write(2, "BLOCKED-CROSS-MILESTONE", present=True) is False
+    assert cache.reflect_label_write(2, "Blocked-Cross-Milestone", present=False) is True
+    assert _labels_of(state.cached_scope_issues, 2) == ["agent:web", "priority:high"]
+
+
+def test_a_number_the_cache_does_not_hold_is_left_to_the_refresh():
+    """A pull request, or an issue outside scope: nothing is invented for it."""
+    state = _blocked_board()
+
+    changed = QueueCache(_make_config(), state).reflect_label_write(99, "needs-human", present=True)
+
+    assert changed is False
+    assert [issue.number for issue in state.cached_scope_issues] == [1, 2, 3]
+    assert [issue.number for issue in state.cached_queue_issues] == [1, 2, 3]
+
+
+def test_a_write_that_takes_the_issue_out_of_scope_drops_it_like_a_refresh_would():
+    config = _make_config()
+    config.filtering.exclude_labels = ["wontfix"]
+    state = _blocked_board()
+
+    QueueCache(config, state).reflect_label_write(3, "wontfix", present=True)
+
+    assert [issue.number for issue in state.cached_scope_issues] == [1, 2]
+    assert [issue.number for issue in state.cached_queue_issues] == [1, 2]
+
+
+def test_a_github_snapshot_keeps_its_immutable_labels():
+    issue = GitHubIssue(number=7, repo="owner/repo", title="G", labels=("agent:web", "blocked"))
+    state = OrchestratorState(cached_scope_issues=[issue], cached_queue_issues=[issue])
+
+    QueueCache(_make_config(), state).reflect_label_write(7, "blocked", present=False)
+
+    assert state.cached_scope_issues[0].labels == ("agent:web",)
+    assert state.cached_queue_issues[0].labels == ("agent:web",)
+
+
+def test_a_reported_write_lands_in_the_list_readers_already_hold():
+    """Reported from any thread, the copy is replaced in its slot rather than
+    the list rebound, so it cannot swap out a list a concurrent refresh has
+    just installed."""
+    state = _blocked_board()
+    held_by_reader = state.cached_queue_issues
+
+    QueueCacheLabelWrites(_make_config(), state).label_written(2, "blocked-cross-milestone", present=False)
+
+    assert state.cached_queue_issues is held_by_reader
+    assert _labels_of(held_by_reader, 2) == ["agent:web", "priority:high"]
