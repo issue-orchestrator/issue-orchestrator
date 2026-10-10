@@ -43,7 +43,7 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING
 
-from ..domain.blocked_item_triage import block_episode
+from ..domain.blocked_item_triage import BlockEpisode, block_episode
 
 if TYPE_CHECKING:
     from ..domain.tech_lead_approval import LabelEvent
@@ -85,7 +85,7 @@ class BlockEpisodes:
         #: until the next recheck (no GitHub read on every tick for them).
         self._failed: set[int] = set()
 
-    def verified(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
+    def verified(self, issues: Mapping[int, "Issue"]) -> dict[int, BlockEpisode]:
         """Each blocked item's episode, every part read from GitHub now.
 
         An item any part of whose episode cannot be verified is left out: its
@@ -94,7 +94,7 @@ class BlockEpisodes:
         self._onsets, self._held, self._failed = {}, set(), set()
         return self._compose(issues, self._verify(issues))
 
-    def current(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
+    def current(self, issues: Mapping[int, "Issue"]) -> dict[int, BlockEpisode]:
         """The episodes, every item re-verified once per recheck period.
 
         The tick reads this. Between rechecks it reads GitHub only for an item
@@ -158,8 +158,10 @@ class BlockEpisodes:
             dated = set(self._dated_labels(issues[number]))
             self._onsets[number] = {label: onset for label, onset in onsets.items() if label in dated}
 
-    def _compose(self, issues: Mapping[int, "Issue"], needs_human: Mapping[int, str]) -> dict[int, str]:
-        episodes: dict[int, str] = {}
+    def _compose(
+        self, issues: Mapping[int, "Issue"], needs_human: Mapping[int, str],
+    ) -> dict[int, BlockEpisode]:
+        episodes: dict[int, BlockEpisode] = {}
         for number, issue in issues.items():
             held = self._holds_needs_human(issue)
             if held and number not in needs_human:
@@ -223,10 +225,10 @@ class _UnwiredEpisodes(BlockEpisodes):
     def __init__(self) -> None:
         pass
 
-    def verified(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
+    def verified(self, issues: Mapping[int, "Issue"]) -> dict[int, BlockEpisode]:
         raise RuntimeError("block episodes are not wired (#8688, #8731)")
 
-    def current(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
+    def current(self, issues: Mapping[int, "Issue"]) -> dict[int, BlockEpisode]:
         raise RuntimeError("block episodes are not wired (#8688, #8731)")
 
 

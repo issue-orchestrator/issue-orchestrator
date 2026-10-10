@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
@@ -40,6 +40,7 @@ from issue_orchestrator.control.tech_lead_operator_decision import (
 from issue_orchestrator.control.tech_lead_proposals import plan_approved_tech_lead_op_executions
 from issue_orchestrator.domain.blocked_item_triage import (
     MAX_TRIAGE_ITEMS_PER_RUN,
+    BlockEpisode,
     TriageAgenda,
     TriageAgendaItem,
     TriageGrant,
@@ -192,6 +193,11 @@ class _Episodes:
             self.recorded[issue_number] = f"{applied_at}#gh{event_id}"
         self.bound[issue_number] = event_id
         return self.recorded[issue_number]
+
+
+def _rendered(episodes: Mapping[int, BlockEpisode]) -> dict[int, str]:
+    """The episodes as a fingerprint carries them."""
+    return {number: str(episode) for number, episode in episodes.items()}
 
 
 def _application_event(event_id: int) -> LabelEvent:
@@ -433,6 +439,90 @@ def test_a_changed_block_is_triaged_again() -> None:
     assert item.prior is not None and item.prior.effect == "applied"
 
 
+# -- the tech lead's own hand-over (#8112) -------------------------------------
+
+#: The needs-human generation a hand-over opens when it puts the label on.
+HANDED_OVER = "2026-10-04T13:30:43+00:00#2"
+
+
+def _handed_over(
+    blocked: tuple[str, ...], after: tuple[str, ...], store: _Episodes,
+    applications: dict[Any, Any] | None = None,
+) -> tuple[Any, bool]:
+    """Triage the item human_hand_over on the block it is granted with
+    *blocked*, let the escalation leave it with *after*, and return the next
+    health review's agenda and whether the tick owes a triage."""
+    from issue_orchestrator.control.blocked_item_triage import triage_owed
+
+    [granted] = _owner([_issue(8091, "agent:backend", *blocked)]).agenda(
+        anchor_issue_number=ANCHOR,
+    ).grants
+    ledger = _Ledger({8091: [_triage_record(
+        8091, TriageClass.HUMAN_HAND_OVER, granted.fingerprint, effect="applied",
+    )]})
+    issue = _issue(8091, "agent:backend", *after)
+    state = OrchestratorState()
+    state.cached_scope_issues = [issue]
+    owed = triage_owed(_config(), state, _Authority(ledger), _episode_owner(store, applications))
+    agenda = _owner([issue], ledger=ledger, episodes=store, applications=applications).agenda(
+        anchor_issue_number=ANCHOR,
+    )
+    return agenda, owed
+
+
+@pytest.mark.parametrize(
+    ("blocked", "after", "generation"),
+    [
+        # #8091: the agent's needs-human block; the escalation adds the marker.
+        (("needs-human",), ("needs-human", "tech-lead-needs-human"), EP),
+        # A block without needs-human: the escalation puts the marker and
+        # needs-human on, opening a needs-human generation of its own.
+        (("blocked-failed",), ("blocked-failed", "needs-human", "tech-lead-needs-human"), HANDED_OVER),
+    ],
+)
+def test_a_hand_over_does_not_regrant_its_own_item(
+    blocked: tuple[str, ...], after: tuple[str, ...], generation: str,
+) -> None:
+    """#8112: health review #8095 triaged #8091 human_hand_over on its
+    needs-human block; the escalation then put the tech-lead hand-over marker
+    on. The block did not change, but the next review was granted #8091 again
+    ("its block changed ... (needs-human -> none)") and pushed to hand it over
+    a second time. The hand-over's own marker, and the needs-human block it
+    places, are not a block change."""
+    agenda, owed = _handed_over(blocked, after, _Episodes({8091: generation}))
+
+    assert agenda.items == () and agenda.in_force == (8091,)
+    assert owed is False
+
+
+@pytest.mark.parametrize(
+    ("blocked", "after", "generation", "applications"),
+    [
+        # A new block beside the hand-over.
+        (("needs-human",), ("blocked-failed", "needs-human", "tech-lead-needs-human"), EP, None),
+        # needs-human lifted and raised again under the marker: a new episode.
+        (("needs-human",), ("needs-human", "tech-lead-needs-human"), HANDED_OVER, None),
+        # The handed-over item's own block re-raised: a new episode.
+        (
+            ("blocked-failed",), ("blocked-failed", "needs-human", "tech-lead-needs-human"),
+            HANDED_OVER, {(8091, "blocked-failed"): 2},
+        ),
+        # The block the triage was decided on was lifted under the hand-over.
+        (("blocked-failed", "needs-human"), ("needs-human", "tech-lead-needs-human"), EP, None),
+    ],
+)
+def test_a_handed_over_item_whose_block_changed_is_triaged_again(
+    blocked: tuple[str, ...], after: tuple[str, ...], generation: str,
+    applications: dict[Any, Any] | None,
+) -> None:
+    """#8112: only the hand-over itself is exempt. A block that changed while
+    the marker is on is owed a triage like any other."""
+    agenda, owed = _handed_over(blocked, after, _Episodes({8091: generation}), applications)
+
+    assert [item.issue_number for item in agenda.items] == [8091] and agenda.in_force == ()
+    assert owed is True
+
+
 def test_a_triage_does_not_cover_a_later_episode_of_the_same_block() -> None:
     """#8688 (porchpin #450): a triage of one needs-human block stayed "in
     force" after the block was lifted (the operator approved its proposal) and
@@ -626,7 +716,7 @@ def test_a_verified_item_still_waits_for_the_owners_gate() -> None:
         number=450, title="t", labels=["needs-human"], repo="porchpin/porchpin", state="open",
         updated_at="2026-10-08T00:00:00Z",
     )
-    assert episodes.verified({450: issue}) == {450: EP}
+    assert _rendered(episodes.verified({450: issue})) == {450: EP}
 
     store.busy.add(450)
 
@@ -815,11 +905,11 @@ def test_a_label_added_between_rechecks_is_read_at_once() -> None:
     issue = _issue(500, "agent:backend", "blocked-failed")
     now, reads, applications = [0.0], [], {(500, "blocked-failed"): 1, (500, "publish-failed"): 2}
     episodes = _episode_owner(_Episodes(), applications, clock=lambda: now[0], reads=reads)
-    assert episodes.current({500: issue}) == {500: _onset("blocked-failed")}
+    assert _rendered(episodes.current({500: issue})) == {500: _onset("blocked-failed")}
 
     now[0] = 60.0
     grown = _issue(500, "agent:backend", "blocked-failed", "publish-failed")
-    assert episodes.current({500: grown}) == {
+    assert _rendered(episodes.current({500: grown})) == {
         500: f"{_onset('blocked-failed')};{_onset('publish-failed', 2)}",
     }
     assert reads == [500, 500]
@@ -901,7 +991,7 @@ def test_an_item_a_tick_read_could_not_verify_waits_for_the_next_recheck() -> No
     assert episodes.current({500: issue}) == {} and reads == [500]
     applications[500] = 1
     now[0] = 3600.0
-    assert episodes.current({500: issue}) == {500: _onset("blocked-failed")} and reads == [500, 500]
+    assert _rendered(episodes.current({500: issue})) == {500: _onset("blocked-failed")} and reads == [500, 500]
 
 
 def test_a_mixed_block_is_verified_by_one_events_scan() -> None:
@@ -913,7 +1003,7 @@ def test_a_mixed_block_is_verified_by_one_events_scan() -> None:
 
     episodes = _episode_owner(store, reads=reads).verified({500: issue})
 
-    assert episodes == {500: f"{EP};{_onset('blocked-failed')};{_onset('publish-failed')}"}
+    assert _rendered(episodes) == {500: f"{EP};{_onset('blocked-failed')};{_onset('publish-failed')}"}
     assert reads == [500] and store.bound == {500: 1}
 
 

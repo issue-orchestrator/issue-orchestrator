@@ -29,6 +29,7 @@ from issue_orchestrator.domain.human_block import (
     NeedsHumanCause,
 )
 from issue_orchestrator.domain.models import Issue, OrchestratorState
+from issue_orchestrator.domain.blocked_item_triage import BlockEpisode
 from issue_orchestrator.domain.tech_lead_approval import LabelEvent
 from issue_orchestrator.domain.tech_lead_artifacts import TriageClass
 from issue_orchestrator.domain.tech_lead_charter import (
@@ -238,7 +239,7 @@ def test_the_owner_cannot_reopen_a_generation_while_it_is_being_bound(tmp_path: 
 
     episodes = _episodes(store, github, labels, recheck_seconds=0, needs_human_reads=read_then_race)
     issue = Issue(number=ITEM, title="t", labels=[labels.needs_human], repo="r/r", state="open")
-    assert episodes.verified({ITEM: issue}) == {ITEM: opened}
+    assert episodes.verified({ITEM: issue}) == {ITEM: BlockEpisode(opened)}
     assert during == [BlockOutcome.FAILED]  # the owner was held off
     assert labels.needs_human in github.live[ITEM]
 
