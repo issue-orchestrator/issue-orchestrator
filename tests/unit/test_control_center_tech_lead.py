@@ -20,6 +20,7 @@ from issue_orchestrator.entrypoints.control_api_repo_support import (
     ControlApiRepoDependencies,
     get_control_api_repo_dependencies,
 )
+from issue_orchestrator.execution.engine_command_failure import EngineCommandFailure, EngineCommandFailureKind
 from issue_orchestrator.execution.control_center_tech_lead import (
     ControlCenterTechLead,
     UnknownTechLeadRepositoryError,
@@ -49,10 +50,18 @@ def _section(repository: str, waiting: int) -> dict:
     }
 
 
+_NO_ANSWER = EngineCommandFailure(
+    kind=EngineCommandFailureKind.NO_ANSWER,
+    command="tech-lead proposal decision",
+    url="http://127.0.0.1:8001/api/tech-lead/proposals",
+    detail="Engine did not answer tech-lead proposal decision within 120s (ReadTimeout)",
+)
+
+
 @dataclass
 class _Transport:
     sections: dict[int, dict | None] = field(default_factory=dict)
-    answer: tuple[int, dict] | None = None
+    answer: tuple[int, dict] | EngineCommandFailure | None = None
     commands: list[tuple[int, dict]] = field(default_factory=list)
 
     def read_section(self, port):
@@ -122,7 +131,7 @@ def test_command_reaches_only_the_owning_engine(tmp_path) -> None:
     ("port", "answer", "status"),
     [
         (None, None, 503),  # engine not running: approve on GitHub instead
-        (8001, None, 503),  # engine did not answer
+        (8001, _NO_ANSWER, 503),  # engine did not answer
         (8001, (409, {"proposal_issue_number": 10, "outcome": "unavailable", "detail": "closed"}), 409),
         (8001, (200, {"unexpected": True}), 503),  # off-contract answer
     ],
@@ -131,6 +140,17 @@ def test_command_refusals_are_typed(tmp_path, port, answer, status) -> None:
     owner, keys = _owner(tmp_path, {"a": port}, _Transport(answer=answer))
     result = owner.command(keys["a"], TechLeadProposalCommandPayload(proposal_issue_number=10, decision="decline"))
     assert result.status_code == status and result.outcome.proposal_issue_number == 10
+
+
+def test_a_failed_engine_command_names_its_cause(tmp_path) -> None:
+    """#8222: the refusal carries the transport cause, never a bare 'did not answer'."""
+    owner, keys = _owner(tmp_path, {"a": 8001}, _Transport(answer=_NO_ANSWER))
+
+    result = owner.command(keys["a"], TechLeadProposalCommandPayload(proposal_issue_number=10, decision="approve"))
+
+    assert result.status_code == 503
+    assert result.outcome.outcome == "unavailable"
+    assert _NO_ANSWER.detail in result.outcome.detail
 
 
 def test_unknown_repository_key_raises(tmp_path) -> None:

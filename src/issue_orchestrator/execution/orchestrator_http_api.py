@@ -2,13 +2,26 @@
 
 from __future__ import annotations
 
+import json
 import os
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable, TypeVar
 import threading
 
 import httpx
 
 from ..domain.pause_state import PauseActor
+from .engine_command_failure import (
+    EngineCommandFailure,
+    exception_text,
+    interrupted_failure,
+    non_object_body_failure,
+    refused_failure,
+    unanswered_failure,
+    undecodable_failure,
+    unreachable_failure,
+)
+
+_T = TypeVar("_T")
 from ..ports.orchestrator_api import OrchestratorApi
 
 
@@ -71,26 +84,120 @@ def probe_orchestrator_json(
     return data if isinstance(data, dict) else None
 
 
+def _refused(exc: Any, command: str, url: str, timeout_seconds: float) -> EngineCommandFailure:
+    return refused_failure(
+        command=command,
+        url=url,
+        upstream_status=exc.response.status_code,
+        body_text=exc.response.text,
+    )
+
+
+def _unreachable(exc: Any, command: str, url: str, timeout_seconds: float) -> EngineCommandFailure:
+    return unreachable_failure(command=command, url=url, cause=exception_text(exc))
+
+
+def _unanswered(exc: Any, command: str, url: str, timeout_seconds: float) -> EngineCommandFailure:
+    return unanswered_failure(
+        command=command, url=url, timeout_seconds=timeout_seconds, cause=exception_text(exc)
+    )
+
+
+def _interrupted(exc: Any, command: str, url: str, timeout_seconds: float) -> EngineCommandFailure:
+    return interrupted_failure(command=command, url=url, cause=exception_text(exc))
+
+
+def _undecodable(exc: Any, command: str, url: str, timeout_seconds: float) -> EngineCommandFailure:
+    return undecodable_failure(command=command, url=url, reason=exc.msg, body_text=exc.doc)
+
+
+# First match wins. What the operator may conclude depends on how far the
+# exchange got: nothing sent (connect/pool), all sent and no answer yet (read
+# timeout — the engine is waiting for its tick and will still apply it), or
+# broken off mid-way (write timeout/error, read error, dropped connection —
+# delivery unknown).
+_FAILURE_CLASSIFIERS: tuple[
+    tuple[tuple[type[Exception], ...], Callable[[Any, str, str, float], EngineCommandFailure]], ...
+] = (
+    ((httpx.HTTPStatusError,), _refused),
+    ((httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, httpx.UnsupportedProtocol), _unreachable),
+    ((httpx.ReadTimeout,), _unanswered),
+    ((json.JSONDecodeError,), _undecodable),
+    ((httpx.HTTPError,), _interrupted),
+)
+
+
+def describe_engine_command_failure(
+    exc: httpx.HTTPError | json.JSONDecodeError,
+    *,
+    command: str,
+    url: str,
+    timeout_seconds: float,
+) -> EngineCommandFailure:
+    """Classify one failed engine command (#8222).
+
+    Only transport, HTTP-status and body-decoding failures are accepted: any
+    other exception is a bug in the caller and must propagate rather than be
+    dressed up as an engine failure.
+    """
+    for exception_types, describe in _FAILURE_CLASSIFIERS:
+        if isinstance(exc, exception_types):
+            return describe(exc, command, url, timeout_seconds)
+    raise TypeError(f"not an engine command failure: {type(exc).__name__}")
+
+
+async def guarded_engine_command(
+    call: Awaitable[_T], *, command: str, url: str, timeout_seconds: float
+) -> _T | EngineCommandFailure:
+    """Await one engine command; a transport/status/body failure says why."""
+    try:
+        return await call
+    except (httpx.HTTPError, json.JSONDecodeError) as exc:
+        return describe_engine_command_failure(
+            exc, command=command, url=url, timeout_seconds=timeout_seconds
+        )
+
+
 def post_orchestrator_json(
     url: str,
     body: dict[str, Any],
     *,
+    command: str,
     timeout_seconds: float,
     token_provider: Callable[[], str | None] = _default_token_provider,
-) -> tuple[int, dict[str, Any]] | None:
-    """POST JSON to an engine endpoint; ``(status, object body)`` or ``None``.
+) -> tuple[int, dict[str, Any]] | EngineCommandFailure:
+    """POST a command to an engine; ``(status, object body)`` or why it failed.
 
-    ``None`` means the engine could not be reached or answered with something
-    other than a JSON object; any HTTP status is returned as-is so the caller
-    maps refusals itself.
+    Any HTTP status that carries a JSON object is returned as-is so the caller
+    maps refusals itself. A transport failure, an unanswered request or a body
+    that is not a JSON object becomes an ``EngineCommandFailure`` whose detail
+    names the cause (#8222) — never a bare ``None``.
     """
     headers = _auth_headers(token_provider)
     try:
         response = httpx.post(url, json=body, timeout=timeout_seconds, headers=headers)
+    except httpx.HTTPError as exc:
+        return describe_engine_command_failure(
+            exc, command=command, url=url, timeout_seconds=timeout_seconds
+        )
+    try:
         data = response.json()
-    except Exception:
-        return None
-    return (response.status_code, data) if isinstance(data, dict) else None
+    except json.JSONDecodeError as exc:
+        if response.is_error:
+            return refused_failure(
+                command=command,
+                url=url,
+                upstream_status=response.status_code,
+                body_text=response.text,
+            )
+        return describe_engine_command_failure(
+            exc, command=command, url=url, timeout_seconds=timeout_seconds
+        )
+    if not isinstance(data, dict):
+        return non_object_body_failure(
+            data, command=command, url=url, upstream_status=response.status_code
+        )
+    return response.status_code, data
 
 
 class OrchestratorHttpApi(OrchestratorApi):

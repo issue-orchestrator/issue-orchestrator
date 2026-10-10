@@ -176,6 +176,20 @@ test('errorMessage: falls back to FastAPI-style detail', async () => {
     assert.strictEqual(await uiContractJson.errorMessage(response), 'bad nodeid');
 });
 
+test('errorMessage: a human detail beats a machine error code (#8222)', async () => {
+    const response = {
+        ok: false,
+        status: 504,
+        text: async () => '{"error": "passthrough_failed", "detail": "Engine did not answer pause within 120s"}',
+    };
+    assert.strictEqual(await uiContractJson.errorMessage(response), 'Engine did not answer pause within 120s');
+});
+
+test('errorMessage: an empty detail does not hide the error code', async () => {
+    const response = { ok: false, status: 502, text: async () => '{"error": "passthrough_failed", "detail": ""}' };
+    assert.strictEqual(await uiContractJson.errorMessage(response), 'passthrough_failed');
+});
+
 test('errorMessage: a non-JSON error body degrades to the status', async () => {
     const response = { ok: false, status: 502, text: async () => '<html>502 Bad Gateway</html>' };
     assert.strictEqual(await uiContractJson.errorMessage(response), 'HTTP 502');

@@ -1916,7 +1916,9 @@ async function pauseRepo(path) {
             body: JSON.stringify({ repo_root: path })
         });
         if (!response.ok) {
-            throw new Error('Failed to pause repository engine');
+            // The Control Center says why the engine did not pause (#8222).
+            const cause = await window.uiContractJson.errorMessage(response);
+            throw new Error('Failed to pause repository engine: ' + cause);
         }
         showToast('Repository engine paused', 'success');
         await loadRepos();
@@ -1933,7 +1935,9 @@ async function resumeRepo(path) {
             body: JSON.stringify({ repo_root: path })
         });
         if (!response.ok) {
-            throw new Error('Failed to resume repository engine');
+            // The Control Center says why the engine did not resume (#8222).
+            const cause = await window.uiContractJson.errorMessage(response);
+            throw new Error('Failed to resume repository engine: ' + cause);
         }
         showToast('Repository engine resumed', 'success');
         await loadRepos();
@@ -2713,17 +2717,44 @@ function setupShutdownHudDraggable() {
 // ============================================
 // Toasts
 // ============================================
+function dismissToast(toast) {
+    toast.style.opacity = '0';
+    setTimeout(() => toast.remove(), 300);
+}
+
+// Errors and warnings carry a cause the operator may need to read, copy or
+// hear in full — an engine's refusal, a timeout explanation (#8222) — so they
+// stay until dismissed. The message is height-bounded and keyboard-scrollable
+// so a long cause never runs off a small screen. Info/success auto-dismiss.
 function showToast(message, type = 'info') {
     const container = document.getElementById('toastContainer');
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
-    toast.textContent = message;
-    container.appendChild(toast);
+    const text = document.createElement('div');
+    text.className = 'toast-message';
+    text.textContent = message;
+    toast.appendChild(text);
+    const sticky = type === 'error' || type === 'warning';
+    if (sticky) {
+        toast.classList.add('sticky');
+        text.tabIndex = 0;
+        text.setAttribute('role', 'note');
+        text.setAttribute('aria-label', type === 'error' ? 'Error details' : 'Warning details');
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'toast-close';
+        close.setAttribute('aria-label', 'Dismiss notification');
+        close.textContent = '×';
+        close.addEventListener('click', () => dismissToast(toast));
+        toast.appendChild(close);
+    }
+    // Newest first: sticky errors accumulate, and the latest one (with its
+    // dismiss control) must land in view at the top of the bounded stack.
+    container.prepend(toast);
 
-    setTimeout(() => {
-        toast.style.opacity = '0';
-        setTimeout(() => toast.remove(), 300);
-    }, 4000);
+    if (!sticky) {
+        setTimeout(() => dismissToast(toast), 4000);
+    }
 }
 
 // ============================================

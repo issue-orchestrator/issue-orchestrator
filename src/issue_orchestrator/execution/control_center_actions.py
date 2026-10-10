@@ -6,18 +6,26 @@ are thin adapters and tests can exercise command objects directly.
 
 from __future__ import annotations
 
+import logging
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional, Protocol
+from typing import Any, Optional, Protocol, cast
 
-from ..domain.pause_state import PauseActor
+
+from ..domain.pause_state import PauseActor, PauseTransitionStatus
 from ..domain.repository_launch_selection import (
     RepositoryConfigurationIdentity,
     RepositoryLaunchSelection,
 )
 from ..ports.repository_engine_supervisor import SupervisorOps
-from .orchestrator_http_api import OrchestratorAsyncHttpApi
+from .engine_command_failure import (
+    ENGINE_COMMAND_TIMEOUT_SECONDS,
+    EngineCommandFailure,
+    engine_answer_failure,
+)
+from .orchestrator_http_api import OrchestratorAsyncHttpApi, guarded_engine_command
 from .repository_engine_start import StartRepositoryEngineCommand
 from .control_center_worktree_audit import ControlCenterWorktreeAuditOwner
 from ..ports.repository_host import (
@@ -25,6 +33,8 @@ from ..ports.repository_host import (
     repository_host_failure_payload,
     repository_host_failure_status,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -82,104 +92,113 @@ class AsyncCommand(Protocol):
     async def execute(self, request: Any) -> ActionResult: ...
 
 
-async def _passthrough_api_call(
-    port: int, op: str, body: Optional[dict[str, Any]] = None
-) -> ActionResult:
-    base_url = f"http://127.0.0.1:{port}"
-    api = OrchestratorAsyncHttpApi(
-        base_url_provider=lambda: base_url,
-        timeout_seconds=10.0,
-        pause_actor=PauseActor.CONTROL_CENTER,
-    )
-    try:
-        if op == "pause":
-            return ActionResult(await api.pause())
-        if op == "resume":
-            return ActionResult(await api.resume())
-        if op == "refresh":
+class EngineCommandForwarder:
+    """Forward one operator command to a running Repository Engine (#8222).
+
+    The single owner of the Control Center's engine passthrough: it resolves
+    the engine's port, sends the command with a budget sized for the engine's
+    state-lock wait, and turns every transport, status or body failure into a
+    typed ``passthrough_failed`` payload whose ``detail`` names the cause.
+    Anything else is a Control Center bug and propagates.
+    """
+
+    def __init__(
+        self,
+        supervisor: SupervisorOps,
+        *,
+        timeout_seconds: float = ENGINE_COMMAND_TIMEOUT_SECONDS,
+    ) -> None:
+        self._supervisor = supervisor
+        self._timeout_seconds = timeout_seconds
+
+    @property
+    def timeout_seconds(self) -> float:
+        return self._timeout_seconds
+
+    async def forward(
+        self,
+        repo_root: Path,
+        command: str,
+        send: Callable[[OrchestratorAsyncHttpApi], Awaitable[object]],
+        *,
+        accepted: str,
+    ) -> ActionResult:
+        """Send ``command``; ``accepted`` is the answer ``status`` meaning it worked."""
+        status_info = self._supervisor.status(repo_root)
+        if status_info.state != "running" or status_info.port is None:
             return ActionResult(
-                await api.refresh(body.get("inflight_stable_ids", []) if body else [])
+                {
+                    "error": "not_running",
+                    "state": status_info.state,
+                    "detail": f"The repository engine is not running (state: {status_info.state}).",
+                },
+                status_code=400,
             )
-        return ActionResult(
-            {"error": "unsupported_passthrough_operation"}, status_code=500
+        base_url = f"http://127.0.0.1:{status_info.port}"
+        api = OrchestratorAsyncHttpApi(
+            base_url_provider=lambda: base_url,
+            timeout_seconds=self._timeout_seconds,
+            pause_actor=PauseActor.CONTROL_CENTER,
         )
-    except Exception as exc:
-        return ActionResult(
-            {
-                "error": "passthrough_failed",
-                "detail": str(exc),
-            },
-            status_code=502,
-        )
-    finally:
-        await api.close()
+        try:
+            answer = await guarded_engine_command(
+                send(api),
+                command=command,
+                url=base_url,
+                timeout_seconds=self._timeout_seconds,
+            )
+        finally:
+            await api.close()
+        if isinstance(answer, EngineCommandFailure):
+            return self._failed(answer)
+        refusal = engine_answer_failure(answer, command=command, url=base_url, accepted=accepted)
+        if refusal is not None:
+            return self._failed(refusal)
+        return ActionResult(cast(dict[str, Any], answer))
+
+    @staticmethod
+    def _failed(failure: EngineCommandFailure) -> ActionResult:
+        logger.warning("[control-center] engine %s failed: %s", failure.command, failure.detail)
+        return ActionResult(failure.to_payload(), status_code=failure.http_status)
 
 
 class PauseOrchestratorCommand:
     """Pause a running orchestrator via passthrough API."""
 
-    def __init__(self, supervisor: SupervisorOps) -> None:
-        self._supervisor = supervisor
+    def __init__(self, forwarder: EngineCommandForwarder) -> None:
+        self._forwarder = forwarder
 
     async def execute(self, request: RepoActionRequest) -> ActionResult:
-        status_info = self._supervisor.status(request.repo_root)
-        if status_info.state != "running" or status_info.port is None:
-            return ActionResult(
-                {
-                    "error": "not_running",
-                    "state": status_info.state,
-                },
-                status_code=400,
-            )
-
-        return await _passthrough_api_call(status_info.port, "pause")
+        return await self._forwarder.forward(
+            request.repo_root, "pause", lambda api: api.pause(), accepted=str(PauseTransitionStatus.PAUSED)
+        )
 
 
 class ResumeOrchestratorCommand:
     """Resume a running orchestrator via passthrough API."""
 
-    def __init__(self, supervisor: SupervisorOps) -> None:
-        self._supervisor = supervisor
+    def __init__(self, forwarder: EngineCommandForwarder) -> None:
+        self._forwarder = forwarder
 
     async def execute(self, request: RepoActionRequest) -> ActionResult:
-        status_info = self._supervisor.status(request.repo_root)
-        if status_info.state != "running" or status_info.port is None:
-            return ActionResult(
-                {
-                    "error": "not_running",
-                    "state": status_info.state,
-                },
-                status_code=400,
-            )
-
-        return await _passthrough_api_call(status_info.port, "resume")
+        return await self._forwarder.forward(
+            request.repo_root, "resume", lambda api: api.resume(), accepted=str(PauseTransitionStatus.RESUMED)
+        )
 
 
 class RefreshOrchestratorCommand:
     """Trigger refresh on a running orchestrator via passthrough API."""
 
-    def __init__(self, supervisor: SupervisorOps) -> None:
-        self._supervisor = supervisor
+    def __init__(self, forwarder: EngineCommandForwarder) -> None:
+        self._forwarder = forwarder
 
     async def execute(self, request: RefreshActionRequest) -> ActionResult:
-        status_info = self._supervisor.status(request.repo_root)
-        if status_info.state != "running" or status_info.port is None:
-            return ActionResult(
-                {
-                    "error": "not_running",
-                    "state": status_info.state,
-                },
-                status_code=400,
-            )
-
-        forward_body: dict[str, Any] = {}
-        if request.inflight_stable_ids is not None:
-            forward_body["inflight_stable_ids"] = request.inflight_stable_ids
-
-        return await _passthrough_api_call(
-            status_info.port,
+        inflight = list(request.inflight_stable_ids or [])
+        return await self._forwarder.forward(
+            request.repo_root,
             "refresh",
-            forward_body if forward_body else None,
+            lambda api: api.refresh(inflight),
+            accepted="refresh_requested",
         )
 
 
@@ -491,14 +510,15 @@ class ControlCenterActions:
         start_repo_engine_cmd: StartRepositoryEngineCommand | None = None,
     ) -> None:
         self.supervisor = supervisor
+        forwarder = EngineCommandForwarder(supervisor)
         self.pause_cmd: PauseOrchestratorCommand = (
-            pause_cmd or PauseOrchestratorCommand(supervisor)
+            pause_cmd or PauseOrchestratorCommand(forwarder)
         )
         self.resume_cmd: ResumeOrchestratorCommand = (
-            resume_cmd or ResumeOrchestratorCommand(supervisor)
+            resume_cmd or ResumeOrchestratorCommand(forwarder)
         )
         self.refresh_cmd: RefreshOrchestratorCommand = (
-            refresh_cmd or RefreshOrchestratorCommand(supervisor)
+            refresh_cmd or RefreshOrchestratorCommand(forwarder)
         )
         self.doctor_cmd: DoctorCommand = doctor_cmd or DoctorCommand()
         self.audit_cmd: AuditIssuesCommand = audit_cmd or AuditIssuesCommand()

@@ -56,6 +56,7 @@ from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
 from .control_api_pause_routes import control_pause_router
+from .refresh_request import request_refresh
 from ..infra import gh_audit
 from ..execution.repository_engine_supervisor import build_default_supervisor_ops
 from ..ports.repository_engine_supervisor import SupervisorOps
@@ -650,20 +651,7 @@ async def refresh(request: Request) -> JSONResponse:
     if _orchestrator is None:
         return JSONResponse({"error": "Orchestrator not initialized"}, status_code=503)
 
-    # Parse optional inflight_stable_ids from request body
-    inflight_stable_ids: set[str] = set()
-    try:
-        body = await request.body()
-        if body:
-            data = json.loads(body)
-            if isinstance(data, dict) and "inflight_stable_ids" in data:
-                ids = data["inflight_stable_ids"]
-                if isinstance(ids, list):
-                    inflight_stable_ids = set(str(i) for i in ids)
-    except (json.JSONDecodeError, ValueError):
-        pass  # Ignore malformed body, proceed with empty set
-
-    _orchestrator.request_refresh(inflight_stable_ids=inflight_stable_ids)
+    await request_refresh(request, _orchestrator)
     return JSONResponse({"status": "refresh_requested"})
 
 

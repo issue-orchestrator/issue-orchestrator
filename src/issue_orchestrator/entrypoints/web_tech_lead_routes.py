@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 
 import logging
+from functools import partial
 
 from fastapi import APIRouter, HTTPException
 from ..domain.scoped_rework import TechLeadProposalCommand
@@ -39,6 +40,7 @@ from ..domain.tech_lead_run import (
     TechLeadRunTrigger,
 )
 from ..infra.tech_lead_proposal_facade import TechLeadPageNotObserved
+from .engine_custody import off_loop
 from .web_session_context import WebOrchestratorDependency
 
 logger = logging.getLogger(__name__)
@@ -110,11 +112,12 @@ async def request_tech_lead_run(
     )
     # Off the event loop: admission takes the engine's state lock, so a tick
     # in flight would otherwise block every other dashboard request until it
-    # finished (#6994 round 2 F8).
+    # finished (#6994 round 2 F8). Detached: a caller that gives up cannot drop
+    # an admission still waiting for a worker (#8222).
     admission = (
         TechLeadRunAdmission.engine_not_running(request.scope, request.trigger)
         if orchestrator is None
-        else await asyncio.to_thread(orchestrator.request_tech_lead_run, request)
+        else await off_loop(partial(orchestrator.request_tech_lead_run, request))
     )
     logger.info(
         "[tech-lead] Dashboard run request: scope=%s run_key=%s outcome=%s reason=%s",
@@ -148,8 +151,10 @@ async def command_tech_lead_proposal(payload: TechLeadProposalCommandPayload,
     """Approve or Decline one proposal: the one command path (#7763)."""
     if orchestrator is None:
         raise HTTPException(status_code=503, detail="Repository Engine is not running")
-    outcome = await asyncio.to_thread(orchestrator.request_tech_lead_proposal,
-        TechLeadProposalCommand(payload.proposal_issue_number, payload.decision))
+    # Waits for the state lock a running tick holds; detached so a Control
+    # Center that times out cannot drop the decision before it applies (#8222).
+    outcome = await off_loop(partial(orchestrator.request_tech_lead_proposal,
+        TechLeadProposalCommand(payload.proposal_issue_number, payload.decision)))
     body = TechLeadProposalOutcomePayload(proposal_issue_number=outcome.proposal_issue_number,
         outcome=outcome.outcome, detail=outcome.detail)
     return JSONResponse(body.model_dump(), status_code=200 if outcome.outcome in {"approved", "declined"} else 409)

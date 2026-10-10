@@ -16,6 +16,7 @@ from issue_orchestrator.execution.control_center_actions import (
     ControlCenterActions,
     DoctorActionRequest,
     DoctorCommand,
+    EngineCommandForwarder,
     InitializeLabelsCommand,
     ListStaleWorktreesCommand,
     PauseOrchestratorCommand,
@@ -49,7 +50,7 @@ from issue_orchestrator.execution.control_center_worktree_audit import (
 async def test_pause_command_returns_not_running() -> None:
     supervisor = MagicMock()
     supervisor.status.return_value = SupervisorStatus(state="stopped")
-    cmd = PauseOrchestratorCommand(supervisor)
+    cmd = PauseOrchestratorCommand(EngineCommandForwarder(supervisor))
 
     result = await cmd.execute(RepoActionRequest(repo_root=Path("/tmp/repo")))
 
@@ -279,7 +280,7 @@ async def test_trace_command_scopes_to_last_start(tmp_path: Path) -> None:
 async def test_pause_command_uses_async_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
     supervisor = MagicMock()
     supervisor.status.return_value = SupervisorStatus(state="running", port=18080)
-    cmd = PauseOrchestratorCommand(supervisor)
+    cmd = PauseOrchestratorCommand(EngineCommandForwarder(supervisor))
 
     calls: dict[str, bool] = {"pause": False, "close": False}
 
@@ -310,7 +311,7 @@ async def test_pause_command_uses_async_passthrough(monkeypatch: pytest.MonkeyPa
 async def test_refresh_command_forwards_inflight_ids(monkeypatch: pytest.MonkeyPatch) -> None:
     supervisor = MagicMock()
     supervisor.status.return_value = SupervisorStatus(state="running", port=18080)
-    cmd = RefreshOrchestratorCommand(supervisor)
+    cmd = RefreshOrchestratorCommand(EngineCommandForwarder(supervisor))
 
     captured: dict[str, list[str] | None] = {"ids": None}
 
