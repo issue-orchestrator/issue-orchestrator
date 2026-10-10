@@ -273,6 +273,7 @@ def build_tech_lead_reset_retry_executor(
             config=orchestrator.config,
             reset_issue_fn=reset_issue,
             current_labels=list(current_labels),
+            run_locked=orchestrator.run_locked,
             source=TECH_LEAD_RESET_RETRY_EVENT_SOURCE,
         )
         if success_payload is not None:

@@ -190,3 +190,45 @@ def test_an_apply_that_fails_before_the_session_leaves_the_pass_is_retried(tmp_p
 
     assert _row(containment, session) is None
     assert escalation.blocks == []
+
+
+def test_a_reconciliation_refusal_in_a_completion_apply_stays_with_its_session(tmp_path):
+    """#8219: porchpin #364's completion apply hit the issue's reconcile pause.
+
+    ``ReconciliationRequired`` re-raised by the completion apply (after the
+    terminal was finalized FAILED) aborted the whole iteration twice. It is
+    one issue's refusal: the session parks and every sibling still applies.
+    """
+    from issue_orchestrator.control.reconciliation import (
+        ExternalSnapshot,
+        ReconciliationRequired,
+        get_pause_label,
+    )
+
+    containment, escalation = _containment()
+    failing, sibling = _session(tmp_path, 364), _session(tmp_path, 365)
+    applied: list[str] = []
+    paused = {get_pause_label(), "in-progress"}
+
+    def apply(completed: CompletedDecision) -> None:
+        applied.append(completed.session.terminal_id)
+        if completed.session is failing:
+            raise ReconciliationRequired(
+                "issue",
+                364,
+                ExternalSnapshot.for_issue(364, set()),
+                ExternalSnapshot.for_issue(364, paused),
+                reason=f"Has forbidden labels: {frozenset({get_pause_label()})}",
+            )
+
+    containment.apply_each(
+        [CompletedDecision(failing, None, None), CompletedDecision(sibling, None, None)],
+        apply,
+        in_pass=_dropped,
+    )
+
+    assert applied == ["rework-364", "rework-365"]
+    row = _row(containment, failing)
+    assert row is not None and row.parked
+    assert [r.key.escalation_issue for r in escalation.committed_blocks] == [364]
+    assert _row(containment, sibling) is None

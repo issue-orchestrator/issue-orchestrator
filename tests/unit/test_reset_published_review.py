@@ -182,7 +182,8 @@ def _tech_lead_executor(pr_state: str):
         runtime_lifecycle=lifecycle,
     )
     orchestrator = SimpleNamespace(
-        deps=deps, config=Config(), state=state, repository_host=repository_host
+        deps=deps, config=Config(), state=state, repository_host=repository_host,
+        run_locked=lambda fn: fn(),
     )
     return build_tech_lead_reset_retry_executor(orchestrator), action_applier
 

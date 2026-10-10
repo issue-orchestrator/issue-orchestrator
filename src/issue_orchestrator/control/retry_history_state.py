@@ -425,6 +425,10 @@ class RetryHistoryState:
             superseded_prs=tuple(sorted(superseded_pr_numbers)),
         )
 
+    def forget_observations(self, issue_number: int) -> None:
+        """Drop every planner fact discovered about the issue: a reset superseded it (#8219)."""
+        self._clear_discovered_facts(issue_number, set())
+
     def _clear_pending_workflow_queues(
         self,
         issue_number: int,
@@ -452,10 +456,14 @@ class RetryHistoryState:
         ]
 
     def _clear_attempt_scoped_state(self, issue_number: int) -> None:
-        """Validation retries — purely per-attempt records."""
+        """Validation retries and immediate cleanups — purely per-attempt records."""
         self._state.pending_validation_retries = [
             r for r in self._state.pending_validation_retries
             if r.issue_number != issue_number
+        ]
+        self._state.immediate_cleanups = [
+            c for c in self._state.immediate_cleanups
+            if c.issue_number != issue_number
         ]
 
     def _clear_discovered_facts(
@@ -463,7 +471,7 @@ class RetryHistoryState:
         issue_number: int,
         superseded_pr_numbers: set[int],
     ) -> None:
-        """Discovered_* and immediate_cleanups — planner inputs, attempt-scoped."""
+        """Discovered_* — planner inputs, attempt-scoped."""
         self._state.discovered_reviews = [
             d for d in self._state.discovered_reviews
             if d.issue_number != issue_number
@@ -481,6 +489,10 @@ class RetryHistoryState:
         ]
         self._state.discovered_failures = [
             d for d in self._state.discovered_failures
+            if d.issue_number != issue_number
+        ]
+        self._state.discovered_retrospective_reviews = [
+            d for d in self._state.discovered_retrospective_reviews
             if d.issue_number != issue_number
         ]
         self._state.discovered_awaiting_merge_reconciliations = [
@@ -512,10 +524,6 @@ class RetryHistoryState:
             step for step in self._state.discovered_integration_steps
             if step_issue_number(step) != issue_number
             and step_pr_number(step) not in superseded_pr_numbers
-        ]
-        self._state.immediate_cleanups = [
-            c for c in self._state.immediate_cleanups
-            if c.issue_number != issue_number
         ]
 
     def _clear_progress_flags(self, issue_number: int) -> None:
