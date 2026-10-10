@@ -74,22 +74,25 @@ class QueueProjection:
         Returns:
             QueueChange if queue changed, None otherwise
         """
+        queue_cache = QueueCache(self._config, state, self._queue_cache_store)
         try:
-            scope_issues = self.compute_queue(state)
-            prior_issues = state.cached_scope_issues if state.cached_scope_issues else state.cached_queue_issues
-            old_numbers = {i.number for i in prior_issues}
-            new_numbers = {i.number for i in scope_issues}
+            # Opened before the read, so a label write landing while it is in
+            # flight is carried into the commit instead of undone by it (#8113).
+            with queue_cache.fetch() as fetched:
+                scope_issues = self.compute_queue(state)
+                prior_issues = state.cached_scope_issues if state.cached_scope_issues else state.cached_queue_issues
+                old_numbers = {i.number for i in prior_issues}
+                new_numbers = {i.number for i in scope_issues}
 
-            added_numbers = new_numbers - old_numbers
-            removed_numbers = old_numbers - new_numbers
+                added_numbers = new_numbers - old_numbers
+                removed_numbers = old_numbers - new_numbers
 
-            # Capture stable issue keys before the cache is replaced (needed for
-            # removal events — the Issue objects won't be available afterwards).
-            old_key_by_number = {i.number: i.key.stable_id() for i in prior_issues}
+                # Capture stable issue keys before the cache is replaced (needed for
+                # removal events — the Issue objects won't be available afterwards).
+                old_key_by_number = {i.number: i.key.stable_id() for i in prior_issues}
 
-            # Update state through queue cache abstraction.
-            queue_cache = QueueCache(self._config, state, self._queue_cache_store)
-            queue_cache.replace_from_refresh(scope_issues)
+                # Update state through queue cache abstraction.
+                queue_cache.replace_from_refresh(scope_issues, fetched=fetched)
             if self._queue_cache_store is not None:
                 queue_cache.save_snapshot()
 

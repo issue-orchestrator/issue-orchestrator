@@ -28,6 +28,7 @@ from ...ports.pull_request_tracker import (
 from ...ports.engine_audit import OpenIssueLabels
 from ...ports.repository_host import DependencyIssueSnapshot, RepositoryHostError
 from ...ports.comment_receipt import IssueCommentReceipt
+from ...ports.label_write_observer import IGNORE_LABEL_WRITES, LabelWriteObserver
 from ...infra import gh_audit
 from .github_issue import GitHubIssue
 from .failed_checks import failed_checks_from_contexts
@@ -204,6 +205,7 @@ class GitHubAdapter(GitHubIntegrationBranchMixin):
         verify_writes: bool = True,
         api_url: str | None = None,
         http_timeout_seconds: float | None = None,
+        label_writes: LabelWriteObserver = IGNORE_LABEL_WRITES,
     ):
         """Initialize the GitHub adapter.
 
@@ -219,6 +221,9 @@ class GitHubAdapter(GitHubIntegrationBranchMixin):
             verify_writes: Whether to verify writes. Defaults to True.
             api_url: Explicit API base URL when no full Config object is available.
             http_timeout_seconds: Explicit HTTP timeout when no Config is available.
+            label_writes: Told of every label add/remove this adapter completes,
+                so a label cache outside it (the engine's issue cache) keeps up
+                with the engine's own writes (#8113).
         """
         if repo:
             self.repo = repo
@@ -256,6 +261,7 @@ class GitHubAdapter(GitHubIntegrationBranchMixin):
                 )
             )
         self._verify_writes = verify_writes
+        self._label_writes = label_writes
         self._verify_timeout_seconds = (
             config.gh_write_verify_timeout_seconds if config else 20
         )
@@ -827,6 +833,7 @@ class GitHubAdapter(GitHubIntegrationBranchMixin):
                 detail_fn=lambda: {"labels": last_labels},
                 issue_number=issue_number,
             )
+            self._label_writes.label_written(issue_number, label, present=True)
         except (GitHubHttpError, GitHubTransportError):
             logger.error(f"Failed to add label '{label}' to issue {issue_number}")
             raise
@@ -863,6 +870,9 @@ class GitHubAdapter(GitHubIntegrationBranchMixin):
                             label,
                             issue_number,
                         )
+                        # Already gone is still gone: a cache that holds it
+                        # would re-plan this remove every tick (#8113).
+                        self._label_writes.label_written(issue_number, label, present=False)
                         return
                     raise
                 except GitHubTransportError as exc:
@@ -889,6 +899,7 @@ class GitHubAdapter(GitHubIntegrationBranchMixin):
                 detail_fn=lambda: {"labels": last_labels},
                 issue_number=issue_number,
             )
+            self._label_writes.label_written(issue_number, label, present=False)
         except (GitHubHttpError, GitHubTransportError):
             logger.error(f"Failed to remove label '{label}' from issue {issue_number}")
             raise

@@ -790,6 +790,10 @@ def _fetch_and_update_queue(
     manual_refresh = refresh_requested
     gh_usage_before = gh_audit.get_live_usage_snapshot()
     required_stable_ids = set(inflight_stable_ids.keys()) if inflight_stable_ids else None
+    queue_cache = QueueCache(config, state, queue_cache_store)
+    # Opened before the read, so a label write landing while it is in flight
+    # is carried into the commit instead of undone by it (#8113).
+    fetched = queue_cache.fetch()
     state.queue_refresh_in_progress = True
     # The request flag is captured and cleared by Orchestrator._run_planning_cycle
     # so requests made during this fetch survive for the next tick.
@@ -843,8 +847,7 @@ def _fetch_and_update_queue(
         old_numbers = {i.number for i in state.cached_queue_issues}
         old_key_by_number = {i.number: i.key.stable_id() for i in state.cached_queue_issues}
 
-        queue_cache = QueueCache(config, state, queue_cache_store)
-        new_queue = queue_cache.replace_from_refresh(all_issues)
+        new_queue = queue_cache.replace_from_refresh(all_issues, fetched=fetched)
         shrink_confirmation_pending = queue_shrink_confirmation_pending(state)
 
         new_numbers = {i.number for i in new_queue}
@@ -894,6 +897,7 @@ def _fetch_and_update_queue(
 
         return refreshed_at, False
     finally:
+        fetched.close()
         state.queue_refresh_in_progress = False
 
 

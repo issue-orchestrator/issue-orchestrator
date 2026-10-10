@@ -144,23 +144,24 @@ async def refresh_issue(
     if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    try:
-        issue = orchestrator.repository_host.get_issue(issue_number)
-    except RepositoryHostError as exc:
-        return JSONResponse(
-            repository_host_failure_payload(
-                exc,
-                message=f"Failed to refresh issue #{issue_number} from GitHub",
-            ),
-            status_code=repository_host_failure_status(exc),
-        )
-    if issue is None:
-        return JSONResponse({"error": f"Issue #{issue_number} not found"}, status_code=404)
-
     state = orchestrator.state
     config = orchestrator.config
     queue_cache = QueueCache(config, state, orchestrator.deps.queue_cache_store)
-    outcome = queue_cache.upsert_refreshed_issue(issue)
+    # Opened before the read: a label write landing meanwhile reaches the commit (#8113).
+    with queue_cache.fetch() as fetched:
+        try:
+            issue = orchestrator.repository_host.get_issue(issue_number)
+        except RepositoryHostError as exc:
+            return JSONResponse(
+                repository_host_failure_payload(
+                    exc,
+                    message=f"Failed to refresh issue #{issue_number} from GitHub",
+                ),
+                status_code=repository_host_failure_status(exc),
+            )
+        if issue is None:
+            return JSONResponse({"error": f"Issue #{issue_number} not found"}, status_code=404)
+        outcome = queue_cache.upsert_refreshed_issue(issue, fetched=fetched)
     refreshed_at = time.time()
     if outcome.status == QueueMutationStatus.ACCEPTED:
         record_issue_refreshes(state, {issue_number}, refreshed_at)
