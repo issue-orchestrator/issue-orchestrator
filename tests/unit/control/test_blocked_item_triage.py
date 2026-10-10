@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
@@ -40,13 +40,14 @@ from issue_orchestrator.control.tech_lead_operator_decision import (
 from issue_orchestrator.control.tech_lead_proposals import plan_approved_tech_lead_op_executions
 from issue_orchestrator.domain.blocked_item_triage import (
     MAX_TRIAGE_ITEMS_PER_RUN,
+    BlockEpisode,
     TriageAgenda,
     TriageAgendaItem,
     TriageGrant,
     block_fingerprint,
     render_triage_instructions,
 )
-from issue_orchestrator.domain.human_block import NeedsHumanCause
+from issue_orchestrator.domain.human_block import NeedsHumanCause, NeedsHumanGeneration
 from issue_orchestrator.domain.models import Issue, OrchestratorState
 from issue_orchestrator.domain.tech_lead_artifacts import (
     DecisionFollowUp,
@@ -171,11 +172,17 @@ def _onset(label: str, event_id: int = 1) -> str:
 
 @dataclass
 class _Episodes:
-    """In-memory needs-human generations (#8688), bound as the store binds them."""
+    """In-memory needs-human generations (#8688), bound as the store binds them.
+
+    ``hand_over``: the items whose generation the tech lead's hand-over opened
+    with its marker (#8112). A binding to another event replaces it with a
+    generation no hand-over opened.
+    """
 
     recorded: dict[int, str] = field(default_factory=dict)
     bound: dict[int, int] = field(default_factory=dict)
     busy: set[int] = field(default_factory=set)
+    hand_over: set[int] = field(default_factory=set)
 
     @contextmanager
     def mutate_needs_human(self, issue_number):
@@ -185,13 +192,22 @@ class _Episodes:
         )
 
     def needs_human_episodes(self, issue_numbers):
-        return {n: self.recorded[n] for n in issue_numbers if n in self.recorded}
+        return {n: self.generation(n) for n in issue_numbers if n in self.recorded}
 
     def bind_needs_human_episode(self, issue_number, *, event_id, applied_at):
         if issue_number not in self.recorded or self.bound.get(issue_number, event_id) != event_id:
             self.recorded[issue_number] = f"{applied_at}#gh{event_id}"
+            self.hand_over.discard(issue_number)
         self.bound[issue_number] = event_id
-        return self.recorded[issue_number]
+        return self.generation(issue_number)
+
+    def generation(self, issue_number: int) -> NeedsHumanGeneration:
+        return NeedsHumanGeneration(self.recorded[issue_number], hand_over=issue_number in self.hand_over)
+
+
+def _rendered(episodes: Mapping[int, BlockEpisode]) -> dict[int, str]:
+    """The episodes as a fingerprint carries them."""
+    return {number: str(episode) for number, episode in episodes.items()}
 
 
 def _application_event(event_id: int) -> LabelEvent:
@@ -433,6 +449,152 @@ def test_a_changed_block_is_triaged_again() -> None:
     assert item.prior is not None and item.prior.effect == "applied"
 
 
+# -- the tech lead's own hand-over (#8112) -------------------------------------
+
+#: The needs-human generation a hand-over opens when it puts the label on.
+HANDED_OVER = "2026-10-04T13:30:43+00:00#2"
+#: A needs-human generation the engine opened under a marker already standing
+#: (it recovered the escalation): not the one the hand-over opened.
+RECOVERED = "2026-10-05T08:00:00+00:00#3"
+
+
+def _handed_over(
+    blocked: tuple[str, ...], after: tuple[str, ...], store: _Episodes,
+    applications: dict[Any, Any] | None = None,
+) -> tuple[Any, bool]:
+    """Triage the item human_hand_over on the block it is granted with
+    *blocked*, let the escalation leave it with *after*, and return the next
+    health review's agenda and whether the tick owes a triage."""
+    from issue_orchestrator.control.blocked_item_triage import triage_owed
+
+    [granted] = _owner([_issue(8091, "agent:backend", *blocked)]).agenda(
+        anchor_issue_number=ANCHOR,
+    ).grants
+    ledger = _Ledger({8091: [_triage_record(
+        8091, TriageClass.HUMAN_HAND_OVER, granted.fingerprint, effect="applied",
+    )]})
+    issue = _issue(8091, "agent:backend", *after)
+    state = OrchestratorState()
+    state.cached_scope_issues = [issue]
+    owed = triage_owed(_config(), state, _Authority(ledger), _episode_owner(store, applications))
+    agenda = _owner([issue], ledger=ledger, episodes=store, applications=applications).agenda(
+        anchor_issue_number=ANCHOR,
+    )
+    return agenda, owed
+
+
+def _generation(episode: str, *, hand_over: bool, bound: int | None = None) -> _Episodes:
+    """#8091's needs-human generation, bound to GitHub's event *bound*."""
+    return _Episodes(
+        {8091: episode}, bound={} if bound is None else {8091: bound},
+        hand_over={8091} if hand_over else set(),
+    )
+
+
+@pytest.mark.parametrize(
+    ("blocked", "after", "generation", "hand_over"),
+    [
+        # #8091: the agent's needs-human block; the escalation adds the marker.
+        (("needs-human",), ("needs-human", "tech-lead-needs-human"), EP, False),
+        # A block without needs-human: the escalation puts the marker and
+        # needs-human on, opening a needs-human generation of its own.
+        (("blocked-failed",), ("blocked-failed", "needs-human", "tech-lead-needs-human"), HANDED_OVER, True),
+    ],
+)
+def test_a_hand_over_does_not_regrant_its_own_item(
+    blocked: tuple[str, ...], after: tuple[str, ...], generation: str, hand_over: bool,
+) -> None:
+    """#8112: health review #8095 triaged #8091 human_hand_over on its
+    needs-human block; the escalation then put the tech-lead hand-over marker
+    on. The block did not change, but the next review was granted #8091 again
+    ("its block changed ... (needs-human -> none)") and pushed to hand it over
+    a second time. The hand-over's own marker, and the needs-human block it
+    places, are not a block change."""
+    agenda, owed = _handed_over(blocked, after, _generation(generation, hand_over=hand_over))
+
+    assert agenda.items == () and agenda.in_force == (8091,)
+    assert owed is False
+
+
+@pytest.mark.parametrize(
+    ("blocked", "after", "generation", "applications"),
+    [
+        # A new block beside the hand-over.
+        (("needs-human",), ("blocked-failed", "needs-human", "tech-lead-needs-human"), EP, None),
+        # needs-human lifted and raised again under the marker: a new episode.
+        (("needs-human",), ("needs-human", "tech-lead-needs-human"), HANDED_OVER, None),
+        # The handed-over item's own block re-raised: a new episode.
+        (
+            ("blocked-failed",), ("blocked-failed", "needs-human", "tech-lead-needs-human"),
+            HANDED_OVER, {(8091, "blocked-failed"): 2},
+        ),
+        # The block the triage was decided on was lifted under the hand-over.
+        (("blocked-failed", "needs-human"), ("needs-human", "tech-lead-needs-human"), EP, None),
+    ],
+)
+def test_a_handed_over_item_whose_block_changed_is_triaged_again(
+    blocked: tuple[str, ...], after: tuple[str, ...], generation: str,
+    applications: dict[Any, Any] | None,
+) -> None:
+    """#8112: only the hand-over itself is exempt. A block that changed while
+    the marker is on is owed a triage like any other."""
+    store = _generation(generation, hand_over=generation == HANDED_OVER)
+    agenda, owed = _handed_over(blocked, after, store, applications)
+
+    assert [item.issue_number for item in agenda.items] == [8091] and agenda.in_force == ()
+    assert owed is True
+
+
+#: GitHub's events after a hand-over of #8091's ``blocked-failed`` block: the
+#: marker went on (event 2), then needs-human (event 3), which the hand-over's
+#: generation is bound to.
+MARKER_EVENT, HAND_OVER_EVENT = 2, 3
+
+
+@pytest.mark.parametrize(
+    ("after", "applications", "store"),
+    [
+        # needs-human taken off while the marker stays: the needs-human part
+        # is dated from the marker's application now, which is not the
+        # generation the hand-over opened.
+        (
+            ("blocked-failed", "tech-lead-needs-human"),
+            {(8091, "needs-human"): None, (8091, "tech-lead-needs-human"): MARKER_EVENT},
+            lambda: _generation(HANDED_OVER, hand_over=True, bound=HAND_OVER_EVENT),
+        ),
+        # needs-human taken off and put back under the same marker: GitHub
+        # shows a new application of it, a new generation.
+        (
+            ("blocked-failed", "needs-human", "tech-lead-needs-human"),
+            {(8091, "needs-human"): 4, (8091, "tech-lead-needs-human"): MARKER_EVENT},
+            lambda: _generation(HANDED_OVER, hand_over=True, bound=HAND_OVER_EVENT),
+        ),
+        # needs-human taken off, and the engine put it back under the standing
+        # marker (it recovered the escalation): a generation it opened, not
+        # the hand-over.
+        (
+            ("blocked-failed", "needs-human", "tech-lead-needs-human"),
+            {(8091, "needs-human"): 4, (8091, "tech-lead-needs-human"): MARKER_EVENT},
+            lambda: _generation(RECOVERED, hand_over=False, bound=4),
+        ),
+    ],
+)
+def test_a_hand_over_whose_own_needs_human_block_changed_is_triaged_again(
+    after: tuple[str, ...], applications: dict[Any, Any],
+    store: Callable[[], _Episodes],
+) -> None:
+    """#8112 review r1 F1: a hand-over granted on ``blocked-failed`` alone put
+    on its marker and a needs-human of its own. Its triage covers that
+    needs-human only while it is the very generation the hand-over opened:
+    lifting it, or lifting and raising it again, under the same marker is a
+    block change, owed a triage by the agenda and by the tick."""
+    agenda, owed = _handed_over(("blocked-failed",), after, store(), applications)
+
+    assert [item.issue_number for item in agenda.items] == [8091] and agenda.in_force == ()
+    assert agenda.items[0].reason.startswith("it was blocked again, under the same labels")
+    assert owed is True
+
+
 def test_a_triage_does_not_cover_a_later_episode_of_the_same_block() -> None:
     """#8688 (porchpin #450): a triage of one needs-human block stayed "in
     force" after the block was lifted (the operator approved its proposal) and
@@ -626,7 +788,7 @@ def test_a_verified_item_still_waits_for_the_owners_gate() -> None:
         number=450, title="t", labels=["needs-human"], repo="porchpin/porchpin", state="open",
         updated_at="2026-10-08T00:00:00Z",
     )
-    assert episodes.verified({450: issue}) == {450: EP}
+    assert _rendered(episodes.verified({450: issue})) == {450: EP}
 
     store.busy.add(450)
 
@@ -815,11 +977,11 @@ def test_a_label_added_between_rechecks_is_read_at_once() -> None:
     issue = _issue(500, "agent:backend", "blocked-failed")
     now, reads, applications = [0.0], [], {(500, "blocked-failed"): 1, (500, "publish-failed"): 2}
     episodes = _episode_owner(_Episodes(), applications, clock=lambda: now[0], reads=reads)
-    assert episodes.current({500: issue}) == {500: _onset("blocked-failed")}
+    assert _rendered(episodes.current({500: issue})) == {500: _onset("blocked-failed")}
 
     now[0] = 60.0
     grown = _issue(500, "agent:backend", "blocked-failed", "publish-failed")
-    assert episodes.current({500: grown}) == {
+    assert _rendered(episodes.current({500: grown})) == {
         500: f"{_onset('blocked-failed')};{_onset('publish-failed', 2)}",
     }
     assert reads == [500, 500]
@@ -901,7 +1063,7 @@ def test_an_item_a_tick_read_could_not_verify_waits_for_the_next_recheck() -> No
     assert episodes.current({500: issue}) == {} and reads == [500]
     applications[500] = 1
     now[0] = 3600.0
-    assert episodes.current({500: issue}) == {500: _onset("blocked-failed")} and reads == [500, 500]
+    assert _rendered(episodes.current({500: issue})) == {500: _onset("blocked-failed")} and reads == [500, 500]
 
 
 def test_a_mixed_block_is_verified_by_one_events_scan() -> None:
@@ -913,7 +1075,7 @@ def test_a_mixed_block_is_verified_by_one_events_scan() -> None:
 
     episodes = _episode_owner(store, reads=reads).verified({500: issue})
 
-    assert episodes == {500: f"{EP};{_onset('blocked-failed')};{_onset('publish-failed')}"}
+    assert _rendered(episodes) == {500: f"{EP};{_onset('blocked-failed')};{_onset('publish-failed')}"}
     assert reads == [500] and store.bound == {500: 1}
 
 

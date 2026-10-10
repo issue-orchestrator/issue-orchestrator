@@ -33,6 +33,7 @@ recorded field fails closed rather than reading as "no claim".
 from __future__ import annotations
 
 from contextlib import AbstractContextManager
+from ..domain.human_block import NeedsHumanGeneration
 from ..domain.issue_disposition_gate import IssueDispositionGateStatus
 from dataclasses import dataclass
 from enum import Enum
@@ -505,12 +506,15 @@ class NeedsHumanCauseStore(Protocol):
         """
         ...
 
-    def open_needs_human_generation(self, issue_number: int) -> None:
+    def open_needs_human_generation(self, issue_number: int, *, hand_over: bool) -> None:
         """End the previous generation and open a new one with NO cause row.
 
         For a self-recording cause (its provenance lives in its own lifecycle)
         putting an absent label back on: the stale rows go, as with a restart,
-        and the new generation still gets its onset (#8688).
+        and the new generation still gets its onset (#8688). ``hand_over``:
+        the tech lead's hand-over is opening it together with its marker,
+        recorded on the generation and ended with it
+        (:attr:`~..domain.human_block.NeedsHumanGeneration.hand_over`, #8112).
         """
         ...
 
@@ -549,9 +553,10 @@ class NeedsHumanEpisodeReader(Protocol):
     (:meth:`NeedsHumanCauseStore.restart_needs_human_causes` /
     :meth:`~NeedsHumanCauseStore.open_needs_human_generation`) and ends with
     the label. A lift and a later re-block are two episodes even under the
-    same label and cause, which is what a tech-lead triage is keyed to. An
-    episode is ``"<opened_at>#<n>"``: comparable for equality, readable by a
-    person, and unique even for two generations opened in the same instant.
+    same label and cause, which is what a tech-lead triage is keyed to. Each
+    is read as a :class:`~..domain.human_block.NeedsHumanGeneration`: its
+    episode ``"<opened_at>#<n>"`` (unique even for two generations opened in
+    the same instant), and whether the tech lead's hand-over opened it.
     """
 
     def mutate_needs_human(
@@ -561,15 +566,15 @@ class NeedsHumanEpisodeReader(Protocol):
         a binding holds it so the owner cannot open a generation in between."""
         ...
 
-    def needs_human_episodes(self, issue_numbers: Sequence[int]) -> dict[int, str]:
-        """The recorded episode of each issue that has one (read only)."""
+    def needs_human_episodes(self, issue_numbers: Sequence[int]) -> dict[int, NeedsHumanGeneration]:
+        """The recorded generation of each issue that has one (read only)."""
         ...
 
     def bind_needs_human_episode(
         self, issue_number: int, *, event_id: int, applied_at: str
-    ) -> str:
+    ) -> NeedsHumanGeneration:
         """Bind the issue's episode to GitHub's standing application of its
-        label (``event_id``, made at ``applied_at``) and return the episode.
+        label (``event_id``, made at ``applied_at``) and return the generation.
 
         The owner sees only its own writes; GitHub sees every one. An unbound
         generation is bound to the event. A generation bound to a DIFFERENT
@@ -577,7 +582,8 @@ class NeedsHumanEpisodeReader(Protocol):
         (by hand, between owner observations), so it is replaced by a new one
         dated by the event, and the old one's cause rows and removal intent
         are retired in the same transaction: the person's clear ended every
-        cause of it (#8774). A label no acquisition opened (put on by hand, or
+        cause of it (#8774). A replacement is never the hand-over's (#8112).
+        A label no acquisition opened (put on by hand, or
         before generations were recorded) gets one dated by the event. A
         generation for a label that is in fact gone is retired by the owner's
         stale-row reconcile. An unbound generation the owner opened is

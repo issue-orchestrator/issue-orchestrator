@@ -12,6 +12,7 @@ import sqlite3
 from collections.abc import Sequence
 from datetime import datetime, timezone
 
+from ..domain.human_block import NeedsHumanGeneration
 from ..ports.pending_work_claim_store import GenerationBinding
 
 
@@ -36,11 +37,14 @@ def end_generation(conn: sqlite3.Connection, issue_number: int) -> bool:
     return dropped > 0
 
 
-def open_generation(conn: sqlite3.Connection, issue_number: int) -> None:
-    """A new episode of the shared block, dated now. Call after :func:`end_generation`."""
+def open_generation(conn: sqlite3.Connection, issue_number: int, *, hand_over: bool) -> None:
+    """A new episode of the shared block, dated now. Call after :func:`end_generation`.
+
+    ``hand_over``: the tech lead's hand-over is opening it (#8112).
+    """
     conn.execute(
-        "INSERT INTO needs_human_generation (issue_number, opened_at) VALUES (?, ?)",
-        (issue_number, _now()),
+        "INSERT INTO needs_human_generation (issue_number, opened_at, hand_over) VALUES (?, ?, ?)",
+        (issue_number, _now(), int(hand_over)),
     )
 
 
@@ -65,7 +69,8 @@ def bind_generation(
     cannot be told apart from that (#8774 r2 F1), so it fails closed. The
     person who cleared the label ended every cause of that generation, so its
     cause rows and removal intent are retired with it, in this transaction,
-    and a new generation is opened from the event (#8774).
+    and a new generation is opened from the event (#8774). No hand-over opened
+    that one: it is never the hand-over's (#8112).
     """
     row = conn.execute(
         "SELECT label_event_id FROM needs_human_generation WHERE issue_number = ?",
@@ -82,20 +87,23 @@ def bind_generation(
     # application either, so they fail closed the same way (r3 F2).
     ended = end_generation(conn, issue_number)
     conn.execute(
-        "INSERT INTO needs_human_generation (issue_number, opened_at, label_event_id, adopted)"
-        " VALUES (?, ?, ?, 1)",
+        "INSERT INTO needs_human_generation (issue_number, opened_at, label_event_id, adopted, hand_over)"
+        " VALUES (?, ?, ?, 1, 0)",
         (issue_number, applied_at, event_id),
     )
     return GenerationBinding.ENDED if ended else GenerationBinding.ADOPTED
 
 
-def read_episodes(conn: sqlite3.Connection, issue_numbers: Sequence[int]) -> dict[int, str]:
-    """``{issue: "<opened_at>#<episode>"}`` for each issue with a generation."""
+def read_episodes(
+    conn: sqlite3.Connection, issue_numbers: Sequence[int]
+) -> dict[int, NeedsHumanGeneration]:
+    """Each issue's generation: its episode ``"<opened_at>#<episode>"``, and
+    whether the tech lead's hand-over opened it."""
     wanted = set(issue_numbers)
     return {
-        int(row[0]): f"{row[1]}#{row[2]}"
+        int(row[0]): NeedsHumanGeneration(f"{row[1]}#{row[2]}", hand_over=bool(row[3]))
         for row in conn.execute(
-            "SELECT issue_number, opened_at, episode FROM needs_human_generation"
+            "SELECT issue_number, opened_at, episode, hand_over FROM needs_human_generation"
         )
         if int(row[0]) in wanted
     }

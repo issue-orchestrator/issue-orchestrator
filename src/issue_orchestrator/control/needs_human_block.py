@@ -586,7 +586,7 @@ class NeedsHumanBlock(BlockResolutionCommand, StandingGenerationGuard):
                     request.target, request.cause_key, reason=request.reason
                 )
             elif self_recording:
-                self.causes.open_needs_human_generation(request.target)
+                self.causes.open_needs_human_generation(request.target, hand_over=request.hand_over)
             else:
                 self.causes.restart_needs_human_causes(
                     request.target, request.cause_key, reason=request.reason

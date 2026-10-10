@@ -98,6 +98,9 @@ class AddLabelAction(Action):
     # every uncaused site look correct while collapsing independent assertions
     # onto one row, where a single release erased them all.
     needs_human_cause: NeedsHumanCause | None = None
+    # The tech lead's hand-over puts its marker and this label on together
+    # (#8112): the generation this add opens is the block it placed.
+    needs_human_hand_over: bool = False
     # Decide "already present" from a FRESH read, not the label cache: for a
     # gate whose absence is dangerous, a stale cached "present" must not turn
     # the write into a no-op (#7293).

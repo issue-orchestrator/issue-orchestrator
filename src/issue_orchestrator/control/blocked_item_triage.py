@@ -42,6 +42,8 @@ from ..domain.standing_ruling import ruling_in_full
 from ..domain.blocked_item_triage import (
     MAX_TRIAGE_ITEMS_PER_RUN,
     UNKNOWN_EPISODE,
+    BlockEpisode,
+    ItemBlock,
     PriorTriage,
     TriageAgenda,
     TriageAgendaItem,
@@ -204,7 +206,7 @@ def owed_triages(
     ledger: "TechLeadCharterDecisionReader",
     *,
     open_proposals: "OpenProposals",
-    episodes: Callable[[Mapping[int, "Issue"]], Mapping[int, str]],
+    episodes: Callable[[Mapping[int, "Issue"]], Mapping[int, BlockEpisode]],
     exclude: frozenset[int] = frozenset(),
 ) -> tuple[list[OwedTriage], tuple[int, ...]]:
     """``(owed, in force)``: every blocked work item in scope, oldest first,
@@ -214,7 +216,8 @@ def owed_triages(
     trigger (is a review owed) read, so an item deferred by the per-run cap or
     whose triage did not take effect keeps a review due. ``episodes`` reads
     the block episode of every blocked item; one it leaves out is unknown
-    (#8688, #8731).
+    (#8688, #8731). The tech lead's own hand-over is no change of an item's
+    block (:meth:`~..domain.blocked_item_triage.ItemBlock.triaged_as`, #8112).
     """
     blocked = [
         (issue, blocking)
@@ -227,15 +230,15 @@ def owed_triages(
     owed: list[OwedTriage] = []
     in_force: list[int] = []
     for issue, (names, marker) in blocked:
-        fingerprint = block_fingerprint(
-            names, tech_lead_marker=marker, needs_human_label=labels.needs_human,
-            episode=recorded.get(issue.number, UNKNOWN_EPISODE),
+        block = ItemBlock(
+            names, handed_over=marker, needs_human_label=labels.needs_human,
+            episode=recorded.get(issue.number),
         )
         prior = prior_triage(ledger, issue.number, open_proposals)
-        if prior is not None and prior.covers(fingerprint):
+        if prior is not None and prior.covers(block):
             in_force.append(issue.number)
         else:
-            owed.append(OwedTriage(issue, names, fingerprint, prior))
+            owed.append(OwedTriage(issue, names, block.fingerprint, prior))
     return owed, tuple(in_force)
 
 

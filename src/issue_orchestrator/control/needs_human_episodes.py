@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING
 from ..domain.issue_disposition_gate import IssueDispositionGateStatus
 
 if TYPE_CHECKING:
+    from ..domain.human_block import NeedsHumanGeneration
     from ..domain.tech_lead_approval import LabelEvent
     from ..ports.issue import Issue
     from ..ports.pending_work_claim_store import NeedsHumanEpisodeReader
@@ -57,8 +58,8 @@ class NeedsHumanEpisodes:
 
     def verified(
         self, issues: Mapping[int, "Issue"], also: Mapping[int, Sequence[str]],
-    ) -> tuple[dict[int, str], dict[int, Mapping[str, "LabelEvent | None"]]]:
-        """``(episodes, applications)``: each item's episode, bound to GitHub's
+    ) -> tuple[dict[int, "NeedsHumanGeneration"], dict[int, Mapping[str, "LabelEvent | None"]]]:
+        """``(episodes, applications)``: each item's generation, bound to GitHub's
         standing label application, and the standing application of each of
         the item's ``also`` labels, read in the SAME scan of its events
         (#8731), under the owner's gate.
@@ -67,7 +68,7 @@ class NeedsHumanEpisodes:
         its episode is unknown. An item whose events were not read (the gate
         busy, the read failed) is left out of ``applications`` too.
         """
-        verified: dict[int, str] = {}
+        verified: dict[int, "NeedsHumanGeneration"] = {}
         applications: dict[int, Mapping[str, "LabelEvent | None"]] = {}
         for number, issue in issues.items():
             episode = None
@@ -85,8 +86,8 @@ class NeedsHumanEpisodes:
         self._unverified = (self._unverified - set(issues)) | (set(issues) - set(verified))
         return verified, applications
 
-    def recorded(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
-        """The recorded episodes, with no GitHub read: what the tick reads
+    def recorded(self, issues: Mapping[int, "Issue"]) -> dict[int, "NeedsHumanGeneration"]:
+        """The recorded generations, with no GitHub read: what the tick reads
         between rechecks. An item a verification could not verify stays
         unknown (owed) until one does; one no longer held is forgotten."""
         self._unverified &= set(issues)
@@ -103,7 +104,7 @@ class NeedsHumanEpisodes:
             )
             return None
 
-    def _bind(self, number: int, application: "LabelEvent | None") -> str | None:
+    def _bind(self, number: int, application: "LabelEvent | None") -> "NeedsHumanGeneration | None":
         if application is None:
             return None  # GitHub does not show it standing: the cache is stale
         return self._store.bind_needs_human_episode(

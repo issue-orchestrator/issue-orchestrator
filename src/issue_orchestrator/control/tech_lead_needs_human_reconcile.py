@@ -183,6 +183,7 @@ class TechLeadNeedsHumanLifecycle:
             return False
         human_owned_block = human_owned_block and not preserve_human
 
+        placed_marker = False
         if not marker_present and not human_owned_block:
             # The label is forbidden only when this escalation is also the one
             # putting it there. When another orchestrator cause already holds
@@ -199,7 +200,7 @@ class TechLeadNeedsHumanLifecycle:
             )
             if not self._apply_guarded([marker], context):
                 return False
-            marker_present = True
+            marker_present = placed_marker = True
 
         if marker_present and not needs_human_present:
             needs_human = AddLabelAction(
@@ -207,6 +208,10 @@ class TechLeadNeedsHumanLifecycle:
                 label=self._labels.needs_human,
                 reason=reason,
                 needs_human_cause=NeedsHumanCause.TECH_LEAD_ESCALATION,
+                # The marker and the block placed together: the generation
+                # this opens is this hand-over's own (#8112). Under a marker
+                # that was already standing it is not.
+                needs_human_hand_over=placed_marker,
                 expected=self._expected(
                     required={self._labels.tech_lead_needs_human},
                     forbidden={self._labels.needs_human},

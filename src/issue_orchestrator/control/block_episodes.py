@@ -6,7 +6,8 @@ episode is the onset of each of its parts:
 
 * the shared needs-human block (its label, or the tech-lead hand-over marker):
   the generation its one owner records, bound to GitHub's standing label
-  application by :class:`~.needs_human_episodes.NeedsHumanEpisodes` (#8688);
+  application by :class:`~.needs_human_episodes.NeedsHumanEpisodes` (#8688),
+  with whether the tech lead's hand-over opened it (#8112);
 * every other blocking label (``blocked``, ``blocked-failed``,
   ``publish-failed``, ``recovery-pending``, ``blocked:*``,
   ``blocked-cross-milestone``, ...): GitHub's standing application of it
@@ -43,9 +44,10 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING
 
-from ..domain.blocked_item_triage import block_episode
+from ..domain.blocked_item_triage import BlockEpisode, block_episode
 
 if TYPE_CHECKING:
+    from ..domain.human_block import NeedsHumanGeneration
     from ..domain.tech_lead_approval import LabelEvent
     from ..ports.issue import Issue
     from .label_manager import LabelManager
@@ -85,7 +87,7 @@ class BlockEpisodes:
         #: until the next recheck (no GitHub read on every tick for them).
         self._failed: set[int] = set()
 
-    def verified(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
+    def verified(self, issues: Mapping[int, "Issue"]) -> dict[int, BlockEpisode]:
         """Each blocked item's episode, every part read from GitHub now.
 
         An item any part of whose episode cannot be verified is left out: its
@@ -94,7 +96,7 @@ class BlockEpisodes:
         self._onsets, self._held, self._failed = {}, set(), set()
         return self._compose(issues, self._verify(issues))
 
-    def current(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
+    def current(self, issues: Mapping[int, "Issue"]) -> dict[int, BlockEpisode]:
         """The episodes, every item re-verified once per recheck period.
 
         The tick reads this. Between rechecks it reads GitHub only for an item
@@ -116,9 +118,9 @@ class BlockEpisodes:
             self._verify(unproven)
         return self._compose(issues, self._needs_human.recorded(self._holding_needs_human(issues)))
 
-    def _verify(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
+    def _verify(self, issues: Mapping[int, "Issue"]) -> dict[int, "NeedsHumanGeneration"]:
         """Read *issues* from GitHub (one events scan each), record each one's
-        proven label onsets, and return the needs-human episodes verified."""
+        proven label onsets, and return the needs-human generations verified."""
         held = self._holding_needs_human(issues)
         needs_human, read = self._needs_human.verified(
             held, {number: self._dated_labels(issue) for number, issue in held.items()},
@@ -158,8 +160,10 @@ class BlockEpisodes:
             dated = set(self._dated_labels(issues[number]))
             self._onsets[number] = {label: onset for label, onset in onsets.items() if label in dated}
 
-    def _compose(self, issues: Mapping[int, "Issue"], needs_human: Mapping[int, str]) -> dict[int, str]:
-        episodes: dict[int, str] = {}
+    def _compose(
+        self, issues: Mapping[int, "Issue"], needs_human: Mapping[int, "NeedsHumanGeneration"],
+    ) -> dict[int, BlockEpisode]:
+        episodes: dict[int, BlockEpisode] = {}
         for number, issue in issues.items():
             held = self._holds_needs_human(issue)
             if held and number not in needs_human:
@@ -223,10 +227,10 @@ class _UnwiredEpisodes(BlockEpisodes):
     def __init__(self) -> None:
         pass
 
-    def verified(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
+    def verified(self, issues: Mapping[int, "Issue"]) -> dict[int, BlockEpisode]:
         raise RuntimeError("block episodes are not wired (#8688, #8731)")
 
-    def current(self, issues: Mapping[int, "Issue"]) -> dict[int, str]:
+    def current(self, issues: Mapping[int, "Issue"]) -> dict[int, BlockEpisode]:
         raise RuntimeError("block episodes are not wired (#8688, #8731)")
 
 

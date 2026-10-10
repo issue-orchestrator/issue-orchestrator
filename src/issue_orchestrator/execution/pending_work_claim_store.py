@@ -36,6 +36,7 @@ import sqlite3
 import threading
 from contextlib import AbstractContextManager, contextmanager
 from ..adapters.human_block_gate import FileHumanBlockMutationGate
+from ..domain.human_block import NeedsHumanGeneration
 from ..domain.issue_disposition_gate import IssueDispositionGateStatus
 from pathlib import Path
 from typing import Iterator
@@ -67,6 +68,7 @@ from .pending_work_codec import (
     encode_claim,
 )
 from .pending_work_claim_schema import (
+    GENERATION_ADDED_COLUMNS,
     QUARANTINE_ADDED_COLUMNS,
     STORE_FILENAME,
     schema_statements,
@@ -140,22 +142,19 @@ class SqlitePendingWorkClaimStore:
         self._migrate(conn)
         for statement in schema_statements():
             conn.execute(statement)
-        self._add_missing_quarantine_columns(conn)
+        self._add_missing_columns(conn, "pending_work_claim_quarantine", QUARANTINE_ADDED_COLUMNS)
+        self._add_missing_columns(conn, "needs_human_generation", GENERATION_ADDED_COLUMNS)
         conn.commit()
 
     @staticmethod
-    def _add_missing_quarantine_columns(conn: sqlite3.Connection) -> None:
-        """Bring an earlier quarantine table up to the current column set."""
-        existing = {
-            row[1]
-            for row in conn.execute("PRAGMA table_info(pending_work_claim_quarantine)")
-        }
-        for column, declaration in QUARANTINE_ADDED_COLUMNS:
+    def _add_missing_columns(
+        conn: sqlite3.Connection, table: str, columns: tuple[tuple[str, str], ...]
+    ) -> None:
+        """Bring an earlier table up to the current column set."""
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for column, declaration in columns:
             if column not in existing:
-                conn.execute(
-                    "ALTER TABLE pending_work_claim_quarantine "
-                    f"ADD COLUMN {column} {declaration}"
-                )
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
     @staticmethod
     def _migrate(conn: sqlite3.Connection) -> None:
@@ -554,12 +553,12 @@ class SqlitePendingWorkClaimStore:
                 "VALUES (?, ?, ?)",
                 (issue_number, cause, reason),
             )
-            _open_generation(conn, issue_number)
+            _open_generation(conn, issue_number, hand_over=False)
 
-    def open_needs_human_generation(self, issue_number: int) -> None:
+    def open_needs_human_generation(self, issue_number: int, *, hand_over: bool) -> None:
         with self._write_lock, self._transaction() as conn:
             _end_generation(conn, issue_number)
-            _open_generation(conn, issue_number)
+            _open_generation(conn, issue_number, hand_over=hand_over)
 
     def needs_human_causes(self, issue_number: int) -> frozenset[str]:
         return frozenset(
@@ -591,12 +590,12 @@ class SqlitePendingWorkClaimStore:
         with self._write_lock, self._transaction() as conn:
             _end_generation(conn, issue_number)
 
-    def needs_human_episodes(self, issue_numbers: Sequence[int]) -> dict[int, str]:
+    def needs_human_episodes(self, issue_numbers: Sequence[int]) -> dict[int, NeedsHumanGeneration]:
         return read_episodes(self._get_connection(), issue_numbers)
 
     def bind_needs_human_episode(
         self, issue_number: int, *, event_id: int, applied_at: str
-    ) -> str:
+    ) -> NeedsHumanGeneration:
         self.bind_needs_human_generation(
             issue_number, event_id=event_id, applied_at=applied_at, own_write=False
         )
