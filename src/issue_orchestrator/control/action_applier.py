@@ -465,6 +465,7 @@ class ActionApplier:
                 target=action.issue_number,
                 cause=action.needs_human_cause,
                 reason=action.reason,
+                hand_over=action.needs_human_hand_over,
             )
         )
 

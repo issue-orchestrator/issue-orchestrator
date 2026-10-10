@@ -147,6 +147,23 @@ class ValidatedWorkBlockSource:
 
 
 @dataclass(frozen=True, slots=True)
+class NeedsHumanGeneration:
+    """One generation (episode) of the shared block, as its owner records it.
+
+    ``episode`` is ``"<opened_at>#<n>"`` (#8688): comparable for equality,
+    readable by a person, and what a triage fingerprint carries. ``hand_over``
+    is True only for the generation the tech lead's hand-over opened when it
+    put its marker and this label on together (#8112): the block that
+    hand-over placed, not one it found. A generation adopted from GitHub's
+    event (the label taken off and put back, or re-dated from the marker,
+    outside its owner) or opened by any other acquisition never is.
+    """
+
+    episode: str
+    hand_over: bool
+
+
+@dataclass(frozen=True, slots=True)
 class HumanBlockRequest:
     """One lifecycle asserting or withdrawing the shared block (#6999 F2 r3).
 
@@ -160,6 +177,10 @@ class HumanBlockRequest:
     cause: NeedsHumanCause
     reason: str
     source: ValidatedWorkBlockSource | None = None
+    #: The tech lead's hand-over is putting its marker and this label on
+    #: together (#8112): a generation this acquisition opens is the block that
+    #: hand-over placed (:attr:`NeedsHumanGeneration.hand_over`).
+    hand_over: bool = False
 
     def __post_init__(self) -> None:
         scoped = self.cause is NeedsHumanCause.VALIDATED_WORK_DISPOSITION
@@ -167,6 +188,8 @@ class HumanBlockRequest:
             raise ValueError("validated-work causes require exactly one record source")
         if not scoped and self.source is not None:
             raise ValueError("ordinary causes cannot carry a validated-work source")
+        if self.hand_over and self.cause is not NeedsHumanCause.TECH_LEAD_ESCALATION:
+            raise ValueError("only the tech lead's escalation hands an item over")
 
     @property
     def cause_key(self) -> str:

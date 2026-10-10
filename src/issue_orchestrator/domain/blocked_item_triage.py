@@ -27,7 +27,7 @@ type here, the grant at completion, and records it on the charter decision with
 the item's :func:`block_fingerprint` at launch. That record is the watermark: an
 item whose blocking state is unchanged since a triage that took effect (or is
 awaiting the operator) is not triaged again. The tech lead's own hand-over (its
-marker, and the needs-human block it puts on) is no change (#8112).
+marker, and the needs-human generation it opens with it) is no change (#8112).
 
 "Unchanged" means the same block EPISODE, not only the same labels (#8688): a
 block lifted and later re-raised under the same label and cause is a new
@@ -45,6 +45,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from .decision_steps import DECISION_STEPS_PROMPT_RULES
+from .human_block import NeedsHumanGeneration
 from .tech_lead_artifacts import TriageClass
 
 
@@ -80,7 +81,7 @@ class BlockEpisode:
     the episode #8688 recorded, so its triages stay comparable.
     """
 
-    needs_human: str | None
+    needs_human: NeedsHumanGeneration | None
     label_onsets: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
@@ -88,12 +89,28 @@ class BlockEpisode:
             raise ValueError("a block episode needs at least one dated part")
 
     def __str__(self) -> str:
-        parts = [] if self.needs_human is None else [self.needs_human]
+        parts = [] if self.needs_human is None else [self.needs_human.episode]
         parts.extend(f"{label}={onset}" for label, onset in self.label_onsets)
         return ";".join(parts)
 
+    def before_hand_over(self) -> "BlockEpisode | None":
+        """The episode as it stood before the tech lead's hand-over (#8112).
 
-def block_episode(needs_human: str | None, label_onsets: Mapping[str, str]) -> BlockEpisode:
+        Only while its needs-human part is the very generation a hand-over
+        opened with its marker (:attr:`NeedsHumanGeneration.hand_over`): the
+        block that hand-over found is then its other parts. None for any other
+        generation, so a lift, a re-raise or a re-dating of the needs-human
+        part under the marker stays a block change, and for a block with no
+        other part (no hand-over found one to hand over).
+        """
+        if self.needs_human is None or not self.needs_human.hand_over or not self.label_onsets:
+            return None
+        return BlockEpisode(None, self.label_onsets)
+
+
+def block_episode(
+    needs_human: NeedsHumanGeneration | None, label_onsets: Mapping[str, str],
+) -> BlockEpisode:
     """The :class:`BlockEpisode` of a block's dated parts (#8731)."""
     return BlockEpisode(needs_human, tuple(sorted(label_onsets.items())))
 
@@ -151,22 +168,25 @@ class ItemBlock:
         Its own :attr:`fingerprint`. While the hand-over marker is on, also the
         block as it stood before the hand-over, which the triage that handed it
         over was granted: holding the needs-human block it already had (the
-        hand-over added only its marker), or without the needs-human block the
-        hand-over put on itself. Placing the hand-over is the tech lead's own
-        act on the block, never a change that calls for another triage, while
-        a lift, a re-raise or a new label is. Empty while the episode is
-        unknown: such a block is never covered (#8688).
+        hand-over added only its marker), or, while its needs-human generation
+        is the one the hand-over opened with its marker, without it
+        (:meth:`BlockEpisode.before_hand_over`). Placing the hand-over is the
+        tech lead's own act on the block, never a change that calls for
+        another triage, while a lift, a re-raise or a new label is, the
+        needs-human part's included. Empty while the episode is unknown: such
+        a block is never covered (#8688).
         """
         if self.episode is None:
             return frozenset()
         triaged = {self.fingerprint}
         if self.handed_over:
             triaged.add(self._fingerprint(self.blocking_labels, False, str(self.episode)))
-            if self.episode.label_onsets:
+            before = self.episode.before_hand_over()
+            if before is not None:
                 needs_human = self.needs_human_label.casefold()
                 triaged.add(self._fingerprint(
                     tuple(label for label in self.blocking_labels if label.casefold() != needs_human),
-                    False, str(BlockEpisode(None, self.episode.label_onsets)),
+                    False, str(before),
                 ))
         return frozenset(triaged)
 

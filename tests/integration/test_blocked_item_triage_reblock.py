@@ -11,7 +11,10 @@ put each standing label on.
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Callable, Sequence
+from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 
 from issue_orchestrator.control.block_episodes import BlockEpisodes
@@ -27,6 +30,7 @@ from issue_orchestrator.domain.human_block import (
     BlockOutcome,
     HumanBlockRequest,
     NeedsHumanCause,
+    NeedsHumanGeneration,
 )
 from issue_orchestrator.domain.models import Issue, OrchestratorState
 from issue_orchestrator.domain.blocked_item_triage import BlockEpisode
@@ -211,6 +215,102 @@ def test_a_triaged_item_unblocked_then_reblocked_with_the_same_cause_is_owed_a_n
     assert triage_owed(config, state, authority, episodes) is True
 
 
+def test_a_hand_over_covers_only_the_needs_human_block_it_placed(tmp_path: Path) -> None:
+    """#8112 review r1 F1, with the real block owner: a hand-over granted on
+    ``blocked-failed`` alone puts its marker and a needs-human of its own on.
+    That needs-human is no block change. Taking it off while the marker stays,
+    or taking it off and putting it back, is, by the agenda and by the tick."""
+    config = Config()
+    config.repo = "porchpin/porchpin"
+    config.tech_lead_review_agent = "agent:tech-lead"
+    labels = LabelManager(config)
+    github = _GitHub()
+    github.live[ITEM] = {"agent:backend"}
+    store = SqlitePendingWorkClaimStore.for_repo(tmp_path)
+    block = NeedsHumanBlock(
+        needs_human_label=labels.needs_human, tech_lead_marker=labels.tech_lead_needs_human,
+        labels=github, read_labels=lambda number: sorted(github.live.get(number, set())),
+        label_application=github.label_application,
+        quarantined_issue_numbers=frozenset, causes=store,
+    )
+    authority = InMemoryTechLeadAuthorityStore()
+    state = OrchestratorState()
+
+    def observe() -> None:
+        state.cached_scope_issues = [Issue(
+            number=ITEM, title="Re-run PR #521's failed Windows job",
+            labels=sorted(github.live[ITEM]), repo=config.repo, state="open",
+        )]
+
+    triage = StateBlockedItemTriage(
+        config=config, state=lambda: state, labels=labels,
+        needs_human_causes=block.recorded_causes, charter_ledger=authority.charter_ledger,
+        open_proposals=lambda: open_proposal_index(authority),
+        timeline_reader=lambda number, limit: [], standing_rulings=lambda number: (),
+        episodes=_episodes(store, github, labels, recheck_seconds=3600),
+    )
+    episodes = _episodes(store, github, labels, recheck_seconds=0)
+
+    # 1. The retry fails; a health review is granted the block and hands it
+    # over: its marker first, then a needs-human of its own.
+    github.add_label(ITEM, "blocked-failed")
+    observe()
+    [granted] = triage.agenda(anchor_issue_number=ANCHOR).grants
+    authority.charter_ledger.record_decisions([replace(
+        _explained(granted.fingerprint, "run-1", "2026-10-04T14:50:00+00:00"),
+        action_kind="escalate_to_human", triage_class=TriageClass.HUMAN_HAND_OVER,
+    )])
+    github.add_label(ITEM, labels.tech_lead_needs_human)
+    assert block.acquire(HumanBlockRequest(
+        target=ITEM, cause=NeedsHumanCause.TECH_LEAD_ESCALATION, reason="hand over", hand_over=True,
+    )) is BlockOutcome.HELD
+    observe()
+
+    # 2. The hand-over's own block is no change.
+    assert triage_owed(config, state, authority, episodes) is False
+    assert triage.agenda(anchor_issue_number=ANCHOR).in_force == (ITEM,)
+
+    # 3. A person takes needs-human off; the marker stays.
+    github.remove_label(ITEM, labels.needs_human)
+    observe()
+    assert triage_owed(config, state, authority, episodes) is True
+    [lifted] = triage.agenda(anchor_issue_number=ANCHOR).items
+    assert lifted.issue_number == ITEM and lifted.fingerprint != granted.fingerprint
+
+    # 4. ...and puts it back under the same marker: another generation.
+    github.add_label(ITEM, labels.needs_human)
+    observe()
+    assert triage_owed(config, state, authority, episodes) is True
+    [raised] = triage.agenda(anchor_issue_number=ANCHOR).items
+    assert raised.fingerprint not in {granted.fingerprint, lifted.fingerprint}
+
+
+def test_a_generation_recorded_before_hand_overs_were_is_not_one(tmp_path: Path) -> None:
+    """#8112: a database whose generation table predates the hand-over column
+    gains it, and a generation recorded there reads as no hand-over's: its
+    item is triaged once more rather than covered on a guess."""
+    db = tmp_path / "pending_work_claims.sqlite"
+    with closing(sqlite3.connect(db)) as conn:
+        conn.execute(
+            "CREATE TABLE needs_human_generation (episode INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " issue_number INTEGER NOT NULL UNIQUE CHECK (issue_number > 0), opened_at TEXT NOT NULL,"
+            " label_event_id INTEGER, adopted INTEGER NOT NULL DEFAULT 0)"
+        )
+        conn.execute(
+            "INSERT INTO needs_human_generation (issue_number, opened_at) VALUES (?, ?)",
+            (ITEM, "2026-10-01T00:00:00+00:00"),
+        )
+        conn.commit()
+
+    store = SqlitePendingWorkClaimStore(db)
+
+    assert store.needs_human_episodes([ITEM]) == {
+        ITEM: NeedsHumanGeneration("2026-10-01T00:00:00+00:00#1", hand_over=False),
+    }
+    store.open_needs_human_generation(451, hand_over=True)
+    assert store.needs_human_episodes([451])[451].hand_over is True
+
+
 def test_the_owner_cannot_reopen_a_generation_while_it_is_being_bound(tmp_path: Path) -> None:
     """#8688 review r2 F2: the binding holds the block owner's per-issue gate
     across the GitHub read, so the owner cannot end the generation and open
@@ -250,34 +350,38 @@ def test_a_self_recording_cause_still_dates_its_generation(tmp_path: Path) -> No
     store = SqlitePendingWorkClaimStore.for_repo(tmp_path)
     store.restart_needs_human_causes(ITEM, "agent_completion", reason="asked")
     [first] = store.needs_human_episodes([ITEM]).values()
+    assert first.hand_over is False
 
     store.clear_needs_human_causes(ITEM)
     assert store.needs_human_episodes([ITEM]) == {}
     assert ITEM not in store.needs_human_cause_targets()
-    store.open_needs_human_generation(ITEM)
+    store.open_needs_human_generation(ITEM, hand_over=True)
 
     [second] = store.needs_human_episodes([ITEM]).values()
-    assert second != first and store.needs_human_causes(ITEM) == frozenset()
+    assert second.episode != first.episode and store.needs_human_causes(ITEM) == frozenset()
+    assert second.hand_over is True  # the hand-over opened it (#8112)
     assert store.needs_human_cause_targets() == frozenset({ITEM})  # the reconcile retires it
     # Binding: the owner's own write binds an unbound generation, keeping its
     # episode; the same event keeps it again; a different event (a
-    # re-application) replaces it; a label with no generation gets one dated
-    # by its event.
+    # re-application) replaces it, with a generation no hand-over opened; a
+    # label with no generation gets one dated by its event.
     store.bind_needs_human_generation(
         ITEM, event_id=5, applied_at="2026-10-05T00:00:00Z", own_write=True,
     )
     assert store.needs_human_episodes([ITEM])[ITEM] == second
     assert store.bind_needs_human_episode(ITEM, event_id=5, applied_at="2026-10-05T00:00:00Z") == second
     third = store.bind_needs_human_episode(ITEM, event_id=6, applied_at="2026-10-06T00:00:00Z")
-    assert third != second and third.startswith("2026-10-06T00:00:00Z#")
-    assert store.bind_needs_human_episode(451, event_id=9, applied_at="2026-10-07T00:00:00Z").startswith(
+    assert third.episode != second.episode and third.episode.startswith("2026-10-06T00:00:00Z#")
+    assert third.hand_over is False
+    assert store.bind_needs_human_episode(451, event_id=9, applied_at="2026-10-07T00:00:00Z").episode.startswith(
         "2026-10-07T00:00:00Z#"
     )
     # An unbound generation whose own write was never bound is ended by any
     # other binding: a person's re-application would look the same (#8774).
-    store.open_needs_human_generation(452)
+    store.open_needs_human_generation(452, hand_over=True)
     [unbound] = store.needs_human_episodes([452]).values()
-    assert store.bind_needs_human_episode(452, event_id=10, applied_at="2026-10-08T00:00:00Z") != unbound
+    rebound = store.bind_needs_human_episode(452, event_id=10, applied_at="2026-10-08T00:00:00Z")
+    assert rebound.episode != unbound.episode and rebound.hand_over is False
 
 
 def test_a_publish_failed_block_that_recurs_after_a_successful_retry_is_owed_a_new_triage(

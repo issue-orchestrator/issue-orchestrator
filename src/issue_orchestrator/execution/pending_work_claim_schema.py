@@ -80,7 +80,10 @@ CREATE TABLE IF NOT EXISTS needs_human_generation (
     label_event_id INTEGER,
     -- 1 when no acquisition was seen to open it (a hand-placed or re-applied
     -- label): it was opened from GitHub's event instead, dated by it.
-    adopted INTEGER NOT NULL DEFAULT 0
+    adopted INTEGER NOT NULL DEFAULT 0,
+    -- 1 when the tech lead's hand-over opened it, putting its marker and the
+    -- label on together (#8112): the block that hand-over placed itself.
+    hand_over INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -93,6 +96,12 @@ CREATE TABLE IF NOT EXISTS needs_human_generation (
 QUARANTINE_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("cause", "TEXT"),
     ("work_kind", "TEXT"),
+)
+
+# Likewise for the generation table (#8112). A generation recorded before the
+# column existed reads as not the hand-over's: its triage is owed once more.
+GENERATION_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("hand_over", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 STORE_FILENAME = "pending_work_claims.sqlite"

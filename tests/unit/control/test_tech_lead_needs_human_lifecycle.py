@@ -370,6 +370,73 @@ class TestEscalateGuards:
 # ---------------------------------------------------------------------------
 
 
+class TestTheHandOverMarksTheBlockItPlaces:
+    """#8112: the needs-human the hand-over puts on together with its marker
+    is the hand-over's own block, so a triage granted before it still covers
+    the item. A needs-human put back under a marker that was already standing
+    (a recovered escalation, a re-escalation) is not: it is a re-raise."""
+
+    @staticmethod
+    def _needs_human_adds(applier, labels: LabelManager) -> list[AddLabelAction]:
+        return [
+            action for action in applier.applied
+            if isinstance(action, AddLabelAction) and action.label == labels.needs_human
+        ]
+
+    @staticmethod
+    def _escalate(lifecycle: TechLeadNeedsHumanLifecycle) -> bool:
+        return lifecycle.escalate(
+            issue_number=903, reason="hand over", comment="a human must re-run the job",
+            context="tech-lead disposition", event_data={"issue_number": 903},
+        )
+
+    def test_the_block_placed_with_the_marker_is_the_hand_overs(
+        self, sample_config, mock_event_sink
+    ):
+        labels = LabelManager(sample_config)
+        live: dict[int, set[str]] = {903: {"blocked-failed"}}
+        lifecycle, applier = _lifecycle(
+            sample_config, mock_event_sink, live, stale_read={903: ["blocked-failed"]},
+        )
+
+        assert self._escalate(lifecycle) is True
+
+        [add] = self._needs_human_adds(applier, labels)
+        assert add.needs_human_cause is NeedsHumanCause.TECH_LEAD_ESCALATION
+        assert add.needs_human_hand_over is True
+
+    def test_a_block_put_back_under_a_standing_marker_is_not(
+        self, sample_config, mock_event_sink
+    ):
+        labels = LabelManager(sample_config)
+        live: dict[int, set[str]] = {903: {"blocked-failed", labels.tech_lead_needs_human}}
+        lifecycle, applier = _lifecycle(
+            sample_config, mock_event_sink, live, stale_read={903: sorted(live[903])},
+        )
+
+        assert self._escalate(lifecycle) is True
+
+        [add] = self._needs_human_adds(applier, labels)
+        assert add.needs_human_hand_over is False
+
+    def test_a_recovered_escalation_is_not(self, sample_config, mock_event_sink):
+        labels = LabelManager(sample_config)
+        live: dict[int, set[str]] = {903: {"blocked-failed", labels.tech_lead_needs_human}}
+        applier = GuardEnforcingApplier(live)
+        lifecycle = TechLeadNeedsHumanLifecycle(
+            labels=labels, events=mock_event_sink,
+            read_labels=lambda number: sorted(live[number]),
+            discover_marked_issue_numbers=lambda: [903], apply_actions=applier,
+        )
+
+        lifecycle.reconcile([])
+
+        assert labels.needs_human in live[903]
+        [add] = self._needs_human_adds(applier, labels)
+        assert add.needs_human_cause is NeedsHumanCause.TECH_LEAD_ESCALATION
+        assert add.needs_human_hand_over is False
+
+
 class TestReconcileGuards:
     def test_clears_both_labels_when_state_holds(
         self, sample_config, mock_event_sink, tmp_path
@@ -1037,6 +1104,30 @@ class TestEveryOrchestratorCauseOwnsTheSharedBlock:
         assert not block.held_by_another_cause(
             903, excluding=NeedsHumanCause.CLAIM_QUARANTINE
         )
+
+    def test_the_hand_overs_block_opens_a_generation_marked_as_its_own(
+        self, sample_config, tmp_path
+    ):
+        """#8112: the applier hands the hand-over's flag to the block owner,
+        which records it on the generation it opens. Any other acquisition
+        under the marker opens a generation that is not the hand-over's."""
+        live: dict[int, set[str]] = {903: set(), 904: set()}
+        labels, applier, _quarantine, block = self._wiring(
+            sample_config, tmp_path, live
+        )
+
+        for number, hand_over in ((903, True), (904, False)):
+            live[number].add(labels.tech_lead_needs_human)
+            result = applier.apply(AddLabelAction(
+                issue_number=number, label=labels.needs_human, reason="hand over",
+                needs_human_cause=NeedsHumanCause.TECH_LEAD_ESCALATION,
+                needs_human_hand_over=hand_over,
+            ))
+            assert result.success and labels.needs_human in live[number]
+
+        generations = block.causes.needs_human_episodes([903, 904])
+        assert generations[903].hand_over is True
+        assert generations[904].hand_over is False
 
 
 @dataclass(frozen=True)
