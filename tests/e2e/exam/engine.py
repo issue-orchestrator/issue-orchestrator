@@ -36,6 +36,7 @@ from tests.e2e.exam.agents import (
     SPLIT_QUESTION,
     SPLIT_UNTIL_RESOLVED_CODER_LABEL,
     HELD_CODER_LABEL,
+    INTEGRATION_CODER_LABEL,
     REVIEWER_LABEL,
     TECH_LEAD_LABEL,
     shim_command,
@@ -77,6 +78,7 @@ def exam_config(
     resolution_coders: bool = False,
     ruling_agents: "RulingAgents | None" = None,
     deciding_coder: bool = False,
+    integration_coders: bool = False,
 ) -> Config:
     """The e2e session config, pointed at the checkout, with exam agents.
 
@@ -98,6 +100,9 @@ def exam_config(
 
     With ``deciding_coder`` (Case J, #8691), a coder asks porchpin#459's
     question until a decision is posted on its issue, then codes.
+
+    With ``integration_coders`` (Case K, #8144), a coder writes a file of its
+    own issue, so the items' PRs never truly conflict.
 
     With ``release_file``, work is held mid-flight until the file exists:
     every review waits, and ``HELD_CODER_LABEL`` is a coder that waits before
@@ -198,6 +203,17 @@ def exam_config(
             timeout_minutes=3,
             model="sonnet",
             command=shim_command("coder", asks=DELIVERY_QUESTION, until_resolved=True),
+            meta_agent="claude-code",
+            ai_system="claude-code",
+            provider_args={"permission_mode": "bypassPermissions"},
+            reviewer=REVIEWER_LABEL,
+        )
+    if integration_coders:
+        config.agents[INTEGRATION_CODER_LABEL] = AgentConfig(
+            prompt_path=prompt,
+            timeout_minutes=3,
+            model="sonnet",
+            command=shim_command("coder", own_file=True),
             meta_agent="claude-code",
             ai_system="claude-code",
             provider_args={"permission_mode": "bypassPermissions"},

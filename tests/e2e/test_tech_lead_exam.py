@@ -39,6 +39,7 @@ from issue_orchestrator.testing.exam.cases import (
     BLOCKS_RESOLVED_UNDER_EXECUTE,
     DECISION_STEPS_RUN_ON_APPROVAL,
     EXAM_CASE_IDS,
+    INTEGRATION_BRANCH_LANDS_APPROVED_WORK,
     HALTED_EXCHANGE_WITH_VALIDATED_WORK,
     POSITIVE_APPROVAL_EXECUTES_ONCE,
     RULING_BINDS_REWORK_AND_REVIEW,
@@ -64,6 +65,7 @@ from tests.e2e.exam.scenarios import (
     case_g_proposed,
     case_i,
     case_j,
+    case_k,
     case_u,
     run_case_a,
     run_case_b,
@@ -72,6 +74,7 @@ from tests.e2e.exam.scenarios import (
     run_case_h,
     run_case_i,
     run_case_j,
+    run_case_k,
     run_case_e,
     run_case_resolution,
     run_case_u,
@@ -153,6 +156,7 @@ async def test_tech_lead_exam(
         BLOCK_RESOLUTIONS_PROPOSED: case_g_proposed,
         RULING_BINDS_REWORK_AND_REVIEW: case_i,
         DECISION_STEPS_RUN_ON_APPROVAL: case_j,
+        INTEGRATION_BRANCH_LANDS_APPROVED_WORK: case_k,
     }[case_id]
     run = ExamRun(
         case=make_case(e2e_session_config),
@@ -171,6 +175,8 @@ async def test_tech_lead_exam(
             return await run_case_c(run, flows)
         if case_id == MERGE_HELD_WORK_PROCEEDS:
             return await run_case_e(run, flows)
+        if case_id == INTEGRATION_BRANCH_LANDS_APPROVED_WORK:
+            return await run_case_k(run, flows)
         if case_id == UPGRADE_WITH_WORK_IN_FLIGHT:
             return await run_case_u(
                 run, flows, base_ref=os.environ.get("E2E_EXAM_BASE_REF", "origin/main")

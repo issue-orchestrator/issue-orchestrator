@@ -70,6 +70,7 @@ class TestSettingsEndpoints:
                 "validation",
                 "validated_work",
                 "ci_failure_triage",
+                "integration",
                 "hooks",
                 "advanced",
                 "goal_pilot",

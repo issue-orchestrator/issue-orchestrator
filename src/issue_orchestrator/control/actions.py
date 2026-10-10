@@ -23,6 +23,7 @@ Usage:
 from dataclasses import dataclass, field
 from typing import Optional
 
+from ..domain.integration_branch import IntegrationStep
 from ..domain.models import (
     AwaitingMergeReconciliationSource,
     AwaitingMergeTerminalStatus,
@@ -521,6 +522,25 @@ class RerunFailedChecksAction(Action):
         would give every retry of the same re-run a fresh budget."""
         return {"pr_number": self.pr_number, "head_sha": self.head_sha,
                 "run_ids": self.run_ids, "job_ids": self.job_ids}
+
+
+@dataclass(frozen=True)
+class AdvanceIntegrationAction(Action):
+    """One integration-branch step (#8144), from a discovered ``IntegrationStep``.
+
+    Applied by ``integration_branch.apply_integration_step``, which re-checks
+    what may have moved since discovery. ``issue_number``/``pr_number`` name
+    the issue and PR a merge or update acts on (0 for branch upkeep).
+    """
+
+    step: IntegrationStep | None = None
+    issue_number: int = 0
+    pr_number: int = 0
+    action_type: ActionType = field(default=ActionType.ADVANCE_INTEGRATION, init=False)
+
+    def liveness_facts(self) -> object | None:
+        """The step itself, kind included: two kinds may share field values."""
+        return {"kind": type(self.step).__name__, "step": self.step}
 
 
 @dataclass(frozen=True)

@@ -55,6 +55,7 @@ if TYPE_CHECKING:
         PersistentExchangePairRegistry,
     )
     from ..ports.promotion_target import PromotionTargetHost
+    from ..ports.standing_rulings import StandingRulings
     from .tech_lead_approval import TechLeadApprovals
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from ..ports.pattern_registry import PatternCaseFileRegistry
@@ -129,6 +130,7 @@ from .provider_impact import ApplyProviderImpactAction, apply_provider_impact
 from ..ports.completion_intake import CompletionIntakeRuntime
 from .session_manager import SessionManager, SessionRef, SessionType, SessionContext
 from .tech_lead_applier_handlers import tech_lead_action_handlers
+from .integration_branch import apply_advance_integration
 from .published_review_release import apply_release_published_review
 from .tech_lead_issue_creation import apply_create_tech_lead_issue
 from .history_reconciliation import apply_history_reconciliation
@@ -240,6 +242,7 @@ class ActionApplier:
     # means promotion actions fail loudly instead of silently no-oping — the
     # lane is only ever planned when tech_lead.findings is enabled.
     promotion_target: Optional["PromotionTargetHost"] = None
+    standing_rulings: Optional["StandingRulings"] = None  # #8141's owner; integration merges re-judge by it (#8144)
     # Expedite-lane owner seam (#6870), wired post-construction; unwired = no-op.
     expedite_lane: Optional["ExpediteLane"] = None
     # Cross-engine tech-lead run ownership (#6994 R2 F3). Unwired means anchor
@@ -326,6 +329,8 @@ class ActionApplier:
             ActionType.ESCALATE_TO_HUMAN: self._apply_escalate,
             ActionType.ENQUEUE_TO_MERGE_QUEUE: self._apply_enqueue_to_merge_queue,
             ActionType.RERUN_FAILED_CHECKS: self._apply_rerun_failed_checks,
+            ActionType.ADVANCE_INTEGRATION: lambda action: apply_advance_integration(
+                action, self, verify_claim=self._verify_claim_before_write),
             ActionType.RELEASE_PUBLISHED_REVIEW: lambda action: apply_release_published_review(action, self),
             # Every tech-lead action type -> its extracted apply-time owner.
             **tech_lead_action_handlers(

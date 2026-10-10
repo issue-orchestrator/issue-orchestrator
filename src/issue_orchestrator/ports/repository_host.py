@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from ..domain.host_rate_limit import HostRateLimit, HostRateLimitReported
+from .integration_branch import IntegrationBranchHost
 from .issue_tracker import IssueTracker
 from .label_set import LabelSet
 from .pull_request_tracker import PullRequestTracker
@@ -160,7 +161,7 @@ def _bounded_detail(value: str) -> str:
     return f"{value[:max_len]}..."
 
 
-class RepositoryHost(IssueTracker, LabelSet, PullRequestTracker, Protocol):
+class RepositoryHost(IssueTracker, LabelSet, PullRequestTracker, IntegrationBranchHost, Protocol):
     """Combined protocol for all repository operations.
 
     This protocol extends IssueTracker, LabelSet, and PullRequestTracker

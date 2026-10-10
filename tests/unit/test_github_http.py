@@ -1824,6 +1824,14 @@ def test_get_pr_reviews_returns_empty_list_on_non_list_response() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _with_total_count(payload: object, *all_pages: object) -> object:
+    """A check-runs page as GitHub sends it: with the ``total_count`` of every page."""
+    if not isinstance(payload, dict) or "check_runs" not in payload or "total_count" in payload:
+        return payload
+    total = sum(len(page["check_runs"]) for page in all_pages if isinstance(page, dict))
+    return {**payload, "total_count": total}
+
+
 def _commit_rollup_handler(
     *,
     check_runs: object,
@@ -1836,7 +1844,7 @@ def _commit_rollup_handler(
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if path.endswith("/check-runs"):
-            return httpx.Response(check_runs_status, json=check_runs)
+            return httpx.Response(check_runs_status, json=_with_total_count(check_runs, check_runs))
         if path.endswith("/status"):
             payload = (
                 statuses
@@ -2080,7 +2088,7 @@ def _paginated_check_runs_handler(
         path = request.url.path
         if path.endswith("/check-runs"):
             page = int(request.url.params.get("page", "1"))
-            return httpx.Response(200, json=pages.get(page, {"check_runs": []}))
+            return httpx.Response(200, json=_with_total_count(pages.get(page, {"check_runs": []}), *pages.values()))
         if path.endswith("/status"):
             payload = (
                 statuses

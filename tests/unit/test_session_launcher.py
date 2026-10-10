@@ -374,6 +374,7 @@ class MockWorktreeManager:
         return WorktreeInfo(
             path=worktree_path,
             branch_name=branch_name or f"{issue_number}-feature",
+            base_branch=base_branch or "main",
         )
 
     def remove_checkout(self, worktree_path: Path, *, force: bool = False) -> None:
@@ -405,7 +406,8 @@ class MockWorkingCopy:
         self.current_branch: str | None = "main"
         self.head_sha: str | None = None
 
-    def get_commits_ahead_of_main(self, worktree: Path) -> list[CommitInfo]:
+    def get_commits_ahead_of(self, worktree: Path, base_branch: str) -> list[CommitInfo]:
+        self.compared_against = base_branch
         return self.commits_ahead
 
     def get_current_branch(self, worktree: Path) -> str | None:
@@ -856,7 +858,7 @@ class TestDetectExistingWork:
         working_copy = MockWorkingCopy()
         working_copy.commits_ahead = []
 
-        result = detect_existing_work(tmp_path, working_copy)
+        result = detect_existing_work(tmp_path, working_copy, base_branch="main")
 
         assert result is None
 
@@ -868,7 +870,7 @@ class TestDetectExistingWork:
         ]
         working_copy.head_sha = "abc123"
 
-        result = detect_existing_work(tmp_path, working_copy, seed_ref="abc123")
+        result = detect_existing_work(tmp_path, working_copy, base_branch="main", seed_ref="abc123")
 
         assert result is None
 
@@ -881,7 +883,7 @@ class TestDetectExistingWork:
         ]
         working_copy.current_branch = "123-feature"
 
-        result = detect_existing_work(tmp_path, working_copy)
+        result = detect_existing_work(tmp_path, working_copy, base_branch="main")
 
         assert result is not None
         assert "2 existing commit(s)" in result
@@ -897,7 +899,7 @@ class TestDetectExistingWork:
             for i in range(15)
         ]
 
-        result = detect_existing_work(tmp_path, working_copy)
+        result = detect_existing_work(tmp_path, working_copy, base_branch="main")
 
         assert result is not None
         assert "15 existing commit(s)" in result
@@ -906,9 +908,9 @@ class TestDetectExistingWork:
     def test_handles_exception_gracefully(self, tmp_path):
         """Verify handles exceptions and returns None (lines 91-93)."""
         working_copy = MagicMock()
-        working_copy.get_commits_ahead_of_main.side_effect = Exception("Git error")
+        working_copy.get_commits_ahead_of.side_effect = Exception("Git error")
 
-        result = detect_existing_work(tmp_path, working_copy)
+        result = detect_existing_work(tmp_path, working_copy, base_branch="main")
 
         assert result is None
 

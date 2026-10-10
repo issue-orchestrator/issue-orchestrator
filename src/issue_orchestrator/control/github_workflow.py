@@ -8,6 +8,7 @@ This module contains workflow methods extracted from the Orchestrator:
 """
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Optional, Callable
@@ -23,6 +24,8 @@ if TYPE_CHECKING:
     from .state_machine_manager import StateMachineManager
     from .label_manager import LabelManager
     from .dependency_evaluator import DependencyEvaluator
+    from .orchestrator_deps import OrchestratorDeps
+    from ..ports.standing_rulings import StandingRulings
 
 from ..infra.config import Config
 from ..events import EventName, EventContext
@@ -37,6 +40,7 @@ from ..domain.models import (
 from ..ports import EventSink, make_trace_event, RepositoryHost
 from .awaiting_merge_reconciler import AwaitingMergeReconciler
 from .ci_failure_triage import CiFailureTriage
+from .integration_branch import IntegrationBranchOwner
 from .merge_queue_coordinator import MergeQueueCoordinator
 from .retrospective_review import discover_retrospective_review_issues
 from .review_scope import ReviewScopeChecker
@@ -57,6 +61,32 @@ class GitHubWorkflow:
     event_context: EventContext
     label_manager: "LabelManager | None" = None
     dependency_evaluator: "DependencyEvaluator | None" = None
+    #: The standing-rulings owner (#8141): integration mode never merges a PR
+    #: whose issue carries a ruling, so it cannot run without it (#8144).
+    standing_rulings: "StandingRulings | None" = None
+    clock: Callable[[], float] = time.time
+
+    @classmethod
+    def for_engine(
+        cls,
+        config: Config,
+        deps: "OrchestratorDeps",
+        event_context: EventContext,
+        dependency_evaluator: "DependencyEvaluator | None",
+    ) -> "GitHubWorkflow":
+        """The engine's workflow, assembled from its dependency bundle."""
+        return cls(
+            config,
+            deps.events,
+            deps.repository_host,
+            deps.fact_gatherer,
+            deps.pr_scanner,
+            deps.label_sync,
+            event_context,
+            deps.label_manager,
+            dependency_evaluator,
+            standing_rulings=deps.standing_rulings,
+        )
 
     def fetch_all_issues(
         self,
@@ -208,6 +238,20 @@ class GitHubWorkflow:
             self.scan_retrospective_review_issues(state)
         self.scan_awaiting_merge_followups(state)
 
+    def _integration_owner(self) -> IntegrationBranchOwner | None:
+        """This pass's integration-branch owner when the mode is on (#8144)."""
+        if not self.config.integration.enabled:
+            return None
+        assert self.label_manager is not None, "integration mode needs the label manager"
+        assert self.standing_rulings is not None, "integration mode needs the standing-rulings owner"
+        return IntegrationBranchOwner(
+            config=self.config.integration,
+            host=self.repository_host,
+            label_manager=self.label_manager,
+            standing_rulings=self.standing_rulings,
+            clock=self.clock,
+        )
+
     def _merge_queue_coordinator(self) -> MergeQueueCoordinator | None:
         """Build the merge queue owner when the feature is enabled.
 
@@ -226,6 +270,7 @@ class GitHubWorkflow:
 
     def scan_awaiting_merge_followups(self, state: "OrchestratorState") -> None:
         """Discover post-approval PR follow-up work for awaiting-merge issues."""
+        integration = self._integration_owner()
         result = AwaitingMergeReconciler(
             self.repository_host,
             label_manager=self.label_manager,
@@ -236,6 +281,7 @@ class GitHubWorkflow:
             merge_queue=self._merge_queue_coordinator(),
             dependency_evaluator=self.dependency_evaluator,
             gates=self.fact_gatherer.human_gates,
+            integration=integration,
         ).discover(state)
         triaged = CiFailureTriage(self.repository_host, self.config.ci_failure_triage).screen(
             state, result.reworks
@@ -247,6 +293,9 @@ class GitHubWorkflow:
         state.discovered_awaiting_merge_escalations.extend(triaged.escalations)
         state.discovered_awaiting_merge_escalations.extend(result.escalations)
         state.discovered_merge_queue_enqueues.extend(result.enqueues)
+        if integration is not None:
+            integration.upkeep(state)
+            state.discovered_integration_steps.extend(integration.discovered_steps())
         if result.discovered:
             logger.info(
                 "Discovered %d awaiting-merge history reconciliations",

@@ -1937,13 +1937,13 @@ class TechLeadWaitingItemPayload(BaseModel):
     can_approve: bool = Field(..., strict=True)
     can_decline: bool = Field(..., strict=True)
     details: list[TechLeadDetailRowPayload]
-    kind: Literal['proposal', 'merge_ready_pr', 'hand_over']
+    kind: Literal['proposal', 'merge_ready_pr', 'hand_over', 'delivery_pr']
     link: str
     number: int = Field(..., ge=1, strict=True)
     operation: str
     operator_steps: list[str]
     recommendation: str
-    status: Literal['awaiting_approval', 'approved', 'approval_not_accepted', 'executing', 'merge_held', 'handed_over']
+    status: Literal['awaiting_approval', 'approved', 'approval_not_accepted', 'executing', 'merge_held', 'handed_over', 'delivery_ready']
     status_label: str
     title: str
     waiting_since: str

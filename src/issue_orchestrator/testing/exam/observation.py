@@ -10,6 +10,7 @@ discriminates means running the SAME harness against an older engine.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Mapping
@@ -504,6 +505,46 @@ class RunEnd(str, Enum):
     ENGINE_EXITED = "engine_exited"
 
 
+#: A delivery PR body's line for one PR it delivers (``domain.integration_branch``
+#: renders ``- #<number> <title>``).
+_DELIVERED_PR_LINE = re.compile(r"^- #(\d+) ", re.MULTILINE)
+
+
+@dataclass(frozen=True)
+class DeliveryPullRequestFact:
+    """Integration mode's delivery PR (#8144), as GitHub held it at the end."""
+
+    number: int
+    head: str
+    base: str
+    state: PullRequestState
+    listed_pr_numbers: tuple[int, ...]
+    """The PRs its generated body says it delivers, in body order."""
+
+    @staticmethod
+    def listed_in(body: str) -> tuple[int, ...]:
+        return tuple(int(number) for number in _DELIVERED_PR_LINE.findall(body or ""))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "number": self.number,
+            "head": self.head,
+            "base": self.base,
+            "state": self.state.value,
+            "listed_pr_numbers": list(self.listed_pr_numbers),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "DeliveryPullRequestFact":
+        return cls(
+            number=int(data["number"]),
+            head=str(data["head"]),
+            base=str(data["base"]),
+            state=PullRequestState(data["state"]),
+            listed_pr_numbers=tuple(int(n) for n in data["listed_pr_numbers"]),
+        )
+
+
 @dataclass(frozen=True)
 class ExamObservation:
     case_id: str
@@ -527,6 +568,8 @@ class ExamObservation:
     notes: tuple[str, ...] = field(default_factory=tuple)
     upgrade: UpgradeFacts | None = None
     """What the harness saw across an upgrade case's stop and restart."""
+    delivery: DeliveryPullRequestFact | None = None
+    """Integration mode's delivery PR (Case K, #8144); None when there is none."""
 
     def item(self, role: str) -> WorkItemFact:
         matches = [item for item in self.items if item.role == role]
@@ -551,6 +594,7 @@ class ExamObservation:
             "ended_by": self.ended_by.value,
             "notes": list(self.notes),
             "upgrade": None if self.upgrade is None else self.upgrade.to_dict(),
+            "delivery": None if self.delivery is None else self.delivery.to_dict(),
         }
 
     @classmethod
@@ -575,4 +619,9 @@ class ExamObservation:
             ended_by=RunEnd(data["ended_by"]),
             notes=tuple(data["notes"]),
             upgrade=None if data["upgrade"] is None else UpgradeFacts.from_dict(data["upgrade"]),
+            # Observations saved before Case K (#8144) carry no delivery key.
+            delivery=(
+                None if data.get("delivery") is None
+                else DeliveryPullRequestFact.from_dict(data["delivery"])
+            ),
         )

@@ -20,6 +20,8 @@ def build_post_publish_escalation_comment(
         title = "🔁 Escalated to Human Review (CI re-run did not start)"
     elif kind == "merge_queue_failed":
         title = "🚦 Escalated to Human Review (merge queue rejected the PR)"
+    elif kind == "integration_ruling_check":
+        title = "📜 Escalated to Human Review (standing ruling: check before it merges)"
     else:  # branch_protection_blocked
         title = "🛑 Escalated to Human Review (branch protection)"
     return (

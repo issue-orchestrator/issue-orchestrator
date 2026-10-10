@@ -31,9 +31,12 @@ class WorktreeInfo:
     branch_name: str
     reuse_status: str = "created"  # created | reused | recreated
     reuse_reason: str | None = None
-    rebase_failed: bool = False  # True if rebase onto main failed (work was discarded)
+    rebase_failed: bool = False  # True if rebase onto base_branch failed (work was discarded)
     uncommitted_discarded: int = 0  # Count of uncommitted changes discarded during reset
     commits_discarded: int = 0  # Count of commits discarded during reset (rebase failure)
+    #: The branch the worktree is based on and rebased onto (the stack predecessor,
+    #: worktrees.base_branch_override - integration mode's branch - or the default).
+    base_branch: str | None = None
 
 
 @dataclass(frozen=True)

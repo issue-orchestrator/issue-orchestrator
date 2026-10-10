@@ -32,7 +32,7 @@ from issue_orchestrator.domain.tech_lead_approval import (
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.testing.exam import ExamCase, ExamObservation, RunEnd, Scorecard, grade
 from issue_orchestrator.testing.exam.case import REVIEW_STARTED_EVENT
-from issue_orchestrator.testing.exam.observation import TechLeadActionDisposition
+from issue_orchestrator.testing.exam.observation import DeliveryPullRequestFact, PullRequestState, TechLeadActionDisposition
 from issue_orchestrator.testing.exam.tech_lead import actions_resolved
 from issue_orchestrator.testing.exam.cases import (
     ASKS,
@@ -69,6 +69,10 @@ from issue_orchestrator.testing.exam.cases import (
     SIBLING,
     SUPERSEDED,
     decision_steps_run_on_approval,
+    LANDED_FIRST,
+    LANDED_SECOND,
+    LEFT_BEHIND,
+    integration_branch_lands_approved_work,
 )
 from issue_orchestrator.testing.exam.upgrade import UpgradeFacts
 
@@ -84,6 +88,7 @@ from tests.e2e.exam.agents import (
     CODER_LABEL,
     DECIDING_CODER_LABEL,
     HELD_CODER_LABEL,
+    INTEGRATION_CODER_LABEL,
 )
 from tests.e2e.exam.driving import drive, settle
 from tests.e2e.exam.run_identity import RunIdentity
@@ -96,7 +101,9 @@ from tests.e2e.exam.case_engines import (
     case_e_engine,
     case_i_engine,
     case_j_engine,
+    case_k_engine,
     case_resolution_engine,
+    integration_branch_name,
     case_u_engine,
 )
 from tests.e2e.exam.engine import EngineCheckout, ExamEngine, RulingAgents
@@ -239,6 +246,7 @@ async def _finish(
     ended_by: RunEnd,
     upgrade: UpgradeFacts | None = None,
     capture_dir: Path | None = None,
+    delivery: DeliveryPullRequestFact | None = None,
 ) -> ExamResult:
     watcher = engine.runtime.watcher
     alive = engine.is_running()
@@ -279,6 +287,7 @@ async def _finish(
         ended_by=ended_by,
         notes=tuple(run.notes),
         upgrade=upgrade,
+        delivery=delivery,
     )
     return ExamResult(observation=observation, scorecard=grade(run.case, observation))
 
@@ -1381,3 +1390,130 @@ def case_i(config: Config) -> ExamCase:
 
 def case_j(config: Config) -> ExamCase:
     return decision_steps_run_on_approval(needs_human_label=_labels(config).needs_human)
+
+
+
+# ---------------------------------------------------------------------------
+# Case K (#8144)
+# ---------------------------------------------------------------------------
+
+CASE_K_FIRST_EXTERNAL_ID = "M0-790"
+CASE_K_SECOND_EXTERNAL_ID = "M0-791"
+CASE_K_LEFT_BEHIND_EXTERNAL_ID = "M0-792"
+
+
+def case_k(config: Config) -> ExamCase:
+    labels = _labels(config)
+    return integration_branch_lands_approved_work(
+        needs_human_label=labels.needs_human,
+        rework_labels=(labels.needs_rework, labels.rework_cycle(1)),
+    )
+
+
+def _approved_open_prs(repo: str, labels: LabelManager, items: list[TrackedItem]) -> dict[int, int] | None:
+    """Each item's one open PR, once every item has one carrying code-reviewed.
+
+    The complete open-PR walk carries no labels, so each PR's labels are read
+    fresh (the first live Case K run waited forever on the walk's empty set).
+    """
+    adapter = _github_adapter(repo)
+    found: dict[int, int] = {}
+    for tracked in items:
+        prs = linked_pull_requests(repo, tracked.issue_number, state="open")
+        if len(prs) != 1:
+            return None
+        fresh = adapter.get_pr(prs[0].number)
+        if fresh is None or labels.code_reviewed not in fresh.labels:
+            return None
+        found[tracked.issue_number] = prs[0].number
+    return found
+
+
+def _observe_delivery(repo: str, branch: str) -> DeliveryPullRequestFact | None:
+    """The open delivery PR from the run's integration branch, as GitHub holds it."""
+    adapter = _github_adapter(repo)
+    base = adapter.get_default_branch()
+    ref = adapter.find_open_pull_request(head=branch, base=base)
+    if ref is None:
+        return None
+    fresh = adapter.get_pr(ref.number)
+    if fresh is None:
+        raise RuntimeError(f"delivery PR #{ref.number} vanished while observing")
+    return DeliveryPullRequestFact(
+        number=ref.number, head=branch, base=base,
+        state=PullRequestState.from_github(state=fresh.state, draft=fresh.draft, merged=fresh.state == "merged"),
+        listed_pr_numbers=DeliveryPullRequestFact.listed_in(ref.body),
+    )
+
+
+async def run_case_k(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
+    """Integration mode lands three approved PRs (#8144); no tech lead.
+
+    io creates the run's integration branch itself. The harness waits until
+    the scripted reviewer has approved all three PRs, then releases them at
+    once (``tech-lead-reviewed``, the case's ``merge_after``), so io's
+    one-merge-per-pass, oldest-first rule leaves the last-created item's PR
+    behind the first merge: it must be updated mechanically, never reworked.
+    """
+    branch = integration_branch_name(run.identity.run_id)
+    run.branches.append(branch)  # deleting it also closes the delivery PR
+    checkout = EngineCheckout.create(
+        harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity, repo=run.repo
+    )
+    try:
+        spec = case_k_engine(branch)
+        config = spec.config(run.base_config, checkout=checkout, run_label=run.run_label)
+        engine = spec.engine(config, checkout)
+        runtime = await engine.start()
+        try:
+            labels = _labels(config)
+            flow = E2EFlow(repo=run.repo, watcher=runtime.watcher, filter_label=run.run_label)
+            flow_cleanup.append(flow)
+            flow.ensure_labels([labels.tech_lead_reviewed, labels.needs_human])
+            started = time.monotonic()
+            items: list[TrackedItem] = []
+            for role, external_id in (
+                (LANDED_FIRST, CASE_K_FIRST_EXTERNAL_ID),
+                (LANDED_SECOND, CASE_K_SECOND_EXTERNAL_ID),
+                (LEFT_BEHIND, CASE_K_LEFT_BEHIND_EXTERNAL_ID),
+            ):
+                _, number = flow.create_issue(
+                    f"[{external_id}] [EXAM-K] Integration mode lands {role.replace('_', ' ')} work",
+                    [INTEGRATION_CODER_LABEL, E2E_DATA_LABEL],
+                    body="Tech-lead exam case K (#8144): an approved PR into the integration branch.",
+                )
+                items.append(TrackedItem(role, number, external_id=external_id))
+
+            approved: dict[int, int] = {}
+
+            async def all_approved() -> bool:
+                found = _approved_open_prs(run.repo, labels, items)
+                if found is not None:
+                    approved.update(found)
+                return found is not None
+
+            ended_by = await drive(engine, done=all_approved, quiet_s=600, timeout_s=30 * 60)
+            if ended_by is RunEnd.GOAL_REACHED:
+                operator = _github_adapter(run.repo)
+                for pr_number in approved.values():
+                    operator.add_label(pr_number, labels.tech_lead_reviewed)
+                run.notes.append(f"released PRs {sorted(approved.values())} with {labels.tech_lead_reviewed}")
+                goals = goals_met_probe(run, engine, *items)
+
+                async def landed_and_delivered() -> bool:
+                    if not await goals():
+                        return False
+                    delivery = _observe_delivery(run.repo, branch)
+                    return delivery is not None and set(approved.values()) <= set(delivery.listed_pr_numbers)
+
+                ended_by = await drive(engine, done=landed_and_delivered, quiet_s=600, timeout_s=30 * 60)
+            else:
+                run.notes.append(f"the three PRs were never all approved ({ended_by.value})")
+            return await _finish(
+                run, engine, items=items, extra_prs={}, started=started, ended_by=ended_by,
+                delivery=_observe_delivery(run.repo, branch),
+            )
+        finally:
+            await engine.close()
+    finally:
+        checkout.remove()

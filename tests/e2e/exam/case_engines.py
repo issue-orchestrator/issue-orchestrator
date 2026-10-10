@@ -67,6 +67,8 @@ class CaseEngine:
     """Case I's ruled coder, held reviewer and answerable coder (``exam_config``)."""
     deciding_coder: bool = False
     """Case J's coder that asks porchpin#459's question (``exam_config``)."""
+    integration_coders: bool = False
+    """Case K's coder that writes a file of its own issue (``exam_config``)."""
     worktree_reuse: bool = False
     """Let the engine reuse worktrees. The e2e default (reuse disabled) makes
     a batch/health tech lead's anchor launch refuse itself: its branch is
@@ -97,6 +99,7 @@ class CaseEngine:
             resolution_coders=self.resolution_coders,
             ruling_agents=self.ruling_agents,
             deciding_coder=self.deciding_coder,
+            integration_coders=self.integration_coders,
         )
 
     def engine(self, config: Config, checkout: EngineCheckout) -> ExamEngine:
@@ -295,4 +298,29 @@ def case_j_engine() -> CaseEngine:
         deciding_coder=True,
         worktree_reuse=True,
         overlay=base.overlay,
+    )
+
+
+def integration_branch_name(run_id: str) -> str:
+    """Case K's integration branch: one per run, so runs never share it."""
+    return f"exam-integration-{run_id}"
+
+
+def case_k_engine(branch: str) -> CaseEngine:
+    """Case K (#8144): integration mode on a branch io creates itself.
+
+    ``merge_after: tech-lead-reviewed`` lets the harness release all three
+    approved PRs at once (it labels them, as a batch tech-lead review would),
+    so io's one-merge-per-pass, oldest-first rule deterministically leaves the
+    last-created item's PR behind the first merge. Reviews run after
+    publication (``via-draft-pr``): the scripted reviewer answers only
+    post-publish reviews.
+    """
+    return CaseEngine(
+        reviewer_exchange_fault="none",
+        integration_coders=True,
+        overlay={
+            "review": {"exchange": {"mode": "via-draft-pr"}},
+            "integration": {"enabled": True, "branch": branch, "merge_after": "tech-lead-reviewed"},
+        },
     )

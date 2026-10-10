@@ -9,6 +9,7 @@ from typing import Any, get_type_hints
 from ..domain.models import CommentHeadings
 from .config_models import (
     CiFailureTriageConfig,
+    IntegrationConfig,
     ClaimsConfig,
     CleanupConfig,
     DangerousConfig,
@@ -127,6 +128,7 @@ def allowed_config_shape() -> dict[str, ConfigShape]:
         "merge_queue": dataclass_config_shape(MergeQueueConfig),
         "validated_work": dataclass_config_shape(ValidatedWorkConfig),
         "ci_failure_triage": dataclass_config_shape(CiFailureTriageConfig),
+        "integration": dataclass_config_shape(IntegrationConfig),
         "labels": _leaf_keys(
             "in_progress",
             "blocked",

@@ -33,6 +33,7 @@
         proposal: 'Proposal',
         merge_ready_pr: 'Merge-ready PR',
         hand_over: 'Hand-over',
+        delivery_pr: 'Delivery PR',
     };
     let latest = null;
     let unavailable = false;

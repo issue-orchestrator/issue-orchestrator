@@ -37,6 +37,7 @@ from tests.e2e.exam.case_engines import (
     case_e_engine,
     case_i_engine,
     case_j_engine,
+    case_k_engine,
     case_resolution_engine,
     case_u_engine,
 )
@@ -111,8 +112,9 @@ def _load_case_config(
         case_resolution_engine(resolve_block="propose"),
         case_i_engine(RulingAgents(Path("/tmp/exam-i-prompts"))),
         case_j_engine(),
+        case_k_engine("exam-integration-test"),
     ],
-    ids=["A", "B", "C", "U", "D", "H", "E", "F", "G", "I", "J"],
+    ids=["A", "B", "C", "U", "D", "H", "E", "F", "G", "I", "J", "K"],
 )
 def test_every_case_engine_config_loads(
     spec: CaseEngine, tmp_path: Path, written: list[Path]
@@ -333,3 +335,20 @@ def test_case_j_asks_until_a_decision_is_posted_and_decisions_wait_for_approval(
     assert deciding.reviewer == REVIEWER_LABEL
     assert loaded.tech_lead.health_review.interval_minutes > 0
     assert loaded.tech_lead.authority.mode_for("resolve_block") == "propose"
+
+
+def test_case_k_runs_integration_mode_on_its_own_branch(tmp_path: Path, written: list[Path]) -> None:
+    """#8144: integration mode on the run's own branch (implying the worktree
+    base), released by the tech-lead-reviewed label, coders writing their own
+    files so their PRs never truly conflict."""
+    from tests.e2e.exam.agents import INTEGRATION_CODER_LABEL
+
+    loaded = _load_case_config(case_k_engine("exam-integration-abc"), tmp_path, written)
+
+    assert loaded.integration.enabled
+    assert loaded.integration.branch == "exam-integration-abc"
+    assert loaded.integration.merge_after == "tech-lead-reviewed"
+    assert loaded.worktree_base_branch_override == "exam-integration-abc"
+    coder = loaded.agents[INTEGRATION_CODER_LABEL]
+    assert "--own-file" in coder.command and coder.reviewer == REVIEWER_LABEL
+    assert loaded.review_exchange_mode == "via-draft-pr"

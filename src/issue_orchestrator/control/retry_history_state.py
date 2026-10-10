@@ -7,6 +7,7 @@ from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass
 from typing import Literal
 
+from ..domain.integration_branch import step_issue_number, step_pr_number
 from ..domain.models import OrchestratorState
 
 logger = logging.getLogger(__name__)
@@ -518,6 +519,11 @@ class RetryHistoryState:
             d for d in self._state.discovered_ci_reruns
             if d.issue_number != issue_number
             and d.pr_number not in superseded_pr_numbers
+        ]
+        self._state.discovered_integration_steps = [
+            step for step in self._state.discovered_integration_steps
+            if step_issue_number(step) != issue_number
+            and step_pr_number(step) not in superseded_pr_numbers
         ]
 
     def _clear_progress_flags(self, issue_number: int) -> None:

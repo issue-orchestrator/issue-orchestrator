@@ -13,7 +13,8 @@ is legible without a colour key.
 Three lanes, oldest first where time matters to the operator:
 
 * **waiting** — tech-lead proposals (every kind), PRs whose merge is held for a
-  person, and items the tech lead handed to a person; each shows the active
+  person, items the tech lead handed to a person, and the integration delivery
+  PR the operator merges (#8144); each shows the active
   standing rulings on its issue (#8141), the maintainer's binding decisions
   every agent on it works to;
 * **doing** — what the tech lead did on its own in the last day, in flight
@@ -50,6 +51,7 @@ from ..domain.tech_lead_charter_decisions import (
 
 if TYPE_CHECKING:
     from ..control.merge_hold_status import MergeHoldStatus
+    from ..domain.integration_branch import IntegrationDeliveryView
     from ..domain.action_liveness import LivenessRow
     from ..ports.standing_rulings import SyncedRulings
     from ..domain.tech_lead_session import StoredTechLeadOp, TechLeadCaseFileSummary
@@ -139,6 +141,9 @@ class TechLeadPageInputs:
     #: Issues the approval owner's index names as proposals, whatever an edit
     #: left of their labels and marker (#7763 review r16 F1).
     known_proposals: frozenset[int] = frozenset()
+    #: The integration delivery PR as the integration owner last observed it
+    #: (#8144): None when integration mode is off or nothing awaits delivery.
+    delivery: "IntegrationDeliveryView | None" = None
 
 
 def issue_link(repository: str, number: int) -> str:
@@ -147,7 +152,9 @@ def issue_link(repository: str, number: int) -> str:
 
 #: Waiting-lane states that need the operator. An approved proposal waits on
 #: the engine, not on them, so it is listed but not counted.
-_NEEDS_OPERATOR = frozenset({"awaiting_approval", "approval_not_accepted", "merge_held", "handed_over"})
+_NEEDS_OPERATOR = frozenset(
+    {"awaiting_approval", "approval_not_accepted", "merge_held", "handed_over", "delivery_ready"}
+)
 
 
 def build_tech_lead_page_section(inputs: TechLeadPageInputs) -> TechLeadPageSectionPayload:
@@ -212,6 +219,8 @@ def _waiting(inputs: TechLeadPageInputs) -> list[TechLeadWaitingItemPayload]:
             continue
         if any(str(label).casefold() == hand_over for label in issue.labels):
             items.append(_hand_over(inputs.repository, issue, reasons.get(issue.number, ""), inputs.rulings))
+    if inputs.delivery is not None:
+        items.append(_delivery(inputs.delivery))
     # Oldest first; an item with no known time sorts after the dated ones.
     return sorted(items, key=lambda item: (item.waiting_since == "", item.waiting_since, item.number))
 
@@ -406,6 +415,40 @@ def _hand_over(
         can_approve=False,
         can_decline=False,
         details=ruling_details(rulings, issue.number),
+        approval_steps=[],
+        operator_steps=[],
+    )
+
+
+def _delivery(delivery: "IntegrationDeliveryView") -> TechLeadWaitingItemPayload:
+    head, base = delivery.head, delivery.base
+    count = len(delivery.merged_pr_numbers)
+    listed = ", ".join(f"#{number}" for number in delivery.merged_pr_numbers) or "None listed"
+    # A capped GitHub listing makes the numbers a floor: say so, never a count.
+    count_text = str(count) if delivery.listing_complete else f"at least {count}"
+    if not delivery.listing_complete:
+        listed += " (GitHub listed only part; see the PR)"
+    return TechLeadWaitingItemPayload(
+        kind="delivery_pr",
+        number=delivery.pr_number,
+        operation="deliver",
+        title=f"Deliver {head} to {base}",
+        recommendation=f"Delivers {count_text} pull request(s) merged into {head} to {base}.",
+        approval_effect=(
+            f"Merge this PR on GitHub with a merge commit (not squash or rebase); io then"
+            f" fast-forwards {head} to {base}. Never delete {head}."
+        ),
+        link=delivery.url,
+        waiting_since=delivery.observed_at,
+        status="delivery_ready",
+        status_label="Ready for you to merge",
+        can_approve=False,
+        can_decline=False,
+        details=[
+            TechLeadDetailRowPayload(label="Integration tip", value=delivery.integration_tip),
+            TechLeadDetailRowPayload(label="Commits ahead", value=str(delivery.ahead_by)),
+            TechLeadDetailRowPayload(label="Pull requests", value=listed),
+        ],
         approval_steps=[],
         operator_steps=[],
     )

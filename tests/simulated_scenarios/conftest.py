@@ -353,7 +353,7 @@ class StubWorkingCopy:
     def has_tracked_changes(self, worktree: Path, include_staged: bool = True) -> bool:
         return False
 
-    def get_commits_ahead_of_main(self, worktree: Path) -> list[CommitInfo]:
+    def get_commits_ahead_of(self, worktree: Path, base_branch: str) -> list[CommitInfo]:
         return []
 
     def fetch(self, worktree: Path, remote: str = "origin") -> bool:
@@ -477,7 +477,7 @@ class TempWorktreeManager:
         from tests.simulated_scenarios.git_workspace import initialize_linked_scenario_checkout
 
         initialize_linked_scenario_checkout(repo_root, worktree, final_branch)
-        return WorktreeInfo(path=worktree, branch_name=final_branch)
+        return WorktreeInfo(path=worktree, branch_name=final_branch, base_branch=base_branch or "main")
 
     def remove_checkout(self, worktree_path: Path, *, force: bool = False) -> None:
         del worktree_path, force

@@ -29,6 +29,9 @@ from .case import (
     released_review_launches,
     published_work_survives,
     single_pull_request,
+    delivery_lists_every_pr,
+    integration_steps_applied,
+    no_rework,
     contradicting_approval_refused,
     reviews_after_rework_carry_rulings,
     rework_prompts_carry_rulings,
@@ -59,6 +62,7 @@ BLOCKS_RESOLVED_UNDER_EXECUTE = "F-needs-human-blocks-resolved"
 BLOCK_RESOLUTIONS_PROPOSED = "G-needs-human-block-resolutions-proposed"
 RULING_BINDS_REWORK_AND_REVIEW = "I-ruling-binds-rework-and-review"
 DECISION_STEPS_RUN_ON_APPROVAL = "J-decision-steps-run-on-approval"
+INTEGRATION_BRANCH_LANDS_APPROVED_WORK = "K-integration-branch-lands-approved-work"
 
 #: Every case id the exam defines. A new case (the improver's ``exam_case``
 #: output, #7490) must use an id outside this set: cases are add-only.
@@ -74,6 +78,7 @@ EXAM_CASE_IDS: tuple[str, ...] = (
     BLOCK_RESOLUTIONS_PROPOSED,
     RULING_BINDS_REWORK_AND_REVIEW,
     DECISION_STEPS_RUN_ON_APPROVAL,
+    INTEGRATION_BRANCH_LANDS_APPROVED_WORK,
 )
 
 #: Case U's two in-flight items.
@@ -656,4 +661,51 @@ def decision_steps_run_on_approval(*, needs_human_label: str) -> ExamCase:
             "porchpin#459 approval acted on the issue only: every other consequence was the operator's by hand",
             "porchpin#327/#530 approval could not route the decided issue's PR",
         ),
+    )
+
+
+#: Case K's three items (#8144): the first two to be published, and the sibling
+#: created last, whose PR the first merge into integration leaves behind.
+LANDED_FIRST = "landed_first"
+LANDED_SECOND = "landed_second"
+LEFT_BEHIND = "left_behind"
+
+
+def integration_branch_lands_approved_work(
+    *, needs_human_label: str, rework_labels: tuple[str, ...]
+) -> ExamCase:
+    """Case K — integration-branch mode lands approved work (#8144).
+
+    Three coders publish non-conflicting PRs into an integration branch io
+    creates itself; the scripted reviewer approves each, and the harness then
+    releases all three at once (the ``merge_after: tech-lead-reviewed`` label).
+    io merges one per pass, oldest first, so the first merge leaves the others
+    behind: each must be brought up to the tip mechanically, never by an agent
+    rework, and merge. GitHub closes no issue on a non-default-branch merge:
+    io's awaiting-merge reconcile must close each one. The delivery PR
+    (integration -> main) lists all three.
+
+    Before #8144 porchpin's operator merged every PR, and every merge sent the
+    siblings to rework (PR #379: 9 of 10 cycles, mostly rebases).
+    """
+    goals: list[Goal] = []
+    for role in (LANDED_FIRST, LANDED_SECOND, LEFT_BEHIND):
+        goals.extend((
+            single_pull_request(role),
+            pr_in_state(role, PullRequestState.MERGED),
+            issue_is_closed(role),
+            issue_lacks_labels(role, (needs_human_label,)),
+            no_rework(role, rework_labels),
+        ))
+    goals.append(integration_steps_applied(LEFT_BEHIND, at_least=2))
+    goals.append(delivery_lists_every_pr((LANDED_FIRST, LANDED_SECOND, LEFT_BEHIND)))
+    return ExamCase(
+        case_id=INTEGRATION_BRANCH_LANDS_APPROVED_WORK,
+        title="Integration mode lands approved PRs; a left-behind sibling is updated, not reworked",
+        fault=(
+            "three approved PRs into an integration branch io must create; each merge"
+            " leaves the remaining PRs behind its new tip"
+        ),
+        goals=tuple(goals),
+        known_blockers=("porchpin#379 every merge sent the siblings to rework", "#8144"),
     )

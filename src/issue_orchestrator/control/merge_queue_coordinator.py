@@ -35,6 +35,7 @@ from ..ports.repository_host import (
     RepositoryScanIncompleteError,
 )
 from .human_gates import holds_merge
+from .status_rollup_gate import StatusRollupGate, rollup_is_decisive
 from .awaiting_merge_post_publish_policy import (
     POST_PUBLISH_VALIDATION_COMMENT_MARKER,
     POST_PUBLISH_VALIDATION_SOURCE,
@@ -47,6 +48,7 @@ from .awaiting_merge_post_publish_policy import (
 if TYPE_CHECKING:
     from .action_results import ActionResult
     from .actions import EnqueueToMergeQueueAction
+    from ..domain.models import OrchestratorState
     from ..events import EventContext
     from ..infra.config_models import MergeQueueConfig
     from ..ports import EventSink
@@ -163,6 +165,60 @@ class MergeQueueCoordinator:
                 exc,
             )
             return MergeQueueRead.indeterminate()
+
+    def discover_followup(
+        self,
+        *,
+        state: "OrchestratorState",
+        issue_number: int,
+        pr: "PRInfo",
+        issue: "Issue",
+        pr_number: int,
+        rollup_gate: "StatusRollupGate",
+        rollup_scan_interval_seconds: float,
+    ) -> MergeQueueFollowup:
+        """The awaiting-merge reconciler's merge-queue path for one eligible approved PR.
+
+        Reads the queue entry first so an already-queued PR is observed without
+        paying for (or escalating on) a status-rollup read. Only a not-yet-queued
+        PR resolves the rollup, since the base eligibility classification needs
+        it for ``unstable``/``blocked`` states.
+        """
+        read = self.read_entry(pr_number)
+        if read.is_indeterminate:
+            # The queue state could not be determined (transient read failure or
+            # an unmodeled provider state). Treat it as non-actionable: do NOT
+            # resolve the rollup or classify, so an unreadable queue can never
+            # enqueue, rework, or escalate a PR off stale status. Re-observe next
+            # tick.
+            return MergeQueueFollowup()
+        queue_entry = read.entry
+        if queue_entry is None:
+            decisive = rollup_is_decisive(pr.mergeable_state)
+            if decisive and not rollup_gate.scan_due(state, pr_number, rollup_scan_interval_seconds):
+                return MergeQueueFollowup()
+            resolution = rollup_gate.resolve_decisive(
+                state.status_rollup_capability,
+                pr=pr,
+                issue_number=issue_number,
+                issue_key=issue.key.stable_id(),
+            )
+            if resolution.permission_denied:
+                state.awaiting_merge_checks_pending_since.pop(issue_number, None)
+                return MergeQueueFollowup(escalation=build_escalation(
+                    pr=pr, issue_number=issue_number, issue_key=issue.key.stable_id(), pr_number=pr_number,
+                    label_manager=self.label_manager, kind="status_rollup_permission_denied",
+                    reason=resolution.reason,
+                ))
+            pr.status_check_rollup = resolution.rollup_state
+
+        # Merge-queue mode does not run the WAIT_FOR_CHECKS timeout machine —
+        # GitHub re-runs required checks on the merge group — so clear any
+        # pending-checks bookkeeping a prior non-queue tick may have left.
+        state.awaiting_merge_checks_pending_since.pop(issue_number, None)
+        return self.classify(
+            pr=pr, issue=issue, issue_number=issue_number, pr_number=pr_number, entry=queue_entry,
+        )
 
     def classify(
         self,

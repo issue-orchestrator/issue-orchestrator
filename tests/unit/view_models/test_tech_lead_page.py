@@ -359,3 +359,50 @@ def test_a_decision_lists_its_steps_and_the_operator_checklist() -> None:
     assert by_number[459].operator_steps == ["Raise the CI ceiling in .github/workflows/ci.yml"]
     assert "runs the 2 step(s) listed" in by_number[459].approval_effect
     assert (by_number[460].approval_steps, by_number[460].operator_steps) == ([], [])
+
+
+def _delivery(**changes):
+    from issue_orchestrator.domain.integration_branch import IntegrationDeliveryView
+
+    base = IntegrationDeliveryView(
+        pr_number=600, url=f"https://github.com/{REPO}/pull/600", head="integration", base="main",
+        integration_tip="a" * 40, ahead_by=7, merged_pr_numbers=(476, 479, 511),
+        observed_at="2026-10-03T11:00:00+00:00",
+    )
+    return replace(base, **changes)
+
+
+def test_the_integration_delivery_pr_waits_on_you_with_what_to_do() -> None:
+    """#8144: the operator's one merge is listed and counted, never approvable."""
+    section = _section(delivery=_delivery())
+    assert section.waiting_count == 1
+    (item,) = section.waiting
+    assert item.kind == "delivery_pr" and item.status == "delivery_ready"
+    assert item.number == 600 and item.link == f"https://github.com/{REPO}/pull/600"
+    assert item.title == "Deliver integration to main"
+    assert item.status_label == "Ready for you to merge"
+    assert "3 pull request(s)" in item.recommendation
+    assert "merge commit (not squash or rebase)" in item.approval_effect
+    assert "Never delete integration" in item.approval_effect
+    assert item.can_approve is False and item.can_decline is False
+    assert item.waiting_since == "2026-10-03T11:00:00+00:00"
+    assert {row.label: row.value for row in item.details} == {
+        "Integration tip": "a" * 40,
+        "Commits ahead": "7",
+        "Pull requests": "#476, #479, #511",
+    }
+
+
+def test_no_delivery_pr_waits_when_nothing_awaits_delivery() -> None:
+    assert _section(delivery=None).waiting == []
+    item = _section(delivery=_delivery(merged_pr_numbers=())).waiting[0]
+    assert {row.label: row.value for row in item.details}["Pull requests"] == "None listed"
+
+
+def test_a_partial_github_listing_makes_the_delivery_count_a_floor() -> None:
+    """#8144 review r2 F3: a capped listing never reads as an exact count."""
+    (item,) = _section(delivery=_delivery(merged_pr_numbers=(), listing_complete=False)).waiting
+    assert "Delivers at least 0 pull request(s)" in item.recommendation
+    assert {row.label: row.value for row in item.details}["Pull requests"] == (
+        "None listed (GitHub listed only part; see the PR)"
+    )
