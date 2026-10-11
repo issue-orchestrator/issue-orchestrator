@@ -10,12 +10,13 @@ discriminates means running the SAME harness against an older engine.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Mapping
 
 from .github_calls import GitHubCallCounts
-from .livelock import RepeatingFailure
+from ...observation.no_progress import RepeatingFailure
 from .upgrade import UpgradeFacts
 
 
@@ -119,6 +120,154 @@ class StallFacts:
         )
 
 
+def decision_in_force(effect: str, proposal_issue_number: int | None) -> bool:
+    """A tech-lead decision took effect, the operator answered it, or its
+    proposal is filed and waiting on the operator."""
+    if effect == "awaiting_approval":
+        return proposal_issue_number is not None
+    return effect in {"applied", "approved_applied", "declined"}
+
+
+@dataclass(frozen=True)
+class DecisionFact:
+    """One tech-lead decision the charter ledger recorded about an item (#7658).
+
+    Any action kind, triage or not. A later decision does not undo an earlier
+    one that took effect: a ``resolve_block`` that cleared a block stays done
+    when a later review only explains the item.
+    """
+
+    action_kind: str
+    effect: str
+    triage_class: str | None
+    proposal_issue_number: int | None
+
+    @property
+    def in_force(self) -> bool:
+        return decision_in_force(self.effect, self.proposal_issue_number)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "action_kind": self.action_kind,
+            "effect": self.effect,
+            "triage_class": self.triage_class,
+            "proposal_issue_number": self.proposal_issue_number,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "DecisionFact":
+        triage_class = data["triage_class"]
+        proposal = data["proposal_issue_number"]
+        return cls(
+            action_kind=str(data["action_kind"]),
+            effect=str(data["effect"]),
+            triage_class=None if triage_class is None else str(triage_class),
+            proposal_issue_number=None if proposal is None else int(proposal),
+        )
+
+
+@dataclass(frozen=True)
+class TriageFact:
+    """The latest blocked-item triage the engine recorded for an item (#7593).
+
+    Read from the engine's own charter decision ledger: the class the tech
+    lead gave the item, the action that carried it, and what became of it.
+    An engine that predates triage records none, so the item has no fact.
+    """
+
+    triage_class: str
+    action_kind: str
+    effect: str
+    proposal_issue_number: int | None
+
+    @property
+    def in_force(self) -> bool:
+        """It disposed of the item: took effect, the operator answered it, or
+        its proposal is filed and waiting on the operator."""
+        return decision_in_force(self.effect, self.proposal_issue_number)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "triage_class": self.triage_class,
+            "action_kind": self.action_kind,
+            "effect": self.effect,
+            "proposal_issue_number": self.proposal_issue_number,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "TriageFact":
+        proposal = data["proposal_issue_number"]
+        return cls(
+            triage_class=str(data["triage_class"]),
+            action_kind=str(data["action_kind"]),
+            effect=str(data["effect"]),
+            proposal_issue_number=None if proposal is None else int(proposal),
+        )
+
+
+@dataclass(frozen=True)
+class CapturedPrompt:
+    """A prompt the engine launched one of the item's scripted sessions with.
+
+    Captured by the session itself (the exam shim's ``--capture-prompts``)
+    from its run directory, so the fact exists at every engine (#8141).
+    """
+
+    task: str
+    """The session's kind as its run directory records it (``rework``, ``review``...)."""
+    captured_ns: int
+    text: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"task": self.task, "captured_ns": self.captured_ns, "text": self.text}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "CapturedPrompt":
+        return cls(task=str(data["task"]), captured_ns=int(data["captured_ns"]), text=str(data["text"]))
+
+
+@dataclass(frozen=True)
+class BodyRulingFact:
+    """One standing ruling the item's issue body carries (#8141)."""
+
+    ruling_id: str
+    authority: str
+    text: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"ruling_id": self.ruling_id, "authority": self.authority, "text": self.text}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "BodyRulingFact":
+        return cls(ruling_id=str(data["ruling_id"]), authority=str(data["authority"]), text=str(data["text"]))
+
+
+@dataclass(frozen=True)
+class DecisionProposalFact:
+    """A tech-lead decision proposal filed about the item, as GitHub holds it (#8691).
+
+    Read for every ``propose_decision`` or ``resolve_block`` the engine's
+    charter ledger records with a proposal: its body (what the operator was
+    asked to approve, and to do by hand) and the per-step markers the engine
+    leaves on it as it executes the decision's steps.
+    """
+
+    number: int
+    state: str
+    body: str
+    #: Comments carrying a decision-step marker, verbatim, oldest first.
+    step_comments: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"number": self.number, "state": self.state, "body": self.body,
+                "step_comments": list(self.step_comments)}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "DecisionProposalFact":
+        return cls(number=int(data["number"]), state=str(data["state"]), body=str(data["body"]),
+                   step_comments=tuple(str(c) for c in data["step_comments"]))
+
+
 @dataclass(frozen=True)
 class WorkItemFact:
     """An exam work item: its issue, its pull requests, and where it stood."""
@@ -136,6 +285,33 @@ class WorkItemFact:
     """PRs a review SESSION approved (``review.approved`` events, emitted by
     ``CompletionHandler._publish_review_outcome`` when a review completes) —
     unlike a ``code-reviewed`` label, which anyone can add."""
+    triage: TriageFact | None = None
+    """The latest tech-lead triage of the item, when the engine recorded one."""
+    decisions: tuple[DecisionFact, ...] = ()
+    """Every tech-lead decision the engine's charter ledger recorded about the
+    item, oldest first, whatever became of it (#7658)."""
+    prompts: tuple[CapturedPrompt, ...] = ()
+    """Prompts the item's capturing sessions were launched with, oldest first (#8141)."""
+    body_rulings: tuple[BodyRulingFact, ...] = ()
+    """The standing rulings in the issue body's rulings block (#8141)."""
+    body_rulings_error: str = ""
+    """Why the issue body's rulings block could not be read, if it could not."""
+    refused_approvals: int = 0
+    """Review comments on the item's PRs that record an approval the standing
+    rulings refused (#8141)."""
+    resolution_comments: tuple[str, ...] = ()
+    """The tech lead's ``resolve_block`` decisions posted on the item (#7658), verbatim."""
+    milestone: str = ""
+    """The issue's milestone title, "" when it has none (#8691)."""
+    decision_proposals: tuple[DecisionProposalFact, ...] = ()
+    """The decision proposals filed about the item (#8691), by proposal number."""
+
+    def prompts_of(self, task: str) -> tuple[CapturedPrompt, ...]:
+        return tuple(prompt for prompt in self.prompts if prompt.task == task)
+
+    @property
+    def decided_kinds(self) -> tuple[str, ...]:
+        return tuple(decision.action_kind for decision in self.decisions)
 
     @property
     def open_pull_request(self) -> PullRequestFact | None:
@@ -157,6 +333,15 @@ class WorkItemFact:
             "stall": self.stall.to_dict(),
             "events": list(self.events),
             "approved_prs": sorted(self.approved_prs),
+            "triage": None if self.triage is None else self.triage.to_dict(),
+            "decisions": [decision.to_dict() for decision in self.decisions],
+            "prompts": [prompt.to_dict() for prompt in self.prompts],
+            "body_rulings": [ruling.to_dict() for ruling in self.body_rulings],
+            "body_rulings_error": self.body_rulings_error,
+            "refused_approvals": self.refused_approvals,
+            "resolution_comments": list(self.resolution_comments),
+            "milestone": self.milestone,
+            "decision_proposals": [proposal.to_dict() for proposal in self.decision_proposals],
         }
 
     @classmethod
@@ -170,6 +355,20 @@ class WorkItemFact:
             stall=StallFacts.from_dict(data["stall"]),
             events=tuple(data["events"]),
             approved_prs=frozenset(int(n) for n in data["approved_prs"]),
+            # Saved before triage existed (#7593): no fact, never an error.
+            triage=None if data.get("triage") is None else TriageFact.from_dict(data["triage"]),
+            decisions=tuple(DecisionFact.from_dict(d) for d in data.get("decisions", ())),
+            # Saved before standing rulings existed (#8141): none of them.
+            prompts=tuple(CapturedPrompt.from_dict(p) for p in data.get("prompts", ())),
+            body_rulings=tuple(BodyRulingFact.from_dict(r) for r in data.get("body_rulings", ())),
+            body_rulings_error=str(data.get("body_rulings_error", "")),
+            refused_approvals=int(data.get("refused_approvals", 0)),
+            resolution_comments=tuple(str(c) for c in data.get("resolution_comments", ())),
+            # Saved before decision steps existed (#8691): none of them.
+            milestone=str(data.get("milestone", "")),
+            decision_proposals=tuple(
+                DecisionProposalFact.from_dict(p) for p in data.get("decision_proposals", ())
+            ),
         )
 
 
@@ -306,6 +505,46 @@ class RunEnd(str, Enum):
     ENGINE_EXITED = "engine_exited"
 
 
+#: A delivery PR body's line for one PR it delivers (``domain.integration_branch``
+#: renders ``- #<number> <title>``).
+_DELIVERED_PR_LINE = re.compile(r"^- #(\d+) ", re.MULTILINE)
+
+
+@dataclass(frozen=True)
+class DeliveryPullRequestFact:
+    """Integration mode's delivery PR (#8144), as GitHub held it at the end."""
+
+    number: int
+    head: str
+    base: str
+    state: PullRequestState
+    listed_pr_numbers: tuple[int, ...]
+    """The PRs its generated body says it delivers, in body order."""
+
+    @staticmethod
+    def listed_in(body: str) -> tuple[int, ...]:
+        return tuple(int(number) for number in _DELIVERED_PR_LINE.findall(body or ""))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "number": self.number,
+            "head": self.head,
+            "base": self.base,
+            "state": self.state.value,
+            "listed_pr_numbers": list(self.listed_pr_numbers),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "DeliveryPullRequestFact":
+        return cls(
+            number=int(data["number"]),
+            head=str(data["head"]),
+            base=str(data["base"]),
+            state=PullRequestState(data["state"]),
+            listed_pr_numbers=tuple(int(n) for n in data["listed_pr_numbers"]),
+        )
+
+
 @dataclass(frozen=True)
 class ExamObservation:
     case_id: str
@@ -329,6 +568,8 @@ class ExamObservation:
     notes: tuple[str, ...] = field(default_factory=tuple)
     upgrade: UpgradeFacts | None = None
     """What the harness saw across an upgrade case's stop and restart."""
+    delivery: DeliveryPullRequestFact | None = None
+    """Integration mode's delivery PR (Case K, #8144); None when there is none."""
 
     def item(self, role: str) -> WorkItemFact:
         matches = [item for item in self.items if item.role == role]
@@ -353,6 +594,7 @@ class ExamObservation:
             "ended_by": self.ended_by.value,
             "notes": list(self.notes),
             "upgrade": None if self.upgrade is None else self.upgrade.to_dict(),
+            "delivery": None if self.delivery is None else self.delivery.to_dict(),
         }
 
     @classmethod
@@ -377,4 +619,9 @@ class ExamObservation:
             ended_by=RunEnd(data["ended_by"]),
             notes=tuple(data["notes"]),
             upgrade=None if data["upgrade"] is None else UpgradeFacts.from_dict(data["upgrade"]),
+            # Observations saved before Case K (#8144) carry no delivery key.
+            delivery=(
+                None if data.get("delivery") is None
+                else DeliveryPullRequestFact.from_dict(data["delivery"])
+            ),
         )

@@ -13,6 +13,7 @@ from ..domain.validated_work import (
     canonical_lineage_key,
 )
 from ..domain.validated_work_gate import DispositionGate
+from ..domain.validated_work_remote_authority import CarriedByIssuePullRequest
 from ..domain.validated_work_store import (
     AdmissionStatus,
     EvidenceAdmission,
@@ -33,7 +34,8 @@ class EvidenceAdmissionWriter:
         self._lineage = lineage
 
     def admit(
-        self, conn: sqlite3.Connection, admission: EvidenceAdmission
+        self, conn: sqlite3.Connection, admission: EvidenceAdmission,
+        *, carried: CarriedByIssuePullRequest | None = None,
     ) -> AdmissionStatus:
         evidence = admission.evidence
         known = conn.execute(
@@ -50,7 +52,7 @@ class EvidenceAdmissionWriter:
         if row is None:
             self._insert_record(conn, admission)
             self._insert_evidence(conn, admission, EvidenceRole.CURRENT)
-            self._classify(conn, admission)
+            self._classify(conn, admission, carried)
             return AdmissionStatus.ADMITTED
         if row["state"] == "publishing" or (
             row["owner_claim_hash"] and row["state"] in {"queued", "parked", "failed"}
@@ -66,7 +68,7 @@ class EvidenceAdmissionWriter:
         self._demote_current(conn, evidence.record_id, admission.admitted_at)
         self._insert_evidence(conn, admission, EvidenceRole.CURRENT)
         self._clear_resolution(conn, evidence.record_id)
-        self._classify(conn, admission)
+        self._classify(conn, admission, carried)
         return (
             AdmissionStatus.REOPENED
             if row["state"] == "abandoned"
@@ -74,13 +76,14 @@ class EvidenceAdmissionWriter:
         )
 
     def admit_selected(self, conn: sqlite3.Connection, admission: EvidenceAdmission,
-                       expected_current: str | None, selection: EvidenceAdmissionSelection) -> AdmissionStatus | None:
+                       expected_current: str | None, selection: EvidenceAdmissionSelection,
+                       *, carried: CarriedByIssuePullRequest | None = None) -> AdmissionStatus | None:
         current = conn.execute("SELECT evidence_id FROM validated_work_evidence WHERE record_id=? AND role='current'",
             (admission.evidence.record_id,)).fetchone()
         if (None if current is None else current[0]) != expected_current:
             return None
         if selection is EvidenceAdmissionSelection.CURRENT:
-            return self.admit(conn, admission)
+            return self.admit(conn, admission, carried=carried)
         known = conn.execute("SELECT * FROM validated_work_evidence WHERE evidence_id=?", (admission.evidence.evidence_id,)).fetchone()
         if known is not None:
             return self._replay(conn, admission, known)
@@ -202,13 +205,17 @@ class EvidenceAdmissionWriter:
             conn, row["lineage_key"], at, reconsider=frozenset({record_id})
         )
 
-    def _classify(self, conn: sqlite3.Connection, admission: EvidenceAdmission) -> None:
+    def _classify(
+        self, conn: sqlite3.Connection, admission: EvidenceAdmission,
+        carried: CarriedByIssuePullRequest | None,
+    ) -> None:
         evidence = admission.evidence
         self._lineage.classify(
             conn,
             canonical_lineage_key(evidence.identity.key),
             admission.admitted_at,
             reconsider=frozenset({evidence.record_id}),
+            carried=carried,
         )
 
     @staticmethod

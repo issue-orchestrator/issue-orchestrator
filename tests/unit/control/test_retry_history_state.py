@@ -12,6 +12,7 @@ from issue_orchestrator.control.retry_history_state import (
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import (
+    DiscoveredRetrospectiveReview,
     DependencyProblem,
     DiscoveredAwaitingMergeDrift,
     DiscoveredAwaitingMergeEscalation,
@@ -347,6 +348,15 @@ def _seeded_state_for_contract(target: int, other: int) -> OrchestratorState:
             ),
         ],
         # discovered facts — Planner inputs that should not survive a scratch reset
+        discovered_retrospective_reviews=[
+            DiscoveredRetrospectiveReview(
+                issue_number=number,
+                issue_title=f"Issue {number}",
+                agent_label="agent:web",
+                trigger_label="lack-of-review-redo",
+            )
+            for number in (target, other)
+        ],
         discovered_reviews=[
             DiscoveredReview(
                 issue_number=target,
@@ -544,6 +554,7 @@ def test_clear_scratch_retry_state_contract_no_leaks_for_target() -> None:
     assert all(t.issue_number != target for t in state.pending_tech_lead_reviews)
     assert all(v.issue_number != target for v in state.pending_validation_retries)
     assert all(d.issue_number != target for d in state.discovered_reviews)
+    assert all(d.issue_number != target for d in state.discovered_retrospective_reviews)
     assert all(d.issue_number != target for d in state.discovered_reworks)
     assert all(d.issue_number != target for d in state.discovered_escalations)
     assert all(d.issue_number != target for d in state.discovered_failures)
@@ -575,6 +586,7 @@ def test_clear_scratch_retry_state_contract_no_leaks_for_target() -> None:
     assert any(t.issue_number == other for t in state.pending_tech_lead_reviews)
     assert any(v.issue_number == other for v in state.pending_validation_retries)
     assert any(d.issue_number == other for d in state.discovered_reviews)
+    assert any(d.issue_number == other for d in state.discovered_retrospective_reviews)
     assert any(d.issue_number == other for d in state.discovered_reworks)
     assert any(d.issue_number == other for d in state.discovered_escalations)
     assert any(d.issue_number == other for d in state.discovered_failures)

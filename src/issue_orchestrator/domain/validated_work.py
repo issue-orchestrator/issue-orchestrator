@@ -182,6 +182,9 @@ class ResolutionKind(StrEnum):
     # Admitted before capture refused runs recovery never owns (#7323): not
     # lost work, so no operator accepts a loss. ABANDONED is its resolved state.
     OUTSIDE_RECOVERY_SCOPE = "outside_recovery_scope"
+    # Contained in the head a merged PR landed (a squash merge included):
+    # the PR shipped it, and recovery has nothing left to publish.
+    LANDED_VIA_MERGED_PR = "landed_via_merged_pr"
 
 
 class LineageRole(StrEnum):
@@ -220,6 +223,9 @@ class EvidenceRole(StrEnum):
 class PublicationProvenance(StrEnum):
     PUSHED_BY_OWNER = "pushed_by_owner"
     OBSERVED_MERGE = "observed_merge"
+    # The issue's one open PR carries a validated head of the lineage: the
+    # completion's own push published it (porchpin #186). No baseline of ours.
+    OBSERVED_OPEN_PR = "observed_open_pr"
 
 
 class FinalizationPhase(StrEnum):

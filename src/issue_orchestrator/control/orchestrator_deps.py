@@ -11,6 +11,7 @@ Principle: "No Nulls in Orchestrator"
 """
 
 from dataclasses import dataclass
+from functools import cached_property
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -20,13 +21,16 @@ if TYPE_CHECKING:
     from ..ports.operator_issue_commands import OperatorIssueCommandFactory
     from ..ports.session_launcher_factory import SessionLauncherFactory
     from ..ports.label_store import LabelStore
-    from ..ports.pending_work_claim_store import PendingWorkClaimStore
+    from ..ports.pending_work_claim_store import PendingWorkLedger
     from ..ports.completion_intake import CompletionIntakeRuntime
     from .review_exchange_lifecycle import IssueRuntimeLifecycleOwners
     from ..ports.issue_run_evidence import IssueRunLedger
     from ..ports.issue_run_allocator import IssueRunAllocator
     from .claim_quarantine import ClaimQuarantineOwner
+    from .human_gates import HumanGates
     from .needs_human_block import SharedNeedsHumanBlock
+    from .standing_rulings import StandingRulingsOwner
+    from ..ports.launch_prompt import LaunchPromptProvider
     from ..ports.queue_cache_store import QueueCacheStore
     from ..ports import (
         EventSink,
@@ -53,6 +57,7 @@ if TYPE_CHECKING:
     from .tech_lead_run_ownership import TechLeadRunOwnership
     from .infra_services import InfraServices
     from .label_manager import LabelManager
+    from .merge_hold_status import MergeHoldStatuses
     from .planner import Planner
     from .session_manager import SessionManager
     from .label_sync import LabelSync
@@ -151,7 +156,9 @@ class OrchestratorDeps:
     runtime_lifecycle: "IssueRuntimeLifecycleOwners"
     issue_run_ledger: "IssueRunLedger"
     issue_run_allocator: "IssueRunAllocator"
-    pending_work_claims: "PendingWorkClaimStore"
+    # Also says which episode of the shared needs-human block each issue is
+    # in (#8688): the blocked-item triage keys a triage to it.
+    pending_work_claims: "PendingWorkLedger"
     # Owns what an unreadable claim means: its own durable per-run marker, its
     # own labels/comment, and the event only after those commit (#6999 F12/A5).
     claim_quarantine: "ClaimQuarantineOwner"
@@ -159,6 +166,12 @@ class OrchestratorDeps:
     # release and operator force-clear of that label routes through it, so a
     # block can never exist without a discoverable cause (#6999 F2 round 3).
     needs_human_block: "SharedNeedsHumanBlock"
+    # THE owner of each issue's standing rulings (#8141): its writers record
+    # through it, and every prompt, review and the tech-lead page read it.
+    standing_rulings: "StandingRulingsOwner"
+    # Every launch prompt's engine-owned additions (the rulings, the coder
+    # addendum), for launch paths outside the session launcher (#8141).
+    launch_prompt: "LaunchPromptProvider"
 
     # Claim/lease management (multi-orchestrator coordination)
     claim_manager: "ClaimManager"
@@ -188,6 +201,13 @@ class OrchestratorDeps:
     @property
     def label_manager(self) -> "LabelManager":
         return self.services.label_manager
+
+    @property
+    def human_gates(self) -> "HumanGates":
+        """What each block holds, work or only a merge (#7678): the one owner."""
+        from .human_gates import HumanGates
+
+        return HumanGates.over(self.needs_human_block, self.services.label_manager)
 
     @property
     def label_store(self) -> "LabelStore":
@@ -232,6 +252,14 @@ class OrchestratorDeps:
     @property
     def timeline_reader(self) -> "TimelineReader":
         return self.services.timeline_reader
+
+    @cached_property
+    def merge_hold_statuses(self) -> "MergeHoldStatuses":
+        """This engine's ONE cached reader of merge-held PRs (#7763 r20 F2):
+        the Tech lead page polls every 30 seconds."""
+        from .merge_hold_status import MergeHoldStatuses
+
+        return MergeHoldStatuses(host=self.repository_host, needs_human_label=self.label_manager.needs_human)
 
     @property
     def timeline_store(self) -> "TimelineStore":

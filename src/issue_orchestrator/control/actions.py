@@ -23,6 +23,7 @@ Usage:
 from dataclasses import dataclass, field
 from typing import Optional
 
+from ..domain.integration_branch import IntegrationStep
 from ..domain.models import (
     AwaitingMergeReconciliationSource,
     AwaitingMergeTerminalStatus,
@@ -54,14 +55,18 @@ from .tech_lead_actions import (
     NO_RECONCILIATION_SUBJECT as NO_RECONCILIATION_SUBJECT,
     TECH_LEAD_ISSUE_CREATION_ACTION_TYPES as TECH_LEAD_ISSUE_CREATION_ACTION_TYPES,
     AppendPatternObservationAction as AppendPatternObservationAction,
+    ApplyOperatorDecisionAction as ApplyOperatorDecisionAction,
     CreateTechLeadCaseFileIssueAction as CreateTechLeadCaseFileIssueAction,
     CreateTechLeadIssueAction as CreateTechLeadIssueAction,
     CreateTechLeadProposalIssueAction as CreateTechLeadProposalIssueAction,
     DiscardTerminalTechLeadProposalOpsAction as DiscardTerminalTechLeadProposalOpsAction,
+    SettleProposalApprovalAction as SettleProposalApprovalAction,
     KillHungSessionAction as KillHungSessionAction,
     RequestReworkAction as RequestReworkAction,
     RecoverValidatedWorkAction as RecoverValidatedWorkAction,
+    ReleaseValidatedWorkAction as ReleaseValidatedWorkAction,
     ReleaseWithheldReviewAction as ReleaseWithheldReviewAction,
+    ResolveBlockAction as ResolveBlockAction,
     EFFECTIVE_DISPOSITION_OP_ACTIONS as EFFECTIVE_DISPOSITION_OP_ACTIONS,
     PromoteTechLeadFindingAction as PromoteTechLeadFindingAction,
     RecordTechLeadDispositionAction as RecordTechLeadDispositionAction,
@@ -494,6 +499,48 @@ class EnqueueToMergeQueueAction(Action):
     pr_url: str = ""
     issue_key: str = ""  # stable_id for SSE events; falls back to str(issue_number) when empty
     action_type: ActionType = field(default=ActionType.ENQUEUE_TO_MERGE_QUEUE, init=False)
+
+
+@dataclass(frozen=True)
+class RerunFailedChecksAction(Action):
+    """Re-run a PR's transient CI failure, once per head commit (#8692).
+
+    From a ``DiscoveredCiRerun``; applied by ``ci_failure_triage``: the PR
+    comment recording the re-run first, then GitHub's re-run of each run.
+    """
+
+    issue_number: int = 0
+    pr_number: int = 0
+    head_sha: str = ""
+    run_ids: tuple[int, ...] = ()
+    job_ids: tuple[int, ...] = ()
+    comment: str = ""
+    action_type: ActionType = field(default=ActionType.RERUN_FAILED_CHECKS, init=False)
+
+    def liveness_facts(self) -> object | None:
+        """The PR, head and jobs: the comment carries the request time, which
+        would give every retry of the same re-run a fresh budget."""
+        return {"pr_number": self.pr_number, "head_sha": self.head_sha,
+                "run_ids": self.run_ids, "job_ids": self.job_ids}
+
+
+@dataclass(frozen=True)
+class AdvanceIntegrationAction(Action):
+    """One integration-branch step (#8144), from a discovered ``IntegrationStep``.
+
+    Applied by ``integration_branch.apply_integration_step``, which re-checks
+    what may have moved since discovery. ``issue_number``/``pr_number`` name
+    the issue and PR a merge or update acts on (0 for branch upkeep).
+    """
+
+    step: IntegrationStep | None = None
+    issue_number: int = 0
+    pr_number: int = 0
+    action_type: ActionType = field(default=ActionType.ADVANCE_INTEGRATION, init=False)
+
+    def liveness_facts(self) -> object | None:
+        """The step itself, kind included: two kinds may share field values."""
+        return {"kind": type(self.step).__name__, "step": self.step}
 
 
 @dataclass(frozen=True)

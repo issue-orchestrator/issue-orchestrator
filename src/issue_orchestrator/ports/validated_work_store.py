@@ -9,6 +9,7 @@ from ..domain.validated_work_claim import (
     ValidatedWorkClaim,
 )
 from ..domain.validated_work_commands import (
+    AbandonAllOutcome,
     AbandonValidatedWorkCommand,
     AbandonValidatedWorkOutcome,
     ValidatedWorkAuthoritySnapshot,
@@ -30,6 +31,7 @@ from ..domain.validated_work_store import (
     ValidatedWorkRecord,
 )
 from ..domain.validated_work_remote_authority import (
+    CarriedByIssuePullRequest,
     RemoteAuthorityDecision,
     RemoteAuthorityRefreshRequest,
 )
@@ -38,7 +40,9 @@ from typing import Protocol
 
 class ValidatedWorkStore(Protocol):
     def retained_evidence(self, issue_number: int) -> tuple[EvidenceRow, ...]: ...
-    def admit(self, admission: EvidenceAdmission) -> AdmissionOutcome: ...
+    def admit(
+        self, admission: EvidenceAdmission, *, carried: CarriedByIssuePullRequest | None = None,
+    ) -> AdmissionOutcome: ...
 
     def get(self, record_id: str) -> ValidatedWorkDisposition: ...
 
@@ -49,6 +53,14 @@ class ValidatedWorkStore(Protocol):
     def abandon_if_current(
         self, command: AbandonValidatedWorkCommand
     ) -> AbandonValidatedWorkOutcome: ...
+
+    def abandon_all_if_current(
+        self, commands: tuple[AbandonValidatedWorkCommand, ...]
+    ) -> AbandonAllOutcome: ...
+
+    def already_abandoned_by(
+        self, commands: tuple[AbandonValidatedWorkCommand, ...]
+    ) -> bool: ...
 
     def retire_outside_scope(
         self,

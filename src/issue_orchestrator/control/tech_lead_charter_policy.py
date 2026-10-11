@@ -19,14 +19,16 @@ that may have changed since.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Callable
 
+from ..contracts.engine_start import ActionAuthority, EffectiveCharter
 from ..domain.tech_lead_charter import (
     CHARTER_ACTION_CLASSES,
     PROMOTE_FINDING_KIND,
     CharterAuthority,
     CharterOutcome,
+    CharterReason,
     CharterRole,
     CharterVerdict,
     TechLeadCharter,
@@ -39,6 +41,7 @@ from .action_results import ActionResult
 from .tech_lead_mutation import NO_RECONCILIATION_SUBJECT, TechLeadMutation
 
 if TYPE_CHECKING:
+    from ..domain.tech_lead_artifacts import ProposedTechLeadAction
     from ..infra.config import Config
     from ..infra.config_models import TechLeadAuthorityConfig, TechLeadFindingsConfig
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
@@ -78,6 +81,25 @@ class TechLeadCharterPolicy:
 
     def executes(self, kind: str) -> bool:
         return self.decide(kind).executes
+
+    def decide_for(self, proposed: "ProposedTechLeadAction") -> CharterVerdict:
+        """The verdict for one proposed action: its kind's, except that a
+        decision carrying steps beyond its item (#8691: other issues' milestones
+        and bodies, a PR's routing) or an operator checklist always waits for the
+        operator, whatever the dials let its kind do unattended: the operator
+        must see both before anything moves."""
+        verdict = self.decide(proposed.action_type)
+        if not (verdict.executes and proposed.follow_through):
+            return verdict
+        return replace(
+            verdict,
+            outcome=CharterOutcome.PROPOSED,
+            reason_code=CharterReason.FOLLOW_THROUGH_REQUIRES_APPROVAL,
+            reason=(
+                f"{proposed.action_type} carries steps beyond its item or an operator checklist,"
+                " which wait for the operator's approval"
+            ),
+        )
 
     @property
     def promotion_lane_enabled(self) -> bool:
@@ -119,6 +141,37 @@ class TechLeadCharterPolicy:
             role: {outcome: tuple(items) for outcome, items in by_outcome.items()}
             for role, by_outcome in grouped.items()
         }
+
+    def effective_charter(self) -> EffectiveCharter:
+        """Every role's dials and every kind's verdict, as this engine decides them.
+
+        What the engine-start record persists (#7490), so a reader outside the
+        engine sees the settings after config overrides rather than the source
+        defaults. Built from :meth:`outcomes_by_role`, the same computation the
+        prompt projection and the board render from.
+        """
+        return EffectiveCharter.model_validate(
+            {
+                "roles": {
+                    role.value: self.charter.for_role(role).to_dict() for role in CharterRole
+                },
+                "actions": {
+                    verdict.kind: ActionAuthority(
+                        role=verdict.role.value,
+                        required_depth=verdict.required_depth.value,
+                        binding=verdict.action_class.binding.value,
+                        action_ceiling=verdict.action_ceiling.value,
+                        ceiling_source=verdict.ceiling_source,
+                        outcome=verdict.outcome.value,
+                        reason_code=verdict.reason_code.value,
+                    )
+                    for by_outcome in self.outcomes_by_role().values()
+                    for verdicts in by_outcome.values()
+                    for verdict in verdicts
+                },
+                "promotion_lane": self.findings.promote,
+            }
+        )
 
 
 @dataclass(frozen=True)

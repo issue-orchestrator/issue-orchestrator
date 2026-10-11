@@ -14,6 +14,7 @@ from ...infra.repo_guardrails import (
     quarantine_managed_hook_file,
 )
 from ...infra.hooks._python_path import shell_quote_issue_orchestrator_python
+from ...infra.hooks.pre_push_refs import pre_push_refs_shell
 from ._worktree_git import _git_run
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,10 @@ GIT_CONFIG_KEY_ABSENT = 1
 # orchestrator's interpreter path at install time. See the comment in
 # ``hooks/pre-push`` for why baking the path beats env-var propagation.
 ORCHESTRATOR_PYTHON_PLACEHOLDER = "@@ORCHESTRATOR_PYTHON@@"
+# Placeholder line in the bundled pre-push template that we replace with the
+# shared pre-push ref functions (``infra/hooks/pre_push_refs.py``), so the
+# bundled hook makes the same delete-only decision as every other wrapper.
+PRE_PUSH_REFS_PLACEHOLDER = "@@PRE_PUSH_REFS_SHELL@@"
 
 
 def resolve_baked_python() -> str:
@@ -60,7 +65,8 @@ def _render_orchestrator_pre_push(template_path: Path) -> str:
     from ``shlex.quote``.
     """
     content = template_path.read_text()
-    return content.replace(ORCHESTRATOR_PYTHON_PLACEHOLDER, resolve_baked_python())
+    content = content.replace(ORCHESTRATOR_PYTHON_PLACEHOLDER, resolve_baked_python())
+    return content.replace(PRE_PUSH_REFS_PLACEHOLDER, pre_push_refs_shell().rstrip())
 
 
 def _install_orchestrator_pre_push(src: Path, dst: Path) -> None:
@@ -405,6 +411,7 @@ def _install_chained_hook(
 def _chained_hook_script() -> str:
     managed_marker = MANAGED_PRE_PUSH_MARKER
     legacy_managed_marker = LEGACY_MANAGED_PRE_PUSH_MARKER
+    refs_shell = pre_push_refs_shell().rstrip()
     return f"""#!/bin/bash
 # Chained pre-push hook: runs project hook first, then orchestrator hook
 set -e
@@ -413,6 +420,10 @@ HOOKS_DIR="$(dirname "$0")"
 AUDIT_LOG="$HOOKS_DIR/pre-push.log"
 MANAGED_MARKER='{managed_marker}'
 LEGACY_MANAGED_MARKER='{legacy_managed_marker}'
+
+{refs_shell}
+# Git writes the ref lines once; both hooks below get the same copy.
+capture_push_refs
 
 # Audit logging function
 audit() {{
@@ -451,7 +462,7 @@ if [ -x "$HOOKS_DIR/pre-push.project" ] && is_managed_wrapper "$HOOKS_DIR/pre-pu
 elif [ -x "$HOOKS_DIR/pre-push.project" ]; then
     audit "Running project pre-push hook..."
     project_start=$(date +%s)
-    if "$HOOKS_DIR/pre-push.project" "$@"; then
+    if "$HOOKS_DIR/pre-push.project" "$@" < "$PUSH_REFS_FILE"; then
         project_end=$(date +%s)
         project_duration=$((project_end - project_start))
         audit "Project hook PASSED (duration=${{project_duration}}s)"
@@ -470,7 +481,7 @@ fi
 if [ -x "$HOOKS_DIR/pre-push.orchestrator" ]; then
     audit "Running orchestrator pre-push hook..."
     orch_start=$(date +%s)
-    if "$HOOKS_DIR/pre-push.orchestrator" "$@"; then
+    if "$HOOKS_DIR/pre-push.orchestrator" "$@" < "$PUSH_REFS_FILE"; then
         orch_end=$(date +%s)
         orch_duration=$((orch_end - orch_start))
         audit "Orchestrator hook PASSED (duration=${{orch_duration}}s)"

@@ -20,6 +20,7 @@ from issue_orchestrator.execution.command_runner import LocalCommandRunner
 from issue_orchestrator.execution.process_group_command_runner import ProcessGroupCommandRunner
 from issue_orchestrator.infra.budgeted_validation_config import parse_budgeted_validation
 from issue_orchestrator.infra.process_table import ps_command, ps_env
+from tests.unit.budgeted_validation_support import CODE_CHANGE_ONLY
 
 
 def git(root: Path, *arguments: str) -> str:
@@ -82,7 +83,7 @@ def test_real_exact_commit_execution_and_bisection_preserve_the_callers_checkout
         runner=LocalDeterministicValidationRunner(ProcessGroupCommandRunner()),
         directory=history.storage_directory(), environment=dict(os.environ))
     cycle = BudgetedValidationCycle(store=store, repository=history, executor=executor,
-        clock=lambda: datetime(2026, 9, 7, 12, tzinfo=timezone.utc))
+        clock=lambda: datetime(2026, 9, 7, 12, tzinfo=timezone.utc), activity=CODE_CHANGE_ONLY)
     cycle.run((suite,))
     commit(root, "green", 2)
     culprit = commit(root, "bad", 3)

@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Sequence
 
-from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
+from ..domain.tech_lead_approval import APPROVED_LABEL
 
 if TYPE_CHECKING:
     from ..domain.action_liveness import LivenessRow
@@ -255,9 +255,9 @@ def render_tech_lead_board_md(view: TechLeadBoardView) -> str:
     if view.open_proposals:
         lines.extend(
             [
-                f"{len(view.open_proposals)} awaiting operator approval — remove"
-                f" the `{PROPOSED_TECH_LEAD_LABEL}` label from a proposal to"
-                " approve it.",
+                f"{len(view.open_proposals)} awaiting operator approval — a"
+                " maintainer approves one in the Control Center's Approvals"
+                f" inbox or by adding the `{APPROVED_LABEL}` label.",
                 "",
                 "| Proposal | Operation | Target | Age | Title |",
                 "|---|---|---|---|---|",

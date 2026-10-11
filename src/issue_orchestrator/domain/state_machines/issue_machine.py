@@ -58,7 +58,9 @@ class IssueStateMachine:
     - IN_PROGRESS: Active work session in progress
     - BLOCKED: Work is blocked waiting for resolution
     - NEEDS_HUMAN: Human intervention required
-    - PR_PENDING: Pull request has been created and awaiting merge
+    - PR_PENDING: Pull request has been created and awaiting merge. A hold
+      (block / needs_human) here is an internal transition: the PR is still
+      pending, so the issue stays PR_PENDING (#8693)
     - COMPLETED: Issue is complete (PR merged)
 
     The state machine is pure - transitions store their result in last_transition
@@ -114,6 +116,23 @@ class IssueStateMachine:
                 'source': IssueState.IN_PROGRESS.value,
                 'dest': IssueState.NEEDS_HUMAN.value,
                 'after': self._on_needs_human
+            },
+            # A hold on an issue whose PR is pending (#8693). The PR exists and
+            # its work is published, so the issue stays PR_PENDING: its merge or
+            # close is still what moves it on. What the hold holds is recorded by
+            # the shared needs-human block, typed by its cause (``HumanGates``),
+            # not by this cached lifecycle.
+            {
+                'trigger': 'needs_human',
+                'source': IssueState.PR_PENDING.value,
+                'dest': None,
+                'after': self._on_published_work_held
+            },
+            {
+                'trigger': 'block',
+                'source': IssueState.PR_PENDING.value,
+                'dest': None,
+                'after': self._on_published_work_held
             },
             # Unblock and return to in-progress
             {
@@ -226,6 +245,23 @@ class IssueStateMachine:
         )
         logger.warning(f"Issue {self.issue_number} needs human intervention")
 
+    def _on_published_work_held(self, event: EventData) -> None:
+        """Callback for a hold on a PR_PENDING issue: it stays PR_PENDING."""
+        data = event.kwargs.get('data', {})
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=IssueState.PR_PENDING.value,
+            to_state=IssueState.PR_PENDING.value,
+            event_name=f"issue.published_work.{event.event.name}",
+            entity_id=self.issue_number,
+            data=data,
+        )
+        logger.info(
+            "Issue %s: %s while its PR is pending; it stays pr_pending",
+            self.issue_number,
+            event.event.name,
+        )
+
     def _on_unblocked(self, event: EventData) -> None:
         """Callback for unblock transition."""
         data = event.kwargs.get('data', {})
@@ -292,6 +328,24 @@ class IssueStateMachine:
             data=data,
         )
         logger.info(f"Issue {self.issue_number} released back to available")
+
+    def custody_work_started(self) -> None:
+        """A session holding this issue's custody is working it (#8693).
+
+        Brings the cached lifecycle up to that fact: IN_PROGRESS from AVAILABLE
+        or CLAIMED (a cache created after a restart, or a restored session that
+        never passed the launcher) and from BLOCKED or NEEDS_HUMAN (a relaunch
+        after a person cleared the hold). PR_PENDING stays: the session works
+        beside the pending PR. The launcher calls it at launch and the
+        completion handler before a custody session's hold, so that hold is
+        always a defined transition.
+        """
+        if self.get_state() is IssueState.AVAILABLE:
+            self.claim()
+        if self.get_state() is IssueState.CLAIMED:
+            self.start()
+        elif self.get_state() in (IssueState.BLOCKED, IssueState.NEEDS_HUMAN):
+            self.unblock()
 
     def get_state(self) -> IssueState:
         """Get the current state as an enum."""

@@ -1354,11 +1354,11 @@ def test_invalidate_labels_etag_clears_cache() -> None:
 
 def test_list_labels_paginates_beyond_the_first_full_page() -> None:
     """R8: list_labels() promises ALL labels, so a full first page continues
-    paging. A gate label sorted onto a later page (e.g. proposed-tech-lead in a
+    paging. A gate label sorted onto a later page (e.g. awaiting-approval in a
     repo with 100+ labels) must be returned, else valid proposal creation is
     falsely refused."""
     page1 = [{"name": f"label-{n}"} for n in range(100)]  # full page -> keep paging
-    page2 = [{"name": "proposed-tech-lead"}]  # gate label lives on page 2 (short page)
+    page2 = [{"name": "awaiting-approval"}]  # gate label lives on page 2 (short page)
 
     requested_pages: list[int] = []
 
@@ -1371,7 +1371,7 @@ def test_list_labels_paginates_beyond_the_first_full_page() -> None:
     labels = client.list_labels()
 
     names = {entry["name"] for entry in labels}
-    assert "proposed-tech-lead" in names  # later-page gate label is not missed
+    assert "awaiting-approval" in names  # later-page gate label is not missed
     assert len(labels) == 101
     assert requested_pages == [1, 2]  # walked both pages, stopped on the short one
 
@@ -1383,20 +1383,20 @@ def test_list_labels_single_page_makes_no_extra_request() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         requested_pages.append(int(request.url.params.get("page", "1")))
         return httpx.Response(
-            200, json=[{"name": "bug"}, {"name": "proposed-tech-lead"}]
+            200, json=[{"name": "bug"}, {"name": "awaiting-approval"}]
         )
 
     client = _client_with_transport(httpx.MockTransport(handler))
     labels = client.list_labels()
 
-    assert {e["name"] for e in labels} == {"bug", "proposed-tech-lead"}
+    assert {e["name"] for e in labels} == {"bug", "awaiting-approval"}
     assert requested_pages == [1]
 
 
 def test_list_labels_later_page_non_200_fails_loud() -> None:
     """R8: a later-page non-200 must RAISE, not silently return the labels
     gathered so far. control/tech_lead_proposals.py makes a gate-ABSENT decision
-    from this list; a truncated scan that misses proposed-tech-lead would falsely
+    from this list; a truncated scan that misses awaiting-approval would falsely
     refuse valid proposals, so completeness cannot be assumed."""
     page1 = [{"name": f"label-{n}"} for n in range(100)]  # full page -> keep paging
 
@@ -1824,6 +1824,14 @@ def test_get_pr_reviews_returns_empty_list_on_non_list_response() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _with_total_count(payload: object, *all_pages: object) -> object:
+    """A check-runs page as GitHub sends it: with the ``total_count`` of every page."""
+    if not isinstance(payload, dict) or "check_runs" not in payload or "total_count" in payload:
+        return payload
+    total = sum(len(page["check_runs"]) for page in all_pages if isinstance(page, dict))
+    return {**payload, "total_count": total}
+
+
 def _commit_rollup_handler(
     *,
     check_runs: object,
@@ -1836,7 +1844,7 @@ def _commit_rollup_handler(
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if path.endswith("/check-runs"):
-            return httpx.Response(check_runs_status, json=check_runs)
+            return httpx.Response(check_runs_status, json=_with_total_count(check_runs, check_runs))
         if path.endswith("/status"):
             payload = (
                 statuses
@@ -2080,7 +2088,7 @@ def _paginated_check_runs_handler(
         path = request.url.path
         if path.endswith("/check-runs"):
             page = int(request.url.params.get("page", "1"))
-            return httpx.Response(200, json=pages.get(page, {"check_runs": []}))
+            return httpx.Response(200, json=_with_total_count(pages.get(page, {"check_runs": []}), *pages.values()))
         if path.endswith("/status"):
             payload = (
                 statuses
@@ -2597,7 +2605,7 @@ def test_list_labels_first_page_non_list_fails_loud() -> None:
 
     ``list_labels`` promises the COMPLETE set and its callers make
     negative-existence decisions on it — notably refusing gated tech-lead
-    proposal creation when ``proposed-tech-lead`` is missing. Returning [] for a
+    proposal creation when ``awaiting-approval`` is missing. Returning [] for a
     malformed first page is the same page-1 hole closed for exhaustive issue
     scans, and it silently answers "no such label" for every label at once.
     """
@@ -2903,9 +2911,10 @@ def _graphql_body(request: httpx.Request) -> dict:
     return _json.loads(request.content)
 
 
-def _pr_node(number: int) -> dict:
+def _pr_node(number: int, *, draft: bool = False) -> dict:
     return {"number": number, "title": f"PR {number}", "url": "u", "body": "",
-            "headRefName": f"{number}-work", "headRefOid": "a" * 40, "baseRefName": "main"}
+            "headRefName": f"{number}-work", "headRefOid": "a" * 40, "baseRefName": "main",
+            "isDraft": draft}
 
 
 def test_list_open_prs_complete_walks_by_cursor_without_search() -> None:
@@ -2951,6 +2960,97 @@ def test_list_open_prs_complete_refuses_a_malformed_node() -> None:
 
     with pytest.raises(GitHubScanIncompleteError, match="malformed node"):
         client.list_open_prs_complete()
+
+
+def test_list_open_prs_complete_says_which_prs_are_drafts() -> None:
+    """The engine audit counts draft vs ready from this one listing (#7490)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "isDraft" in _graphql_body(request)["query"]
+        return httpx.Response(200, json={"data": {"repository": {"pullRequests": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+            "nodes": [_pr_node(1, draft=True), _pr_node(2)],
+        }}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    assert [(pr["number"], pr["draft"]) for pr in client.list_open_prs_complete()] == [
+        (1, True),
+        (2, False),
+    ]
+
+
+def test_list_open_prs_complete_refuses_a_node_without_its_draft_flag() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        node = _pr_node(1)
+        del node["isDraft"]
+        return httpx.Response(200, json={"data": {"repository": {"pullRequests": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+            "nodes": [node],
+        }}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match="malformed node"):
+        client.list_open_prs_complete()
+
+
+def _issue_node(number: int, labels: tuple[str, ...] = (), total: int | None = None) -> dict:
+    return {"number": number, "title": f"Issue {number}", "labels": {
+        "totalCount": len(labels) if total is None else total,
+        "nodes": [{"name": name} for name in labels],
+    }}
+
+
+def test_open_issue_labels_walk_by_cursor_so_a_closure_mid_walk_skips_nothing() -> None:
+    """Issue 1 closes after page 1 is served. Offset paging would move issue 3
+    onto page 1 and skip it; a cursor names the last issue already read (#7490)."""
+    open_issues = [1, 2, 3, 4]
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        variables = _graphql_body(request)["variables"]
+        requests.append(variables)
+        after = int(variables["after"]) if variables["after"] else 0
+        page = [n for n in open_issues if n > after][:2]
+        if after == 0:
+            open_issues.remove(1)
+        more = bool(page) and any(n > page[-1] for n in open_issues)
+        return httpx.Response(200, json={"data": {"repository": {"issues": {
+            "pageInfo": {"hasNextPage": more, "endCursor": str(page[-1]) if page else None},
+            "nodes": [_issue_node(n, ("needs-human",) if n == 3 else ()) for n in page],
+        }}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    issues = client.list_open_issue_labels_complete()
+
+    assert issues == [
+        (1, "Issue 1", ()), (2, "Issue 2", ()), (3, "Issue 3", ("needs-human",)), (4, "Issue 4", ())
+    ]
+    assert [r["after"] for r in requests] == [None, "2"]
+
+
+@pytest.mark.parametrize(
+    "node",
+    [
+        _issue_node(1, ("a",), total=150),  # more labels than one page carries
+        {"number": 1},
+        {"number": "1", "title": "t", "labels": {"totalCount": 0, "nodes": []}},
+        # A title is part of what is read whole (#7490: the improver's open issues).
+        {"number": 1, "labels": {"totalCount": 0, "nodes": []}},
+    ],
+)
+def test_open_issue_labels_refuse_what_they_cannot_read_whole(node) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"repository": {"issues": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": [node],
+        }}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError):
+        client.list_open_issue_labels_complete()
 
 
 def test_list_open_prs_complete_refuses_a_capped_walk() -> None:
@@ -3070,6 +3170,68 @@ def test_merged_prs_referencing_issues_refuses_a_next_page_without_a_cursor() ->
         client.merged_prs_referencing_issues([5])
 
 
+def _history_ref(number: int, *, merged_at: str | None, body: str | None, merged: bool = True,
+                 cross_repo: bool = False) -> dict:
+    return {"isCrossRepository": cross_repo, "source": {
+        "__typename": "PullRequest", "number": number, "merged": merged,
+        "mergedAt": merged_at, "body": body}}
+
+
+def test_merged_pr_history_reads_bodies_and_merge_times_in_the_timeline_walk() -> None:
+    """#8689 codex r3 F2: the delivery rule's whole history is the timeline
+    walk itself; no per-PR GET follows, however many PRs reference the issue."""
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/graphql"
+        body = _graphql_body(request)
+        requests.append(body)
+        assert "mergedAt body" in body["query"]
+        if body["variables"].get("after") is None:
+            page = _references(
+                _history_ref(511, merged_at="2026-10-05T04:13:20Z", body="Refs #327"),
+                _history_ref(600, merged_at=None, body="open", merged=False),
+                _history_ref(700, merged_at="2026-10-06T00:00:00Z", body="x", cross_repo=True),
+                _issue_ref(), more=True, cursor="c1")
+        else:
+            page = _references(_history_ref(515, merged_at="2026-10-07T23:13:06Z", body="Refs #327"))
+        return httpx.Response(200, json={"data": {"repository": {"i327": page}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    history = client.merged_pr_history(327)
+
+    assert [(pr.number, pr.body, pr.merged_at.isoformat()) for pr in history] == [
+        (511, "Refs #327", "2026-10-05T04:13:20+00:00"),
+        (515, "Refs #327", "2026-10-07T23:13:06+00:00"),
+    ]
+    assert len(requests) == 2
+
+
+@pytest.mark.parametrize(
+    "node",
+    [
+        pytest.param(_history_ref(9, merged_at=None, body="Refs #5"), id="no-merge-time"),
+        pytest.param(_history_ref(9, merged_at="2026-10-05T04:13:20Z", body=None), id="no-body"),
+    ],
+)
+def test_merged_pr_history_refuses_a_merged_pr_it_cannot_order(node) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"repository": {"i5": _references(node)}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match="without its body or merge time"):
+        client.merged_pr_history(5)
+
+
+def test_merged_pr_history_of_a_missing_issue_is_empty() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"repository": {"i5": None}}})
+
+    assert _client_with_transport(httpx.MockTransport(handler)).merged_pr_history(5) == ()
+
+
 def test_list_open_prs_complete_refuses_a_page_without_page_info() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"data": {"repository": {"pullRequests": {
@@ -3105,6 +3267,63 @@ def test_merged_prs_referencing_issues_refuses_a_malformed_answer(repository, ma
 
     with pytest.raises(GitHubScanIncompleteError, match=match):
         client.merged_prs_referencing_issues([5])
+
+
+def _state_ref(number: int, state: str | None, *, cross_repo: bool = False, branch: str | None = "262-x") -> dict:
+    return {"isCrossRepository": cross_repo,
+            "source": {"__typename": "PullRequest", "number": number, "state": state, "headRefName": branch}}
+
+
+def test_pull_requests_referencing_issue_keeps_open_and_merged_same_repo_prs() -> None:
+    """#8137: the issue's PRs on any branch - open and merged, each named once,
+    across pages - never one closed unmerged, another repository's, or an
+    issue's mention."""
+    afters: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _graphql_body(request)
+        assert "number state headRefName" in body["query"]
+        after = body["variables"].get("after")
+        afters.append(after)
+        if after is None:
+            page = _references(_state_ref(479, "OPEN"), _state_ref(457, "MERGED"),
+                               _state_ref(450, "CLOSED"), _state_ref(900, "OPEN", cross_repo=True),
+                               _issue_ref(), more=True, cursor="c1")
+        else:
+            page = _references(_state_ref(511, "MERGED"), _state_ref(479, "OPEN"))
+        return httpx.Response(200, json={"data": {"repository": {"i262": page}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    assert client.pull_requests_referencing_issue(262) == ((457, "262-x"), (479, "262-x"), (511, "262-x"))
+    assert afters == [None, "c1"]
+
+
+@pytest.mark.parametrize(
+    ("repository", "match"),
+    [
+        pytest.param({"i5": _references(_state_ref(9, None))}, "malformed node", id="state-missing"),
+        pytest.param({"i5": _references(_state_ref(9, "OPEN", branch=None))}, "malformed node",
+                     id="branch-missing"),
+        pytest.param({"i5": _references(_state_ref(9, "OPEN"), more=True)}, "without a cursor",
+                     id="next-page-without-cursor"),
+    ],
+)
+def test_pull_requests_referencing_issue_refuses_a_partial_answer(repository, match) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"repository": repository}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match=match):
+        client.pull_requests_referencing_issue(5)
+
+
+def test_pull_requests_referencing_a_missing_issue_is_empty() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"repository": {"i5": None}}})
+
+    assert _client_with_transport(httpx.MockTransport(handler)).pull_requests_referencing_issue(5) == ()
 
 
 def _pulls_pages(prs: list[dict], *, fail_page: int | None = None):
@@ -3341,3 +3560,32 @@ def test_rate_limited_page_keeps_the_scan_incomplete_contract() -> None:
 
     assert isinstance(caught.value, GitHubRateLimitedError)
     assert caught.value.rate_limit.kind == "primary"
+
+
+def test_comment_bodies_containing_reads_every_page_uncached() -> None:
+    """#7658: a resolution marker past the first 100 comments still counts.
+    The tech lead decides from its ABSENCE, so a first-page read (the cached
+    ``get_issue_comments``) would let it clear a block a second time."""
+    pages_requested: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        pages_requested.append(page)
+        if page == 1:
+            return httpx.Response(200, json=[{"body": f"chatter {i}"} for i in range(100)])
+        return httpx.Response(200, json=[{"body": f"decided\n{_TEST_MARKER}"}, {"body": "later"}])
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    assert client.issue_comment_bodies_containing(318, _TEST_MARKER) == (f"decided\n{_TEST_MARKER}",)
+    assert pages_requested == [1, 2]
+
+
+def test_comment_bodies_containing_fails_loud_on_a_malformed_page() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"message": "not a list"})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubHttpError):
+        client.issue_comment_bodies_containing(318, _TEST_MARKER)

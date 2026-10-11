@@ -48,10 +48,13 @@ class GitHubAppInstallationTokenProvider:
         *,
         clock: Callable[[], float] = time.time,
         post: Callable[..., httpx.Response] = httpx.post,
+        get: Callable[..., httpx.Response] = httpx.get,
     ) -> None:
         self._config = config
         self._clock = clock
         self._post = post
+        self._get = get
+        self._slug: str | None = None
         self._cached_token: str | None = None
         self._expires_at_epoch: float = 0.0
         self._permissions: dict[str, str] | None = None
@@ -81,7 +84,39 @@ class GitHubAppInstallationTokenProvider:
             )
         return dict(self._permissions)
 
-    def _refresh(self) -> str:
+    def app_slug(self) -> str:
+        """This App's slug, read once from ``GET /app`` under the App's own JWT.
+
+        The slug names the App's bot account, ``<slug>[bot]``, which GitHub
+        records as the actor of every issue event the installation token
+        writes (#8987). The answer must be the configured App.
+        """
+        if self._slug is None:
+            self._slug = self._read_app_slug()
+        return self._slug
+
+    def _read_app_slug(self) -> str:
+        url = f"{self._config.api_url.rstrip('/')}/app"
+        try:
+            response = self._get(url, headers=self._jwt_headers(), timeout=self._config.timeout_seconds)
+        except (httpx.TimeoutException, httpx.HTTPError, OSError) as exc:
+            raise GitHubAuthError(f"Failed to read the GitHub App: {exc}") from exc
+        if response.status_code >= 400:
+            detail = _summarize_auth_error(response.text)
+            suffix = f" - {detail}" if detail else ""
+            raise GitHubAuthError(f"GitHub App read failed: HTTP {response.status_code}{suffix}")
+        payload = response.json()
+        if not isinstance(payload, dict) or not self._config.effective_identity.matches(payload):
+            raise GitHubAuthError(
+                f"GET /app did not answer the configured App ({self._config.effective_identity.author_key})"
+            )
+        slug = payload.get("slug")
+        if not isinstance(slug, str) or not slug:
+            raise GitHubAuthError("GitHub App read did not include the App's slug.")
+        return slug
+
+    def _jwt_headers(self) -> dict[str, str]:
+        """Request headers authenticating as the App itself (a fresh JWT)."""
         private_key = self._config.read_private_key()
         now = int(self._clock())
         jwt_payload = {
@@ -92,7 +127,13 @@ class GitHubAppInstallationTokenProvider:
         encoded_jwt = jwt.encode(jwt_payload, private_key, algorithm="RS256")
         if isinstance(encoded_jwt, bytes):
             encoded_jwt = encoded_jwt.decode("ascii")
+        return {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {encoded_jwt}",
+            "User-Agent": f"issue-orchestrator/{__version__}",
+        }
 
+    def _refresh(self) -> str:
         url = (
             f"{self._config.api_url.rstrip('/')}/app/installations/"
             f"{self._config.installation_id}/access_tokens"
@@ -100,11 +141,7 @@ class GitHubAppInstallationTokenProvider:
         try:
             response = self._post(
                 url,
-                headers={
-                    "Accept": "application/vnd.github+json",
-                    "Authorization": f"Bearer {encoded_jwt}",
-                    "User-Agent": f"issue-orchestrator/{__version__}",
-                },
+                headers=self._jwt_headers(),
                 timeout=self._config.timeout_seconds,
             )
         except (httpx.TimeoutException, httpx.HTTPError, OSError) as exc:
@@ -165,6 +202,16 @@ class GitHubAuth:
             return self.token_provider.comment_app_identity
         if self.auth_kind == "github_app":
             raise GitHubAuthError("GitHub App comment provenance requires configured app identity")
+        return None
+
+    def app_bot_login(self) -> str | None:
+        """The login of this engine's App bot account (``<slug>[bot]``), the
+        actor GitHub records for its installation writes; ``None`` for a
+        personal token, whose writes are its user's (#8987)."""
+        if isinstance(self.token_provider, GitHubAppInstallationTokenProvider):
+            return f"{self.token_provider.app_slug()}[bot]"
+        if self.auth_kind == "github_app":
+            raise GitHubAuthError("GitHub App write attribution requires configured app identity")
         return None
 
     def installation_permissions(self) -> dict[str, str]:

@@ -36,6 +36,7 @@ from .action_results import ActionResult, ActionResultType
 
 if TYPE_CHECKING:
     from ..domain.action_liveness import LivenessRow
+    from ..domain.tech_lead_session import StoredTechLeadOp
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from ..ports.tech_lead_charter_ledger import TechLeadCharterLedger
     from .action_base import Action
@@ -60,6 +61,25 @@ def _link(
         action_id=op.source_action_id,
         proposal_issue_number=proposal_issue_number,
         lifecycle=lifecycle,
+        at=_now(),
+    )
+
+
+def link_filed_proposal(
+    authority: "TechLeadAuthorityStore", op: "StoredTechLeadOp", proposal_issue_number: int
+) -> int:
+    """The gated proposal issue exists now: name it on the record that filed it.
+
+    Until then a record "awaiting approval" only says the charter routed the
+    action to the gate; with the issue named it says an operator can act on
+    it (#7593), which is what the improver reads. The triage watermark reads
+    the open op itself, so a failed link here never re-triages the item.
+    """
+    return authority.charter_ledger.link_proposal_outcome(
+        run_id=op.source_run_id,
+        action_id=op.source_action_id,
+        proposal_issue_number=proposal_issue_number,
+        lifecycle=CharterProposalLifecycle.AWAITING_APPROVAL,
         at=_now(),
     )
 
@@ -176,8 +196,10 @@ def link_or_log(link: "Callable[[], None]", what: str) -> None:
 class CompletionEffectLinks:
     """What a completion's apply did with every executed decision's effects.
 
-    The completion owner notes each result as it lands and which action raised;
-    every effect it never reached was withheld. Results
+    The completion owner notes each result as it lands, which action raised,
+    and every effect it withheld with the reason it was withheld (porchpin
+    #410: a blanket "behind a mandated action" reason named a mandated action
+    that did not exist). Results
     line up with the batch by position (``apply_all`` returns one per action),
     so a composite applier's result is attributed to the action that was
     planned, whatever inner action it names.
@@ -199,9 +221,16 @@ class CompletionEffectLinks:
         for action, result in zip(batch, results):
             self._found[id(action)] = (*result_of(result), self._landed_at())
 
+    def withheld(self, actions: Sequence["Action"], reason: str) -> None:
+        """*actions* were never attempted, for *reason* (which names why)."""
+        for action in actions:
+            self._found.setdefault(
+                id(action), (CharterExecutionResult.WITHHELD, reason, None)
+            )
+
     def raised(self, action: "Action", error: BaseException) -> None:
         """*action*'s apply raised: its result is unknown, so it did not take
-        effect. The batch's actions after it were never attempted (withheld)."""
+        effect. The completion owner records what it withheld after it, and why."""
         self._found[id(action)] = (
             CharterExecutionResult.FAILED,
             f"its apply raised before a result was known: {type(error).__name__}: {error}",
@@ -217,8 +246,7 @@ class CompletionEffectLinks:
                 id(action),
                 (
                     CharterExecutionResult.WITHHELD,
-                    "withheld: a mandated tech-lead action in the same completion"
-                    " did not commit",
+                    "withheld: the completion never attempted it",
                     None,
                 ),
             )

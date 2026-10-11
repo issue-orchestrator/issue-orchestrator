@@ -34,15 +34,31 @@ class TestSynchronousCompletionDispatcher:
         assert d.drain() == []  # results are forgotten after draining
         assert d.in_flight("issue-1") is False
 
-    def test_decide_error_propagates(self):
-        # The inline path raised on decide failure; the sync dispatcher preserves
-        # that (the background dispatcher captures errors via CompletedDecision).
+    def test_decide_error_is_handed_back_for_its_session(self):
+        # Like the background dispatcher, the error reaches the apply boundary as
+        # CompletedDecision.error, which confines it to its session (#8693).
+        d = SynchronousCompletionDispatcher()
+        session = _session("issue-1")
+        error = RuntimeError("decide failed")
+
+        def decide():
+            raise error
+
+        d.dispatch(session, decide)
+
+        out = d.drain()
+        assert len(out) == 1
+        assert out[0].session is session
+        assert out[0].decision is None
+        assert out[0].error is error
+
+    def test_an_interrupt_while_deciding_still_escapes(self):
         d = SynchronousCompletionDispatcher()
 
         def decide():
-            raise RuntimeError("decide failed")
+            raise KeyboardInterrupt
 
-        with pytest.raises(RuntimeError, match="decide failed"):
+        with pytest.raises(KeyboardInterrupt):
             d.dispatch(_session("issue-1"), decide)
         assert d.drain() == []
 

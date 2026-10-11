@@ -30,6 +30,7 @@ from issue_orchestrator.control.planner_types import OrchestratorSnapshot, Plan
 from issue_orchestrator.control.issue_fetch_resilience import IssueFetchResilience
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.control.startup_manager import StartupManager
+from issue_orchestrator.ports.standing_rulings import NO_STANDING_RULINGS
 from issue_orchestrator.control.worktree_reconciliation import WorktreeRecoverySummary
 from issue_orchestrator.control.github_workflow import launch_issue_by_number
 from issue_orchestrator.control.session_routing import (
@@ -45,6 +46,7 @@ from issue_orchestrator.domain.models import (
     OrchestratorState,
     PendingReview,
 )
+from issue_orchestrator.domain.human_block import NeedsHumanCause
 from issue_orchestrator.domain.pending_work import PendingWorkClaim, PendingWorkKind
 from issue_orchestrator.events import EventContext, EventName
 from issue_orchestrator.infra.config import AgentConfig, Config
@@ -87,9 +89,32 @@ def launcher_bundle(tmp_path: Path, recovery_holds: _RecoveryHolds) -> LauncherT
     return _bundle(tmp_path, recovery_holds)
 
 
+class _RecordedCauses:
+    """The shared needs-human block's cause record, as review policy reads it."""
+
+    def __init__(self) -> None:
+        self.causes: dict[int, frozenset[NeedsHumanCause]] = {}
+
+    def recorded_causes(self, issue_numbers):
+        return {n: self.causes.get(n, frozenset()) for n in issue_numbers}
+
+    hold_causes = recorded_causes  # every record here is the standing one
+
+    def held_by_another_cause(self, issue_number, *, excluding):
+        return bool(self.causes.get(issue_number, frozenset()) - {excluding})
+
+    def forget_stale_causes(self):
+        return ()
+
+
+@pytest.fixture
+def recorded_causes() -> _RecordedCauses:
+    return _RecordedCauses()
+
+
 def _bundle(
     tmp_path: Path, recovery_holds: _RecoveryHolds, *, provider_readiness_probe=None,
-    provider_resilience=None,
+    provider_resilience=None, needs_human_block=None,
 ) -> LauncherTestBundle:
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("Test prompt")
@@ -112,6 +137,7 @@ def _bundle(
         recovery_holds=recovery_holds,
         provider_readiness_probe=provider_readiness_probe,
         provider_resilience=provider_resilience,
+        needs_human_block=needs_human_block,
     )
 
 
@@ -242,7 +268,10 @@ def test_one_queued_review_is_one_attempt_and_one_success(
     _assert_one_launch_one_success(engine)
 
 
-def _startup_manager(config: Config) -> StartupManager:
+def _startup_manager(
+    config: Config, *, issue_labels: tuple[str, ...] = (), pr_labels: tuple[str, ...] = (),
+    needs_human_block=None,
+) -> StartupManager:
     """The real startup recovery over a host that shows one PR awaiting review."""
     host = MagicMock()
     host.get_prs_with_label.return_value = [
@@ -253,11 +282,12 @@ def _startup_manager(config: Config) -> StartupManager:
             branch=f"{ISSUE}-feature",
             body=f"Closes #{ISSUE}\n\n{ORCHESTRATOR_PR_MARKER}",
             state="open",
-            labels=["needs-code-review"],
+            labels=["needs-code-review", *pr_labels],
         )
     ]
     host.get_issue.return_value = Issue(
-        number=ISSUE, title="Feature", labels=["agent:web"], repo="test/repo", state="open"
+        number=ISSUE, title="Feature", labels=["agent:web", *issue_labels], repo="test/repo",
+        state="open",
     )
     host.create_issue_key.side_effect = lambda number: GitHubIssueKey(
         repo="test/repo", external_id=str(number)
@@ -282,7 +312,42 @@ def _startup_manager(config: Config) -> StartupManager:
         issue_fetch_resilience=IssueFetchResilience("test/repo"),
         startup_worktree_reconciler=reconciler,
         pending_work_claims=MagicMock(),
+        standing_rulings=NO_STANDING_RULINGS,
+        **({} if needs_human_block is None else {"needs_human_block": needs_human_block}),
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("number", "cause", "on_pr", "queued"),
+    [
+        # A person decides before the PR merges: the review runs (#7678).
+        (PR, NeedsHumanCause.MERGE_DECISION, True, True),
+        # The engine escalated the PR itself: its work is held.
+        (PR, NeedsHumanCause.MERGE_ESCALATION, True, False),
+        # An agent's pre-work question on the issue holds the work (porchpin#262).
+        (ISSUE, NeedsHumanCause.AGENT_COMPLETION, False, False),
+    ],
+)
+async def test_startup_types_a_needs_human_before_recovering_the_review(
+    launcher_bundle: LauncherTestBundle,
+    recorded_causes: _RecordedCauses, number: int, cause: NeedsHumanCause, on_pr: bool,
+    queued: bool,
+) -> None:
+    """A restart must decide the review exactly as the launch path would."""
+    config = launcher_bundle.launcher.config
+    config.code_review_label = "needs-code-review"
+    recorded_causes.causes[number] = frozenset({cause})
+    state = OrchestratorState()
+
+    await _startup_manager(
+        config,
+        issue_labels=() if on_pr else ("needs-human",),
+        pr_labels=("needs-human",) if on_pr else (),
+        needs_human_block=recorded_causes,
+    ).run_startup(state)
+
+    assert [review.pr_number for review in state.pending_reviews] == ([PR] if queued else [])
 
 
 @pytest.mark.asyncio
@@ -339,7 +404,9 @@ def test_a_queue_holding_one_pr_twice_plans_and_applies_one_launch(
 # --- #7455: a withdrawn or held review is not a failed launch ----------------
 
 
-def _host_shows(bundle: LauncherTestBundle, *issue_labels: str) -> None:
+def _host_shows(
+    bundle: LauncherTestBundle, *issue_labels: str, pr_labels: tuple[str, ...] = ()
+) -> None:
     """The live issue carries ``issue_labels``; its PR is open and awaits review."""
     host = bundle.launcher.repository_host
     host.labels[ISSUE] = set(issue_labels) | {"agent:web"}
@@ -351,7 +418,7 @@ def _host_shows(bundle: LauncherTestBundle, *issue_labels: str) -> None:
             branch=f"{ISSUE}-feature",
             body="",
             state="open",
-            labels=["needs-code-review"],
+            labels=["needs-code-review", *pr_labels],
         )
     ]
 
@@ -388,6 +455,59 @@ def test_a_review_of_a_blocked_issue_is_withdrawn_not_failed(
     _assert_nothing_failed(engine)
     assert _skips(engine) == ["Stale pending review: issue_blocked"]
     assert state.pending_reviews == []  # withdrawn: the queue drops it
+
+
+# --- #7593: an agent's own question does not withhold its PR's review --------
+
+
+def test_a_merge_hold_on_the_pr_does_not_withhold_its_review(
+    tmp_path: Path, recovery_holds: _RecoveryHolds, recorded_causes: _RecordedCauses
+) -> None:
+    """porchpin#379 (#7678): PR #379 was dropped every loop (``QUEUED → SKIP
+    (stale pending review: issue_blocked)``) because the agent's question about
+    the PR's merge sat on the issue. Typed as a merge hold on the PR, the
+    review runs: the person decides with a reviewed PR in hand."""
+    bundle = _bundle(tmp_path, recovery_holds, needs_human_block=recorded_causes)
+    _host_shows(bundle, "pr-pending", pr_labels=("needs-human",))
+    recorded_causes.causes[PR] = frozenset({NeedsHumanCause.MERGE_DECISION})
+    state = OrchestratorState()
+    assert state.queue_pending_review(_review(agent_label=None))
+    engine = _Engine(bundle, state)
+
+    engine.apply(engine.plan())
+
+    _assert_one_launch_one_success(engine)
+
+
+@pytest.mark.parametrize(
+    ("causes", "extra_labels"),
+    [
+        # An agent's question on the ISSUE: a pre-work question holds the work.
+        ({NeedsHumanCause.AGENT_COMPLETION}, ()),
+        # The stuck sweep escalated it.
+        ({NeedsHumanCause.AGENT_COMPLETION, NeedsHumanCause.SESSION_LIFECYCLE}, ()),
+        # A tech-lead hand-over.
+        ({NeedsHumanCause.AGENT_COMPLETION}, ("tech-lead-needs-human",)),
+        # No recorded cause: the operator put it on by hand.
+        (set(), ()),
+    ],
+)
+def test_any_other_human_block_still_withdraws_the_review(
+    tmp_path: Path, recovery_holds: _RecoveryHolds, recorded_causes: _RecordedCauses,
+    causes: set[NeedsHumanCause], extra_labels: tuple[str, ...],
+) -> None:
+    bundle = _bundle(tmp_path, recovery_holds, needs_human_block=recorded_causes)
+    _host_shows(bundle, "needs-human", *extra_labels)
+    recorded_causes.causes[ISSUE] = frozenset(causes)
+    state = OrchestratorState()
+    assert state.queue_pending_review(_review(agent_label=None))
+    engine = _Engine(bundle, state)
+
+    engine.apply(engine.plan())
+
+    _assert_nothing_failed(engine)
+    assert _skips(engine) == ["Stale pending review: issue_blocked"]
+    assert state.pending_reviews == []
 
 
 def test_a_review_held_only_by_recovery_waits_then_launches_once(

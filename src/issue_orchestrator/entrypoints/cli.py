@@ -25,6 +25,7 @@ from .cli_support import (
     resolve_repo as _resolve_repo,
     run_test_setup as _run_test_setup,
 )
+from .cli_merge_hold import cmd_hold_merge_for_human
 from .cli_tech_lead import (
     cmd_health_review,
     cmd_reconcile_case_files,
@@ -742,6 +743,13 @@ def cmd_action_liveness(args: argparse.Namespace) -> int:
     return action_liveness_main(list(getattr(args, "liveness_args", []) or []))
 
 
+def cmd_engine_audit(args: argparse.Namespace) -> int:
+    """Audit an engine's outcomes read-only (#7490)."""
+    from .cli_tools.engine_audit import run as engine_audit_run
+
+    return engine_audit_run(args)
+
+
 def cmd_default(args: argparse.Namespace) -> int:  # noqa: ARG001 - args unused but required for command signature
     """Default command when no subcommand is given - open unified dashboard."""
     import webbrowser
@@ -858,6 +866,7 @@ def main() -> int:
             tech_lead=cmd_tech_lead,
             health_review=cmd_health_review,
             reconcile_case_files=cmd_reconcile_case_files,
+            hold_merge_for_human=cmd_hold_merge_for_human,
             refresh=cmd_refresh,
             restart=cmd_restart,
             setup=cmd_setup,
@@ -876,6 +885,7 @@ def main() -> int:
             executor_status=cmd_executor_status,
             worktree_custody=cmd_worktree_custody,
             action_liveness=cmd_action_liveness,
+            engine_audit=cmd_engine_audit,
         )
     )
 

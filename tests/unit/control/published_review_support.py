@@ -35,6 +35,7 @@ def disposition(
     *,
     pr_number: int | None = None,
     published_head_sha: str | None = PUBLISHED,
+    published_branch: str = "",
 ) -> ValidatedWorkDisposition:
     key = ValidatedWorkKey(REPO, issue_number, branch(issue_number), VALIDATED)
     return ValidatedWorkDisposition(
@@ -58,6 +59,7 @@ def disposition(
             if state is ValidatedWorkState.ABANDONED
             else None
         ),
+        published_branch=published_branch,
     )
 
 

@@ -174,6 +174,15 @@ class WorkingCopy(ExactGit, Protocol):
         """
         ...
 
+    def fetch_pull_request_head(self, repository: Path, number: int) -> str | None:
+        """PR ``number``'s head as the remote keeps it (``refs/pull/N/head``), fetched now.
+
+        That ref outlives the PR's branch, so it still names a merged PR's
+        head after the branch is deleted. ``None`` when the remote cannot be
+        read or has no such PR - never a guess.
+        """
+        ...
+
     def get_branch_status(self, worktree: Path) -> BranchStatus | None:
         """Get the status of the current branch.
 
@@ -196,14 +205,21 @@ class WorkingCopy(ExactGit, Protocol):
         """
         ...
 
-    def get_commits_ahead_of_main(self, worktree: Path) -> list[CommitInfo]:
-        """Get commits that are ahead of main branch.
+    def default_branch(self, repo_root: Path, remote: str = "origin") -> str:
+        """The repository's default branch name, as the remote reports it."""
+        ...
+
+    def get_commits_ahead_of(self, worktree: Path, base_branch: str) -> list[CommitInfo]:
+        """Get commits that are ahead of the worktree's base branch.
 
         Args:
             worktree: Path to the worktree directory.
+            base_branch: The branch the worktree is based on (``origin/<base>``
+                is compared): the stack predecessor, the configured base
+                (integration mode's branch, #8144) or the default branch.
 
         Returns:
-            List of CommitInfo for commits in HEAD but not in main.
+            List of CommitInfo for commits in HEAD but not in origin/<base>.
             Empty list if none or on error.
         """
         ...
@@ -353,6 +369,14 @@ class WorkingCopy(ExactGit, Protocol):
         returns unified diff *text* for content-oriented scans and cannot see
         no-hunk changes.
         """
+        ...
+
+    def branch_touched_paths_against_base(
+        self, worktree: Path, base_ref: str
+    ) -> BranchPathsResult:
+        """Every path the branch's diff touches (merge-base semantics), deletions
+        and BOTH sides of a rename included: what a change could break, not
+        only what it leaves in the tip (the standing-rulings review rule, #8141)."""
         ...
 
     def branch_commit_messages_against_base(

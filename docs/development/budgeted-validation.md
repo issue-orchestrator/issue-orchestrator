@@ -119,12 +119,181 @@ python -m issue_orchestrator.entrypoints.cli_tools.budgeted_validation run --sui
 ```
 
 This repository also runs the live **tech-lead exam** (`tech-lead-exam`, #7304) as a
-budgeted suite. It covers four cases: A, B and C plant known faults, and U is an
+budgeted suite. It covers five cases: A, B, C and D plant known faults, and U is an
 upgrade with work in flight, run from `HEAD~10`, the span one cadence covers. Each
 case runs the real engine and tech lead against GitHub and grades the outcome, so a
 regression in how the tech lead handles a known fault is found within ten merges
 and narrowed to the merge that caused it. Run a single case by hand with
-`make test-tech-lead-exam EXAM_CASE=<A|B|C|U> EXAM_ENGINE_REF=<ref>`.
+`make test-tech-lead-exam EXAM_CASE=<A|B|C|D|E|U> EXAM_ENGINE_REF=<ref>`.
+Scorecards are written under the repository's common Git directory, in
+`io-tech-lead-exam/` (override with `EXAM_OUT=<dir>`), so they outlive the
+suite's temporary checkout; the tech-lead improver (#7490) stages the latest
+two of each case from there.
+
+The **tech-lead improver** (`tech-lead-improver`, #7490) is a budgeted suite in
+every mode, `enabled: false` until the operator turns it on. Daily (and after
+50 merges at most), `make tech-lead-improver` audits the engine, stages the
+improver's inputs, runs `examples/prompts/tech-lead-improver.md` read-only,
+validates the findings strictly and records the run under
+`<git common dir>/io-improver`. The agent's provider and model are pluggable
+(#8001): `IMPROVER_PROVIDER=claude|codex` and `IMPROVER_MODEL=<model>` (the
+CLI's `--provider` and `--model`). Unset, the improver runs on the latest
+improver tournament's winner, Claude Opus (`claude -p --restricted` with only
+the read tools, the prompt on stdin); each run records which it used.
+
+**Empowered mode** (the default, #8001; `IMPROVER_MODE=scripted` gives the
+agent the staged bundle alone). The staged `improver-data/` is the agent's
+starting map; beside it the run stages a read-only toolbox,
+`<run dir>/toolbox/`: byte copies of every engine store and of the engine's
+logs, and a `--no-hardlinks` clone of the audited repository. The
+orchestrator serves three tools to the agent as an MCP server on 127.0.0.1,
+gated by a per-run bearer token passed in the agent's environment:
+`github_get` (GitHub `GET` of the audited repository only; the credential
+stays in the orchestrator), `sql_query` (SELECT and schema pragmas on a
+store copy, under an SQLite authorizer: no write, `ATTACH` or extension) and
+`git` (read-only subcommands in the clone; options that write a file, run a
+program or read one outside it are refused, abbreviations included). The
+agent has no shell and no write tool, and is told its budget
+(`--budget-minutes`, default 60) to choose its depth in. Every toolbox call
+is logged to `<run dir>/toolbox-calls.jsonl`. A blind run (`--exclude-open-issue`) of an engine that works the
+outputs repository itself also hides those issues from `github_get`: a direct
+read, or any answer that holds one, is refused. Git output is bounded while
+it streams, and a SQL query runs under SQLite's own size limits. The Codex
+agent's shell reads only its run directory (and the platform's runtime files). `make test-improver-escape`
+runs a live agent ordered to break out of each boundary.
+
+**Design findings** (`design_findings`, findings schema v5, #8001) report
+where the system's model of the world doesn't match reality (a mechanism
+with two meanings, a silent assumption, a manual operator step, a missing
+capability, an operator-only friction), beside the stall findings. They are
+held to the same evidence rule, checked mechanically: each citation quotes a
+line of a staged file under `improver-data/` or `toolbox/` (never outside
+them, symlinks resolved) or a toolbox answer by its call number (answers are
+kept in `<run dir>/toolbox-answers/`). Only data counts: a `github_get`
+answer, or a `sql_query` value present byte for byte in the queried store
+copy; a `git` answer never counts (its `--format` is the request's). A quote that isn't there rejects the
+whole file. An accepted design finding files one issue labelled
+`needs-operator-decision` and `improver:design`; nothing is applied.
+
+**Operator interventions** (`interventions.json`, #8001) also stage the hand
+actions on the audited repository's GitHub, read in bounded pages over the
+window: labels a person added or removed, title and body edits, items
+opened, closes, reopens, merges, reviews and comments. Automation (a Bot
+account or an App acting for a user) is left out and counted. Each entry
+names its actor and a GitHub URL. Because the coordinator acts under the
+operator's identity, an entry is attributed `coordinator` only when its
+text carries the coordinator's signature, and `person` otherwise; the file
+says so in `github.attribution_limits`, along with which sources stopped
+before the window's start. With `--no-github`, or a failed read, the file
+names what it is missing; staging never fails on it.
+
+**Heats** (#8001): a run sends `--heats` independent agent runs
+(`IMPROVER_HEATS`, default 2) on the same staged inputs and toolbox,
+`--parallel-heats` at a time (default 2). Each is a whole agent run, and a
+Claude heat counts against the operator's subscription, so keep N modest.
+Each heat's answer is validated alone (`improver-findings-h<k>.json`); the
+accepted ones are merged into `improver-findings.json`, which is validated
+again. Findings merge by ONE identity, the key their issues are deduplicated
+by: the same key is the same finding (a design finding only with the same
+claim too). What cannot merge (a different finding proposing a taken exam
+case, the same design id with another claim) is recorded as a conflict and
+listed on the kept finding's issue, never dropped. The run records each
+heat's outcome and, per finding, the heats that found it; a filed issue says
+"Found by k of N independent heats". A run is accepted when any heat is. At
+most 5 heats; their waves (`ceil(heats / parallel-heats)`) times
+`--agent-timeout-minutes` must fit `--run-budget-minutes` (default 105,
+inside the suite's 120).
+
+**The improver tournament** (#8001;
+`python -m issue_orchestrator.entrypoints.cli_tools.improver_tournament`)
+compares improver arms (a provider, model and mode) on equal ground. All its
+data lives under `<git common dir>/io-improver/`:
+
+- `snapshots/<id>/` holds **frozen snapshots**: one engine's staged
+  `improver-data/` and, optionally, its toolbox (store copies, logs, a clone).
+  A snapshot is imported once (`snapshot import`) and never changed. It links
+  to nothing outside itself and holds nothing from after it: the clone is
+  rebuilt as a new repository from its refs (nothing else of its `.git` is
+  kept), no ref may reach a later commit, and the checkout is its commit's. An old bundle is upgraded to today's contracts
+  with each change named.
+- `keys/<snapshot>.json` holds **answer keys from hindsight**: the sealed key
+  written before results (`key seed`; no arm runs until it exists), then problems found later that the
+  snapshot's evidence already showed (`key add`, a `candidate` until
+  `key confirm`). Each hindsight item records `observable_since`: when its
+  evidence first existed and where that is read (`key add
+  --observable-since/--observable-source`, or `key observe` later). An item
+  first observable after the snapshot was frozen is never confirmed on it
+  (`key add` warns for a candidate, `key confirm` refuses, and no tournament
+  grades a key that scores one, nor counts a tournament graded against a key
+  that has changed since); `key move` attaches it to a snapshot frozen later
+  instead, as a candidate there (recording `--since/--source` as it moves).
+  `key show` prints each item's `observable_since`. Only these commands write keys. No improver run can reach
+  the key store, and no agent can read it.
+- `tournaments/<id>/` holds one **tournament**. `run` sends each arm's heats (an arm may set its own prompt, heats, budget
+  and timeout: a challenger beside its champion) on the snapshot as ordinary improver runs, which never apply or touch GitHub,
+  and read no live GitHub, since that would show what was found later.
+  `grade-recorded` grades answers an earlier tournament recorded. Either way
+  the outputs are anonymized (`anon/`, mapping sealed in `sealed/`), graded by
+  cross-model graders (default one Claude, one Codex) that read only `anon/`
+  and `key/` (every grader must grade every output, or there is no result;
+  `regrade --tournament ID` grades the same outputs again), and ranked: weight × (full 1, half ½, miss 0), less 1 per
+  unsupported finding. Each grader grades every output `--passes` times
+  (default 3; graders side by side, a grader's passes in turn); a grader's
+  passes are averaged first, since repeating one grader's opinion is not more
+  evidence. An arm's score is the mean over its outputs and graders. Two arms
+  are told apart only when both hold: (1) **heats**, the arms' independent
+  samples: an exact one-sided permutation test over their per-heat scores
+  reaches p <= 0.05 (two heats an arm can never pass it, since the most extreme
+  split has p = 1/6; three heats each, wholly separated, give p = 1/20, so `run`
+  defaults to three heats); and
+  (2) **the noise band**: the gap exceeds twice the standard error of the
+  difference, from each arm's heats' spread on its own heat count plus the larger of the graders'
+  disagreement on the difference and its pass-to-pass noise (paired, so a
+  grader's bias shared by both arms cancels). Each component is the larger of
+  its estimate on the pair and on the whole tournament (never zero by a
+  pair's chance agreement, never diluted by quiet arms), and never below what
+  a grading resolves (half credit on the lightest key item). The ranking is
+  in tiers: `>` between tiers means every arm above is told apart from every
+  arm below; a tier lists any pair inside it that is told apart
+  (`{A, B, C: B>C}`); arms not told apart are reported indistinguishable,
+  which is a result, not a failure. `result.json` records each grading,
+  the pass noise, the distinguishable pairs and the cost (arm heats and every
+  grader call, retries included, per provider; Claude's count against the operator's subscription).
+
+**The champion and its challengers** (#8001) keep the improver improving
+under the same rules. The **champion** (`io-improver/champion/`, seeded once
+with `improver_tournament champion seed --by NAME`) is the configuration
+`improver run` uses for every setting it is not given: prompt, provider and
+model, mode, heats, budget. About one champion run in ten (chosen from the
+run id by the orchestrator, `--change-invitation-rate`) is invited to propose
+ONE change to it: a prompt passage, the agent, the mode, the heats or the
+budget, never the keys, graders or scoring. An accepted change files an
+`improver:challenger` issue. `improver_tournament challenge --run ID
+--snapshot S...` tries it: the champion and the challenger each make whole
+improver runs (default 3 an arm) on each frozen snapshot, graded blind and
+pooled. The challenger wins only if it is told apart above the champion on
+every snapshot. `improver_tournament promote --challenge ID` then replaces the
+champion only if the challenge won against the champion that is current NOW
+and a maintainer approved its issue (#7906: a standing `approved` label from
+a person with the admin or maintain role, on the open issue). A challenge's
+request (snapshots, whole runs, graders, passes, seed) is fixed before any arm
+runs: a retry must ask for exactly it, and resumes without re-running arms.
+Every champion can run live: all its heats in one wave, an agent timeout of
+90 minutes or its budget plus 15, inside the 105-minute run budget (so an
+empowered budget is at most 90 minutes).
+
+**A run is dry unless `--apply`** (`IMPROVER_APPLY=1`): an accepted run's
+GitHub effects are recorded as owed, and `improver apply` files them. A rejected findings file exits 1 with every
+broken rule recorded and changes nothing; an unavailable input or agent exits
+75. The accepted findings' effects (an issue per finding, deduplicated against
+open issues by the `[improver:<key>]` title token, or an evidence comment on a
+tracked issue; proposals labelled `needs-operator-decision`, never applied) go
+through the repository-host port; a rate limit leaves the rest pending for the
+next run. `python -m issue_orchestrator.entrypoints.cli_tools.improver status`
+prints the runs, their stall-point grades and how those moved;
+`... improver apply --outputs-repo <owner/repo>` applies what is still owed.
+Point `IMPROVER_STATE_DIR` and `IMPROVER_AUDITED_REPO` at another engine (e.g.
+porchpin) to audit it while filing into this repository.
 
 Pass `--config path/to/config.yaml` to select a specific YAML configuration.
 `run` is an explicit forced request. `check` still coalesces with another worker.

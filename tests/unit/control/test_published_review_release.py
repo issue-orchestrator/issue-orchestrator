@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from issue_orchestrator.control.human_gates import HumanGates
 from issue_orchestrator.control.action_results import ActionResult
 from issue_orchestrator.control.actions import (
     AddLabelAction,
@@ -95,6 +96,7 @@ def _owner(labels: _Labels, pr_state: str = "open", pr_labels=()) -> PublishedRe
     return PublishedReviewRelease(
         custody=custody(store, PullRequests({ISSUE: [pr(ISSUE, 500, state=pr_state, labels=pr_labels)]})),
         labels=LM,
+        gates=HumanGates.unrecorded(LM),
         read_labels=labels.read,
         apply=labels.apply,
         review_label=REVIEW_LABEL,
@@ -279,7 +281,7 @@ def test_a_routed_pr_that_closes_during_the_writes_withdraws_even_if_another_pr_
         prs.by_issue[ISSUE] = [pr(ISSUE, 500, state="closed"), pr(ISSUE, 501)]
 
     labels = _Labels(["agent:web", LM.blocked_failed], on_route=close_the_routed_pr)
-    owner = PublishedReviewRelease(custody=custody(store, prs), labels=LM, read_labels=labels.read,
+    owner = PublishedReviewRelease(custody=custody(store, prs), labels=LM, gates=HumanGates.unrecorded(LM), read_labels=labels.read,
                                    apply=labels.apply, review_label=REVIEW_LABEL)
 
     outcome = owner.release(ISSUE)

@@ -111,7 +111,11 @@ async def get_excluded_issues(
         e.issue_number for e in state.session_history
     }
 
-    entries = audit_queue(config, state=state, issue_tracker=orchestrator.repository_host)
+    approvals = orchestrator.deps.action_applier.tech_lead_approvals
+    entries = audit_queue(
+        config, state=state, issue_tracker=orchestrator.repository_host,
+        known_proposals=approvals.known_proposals() if approvals is not None else frozenset(),
+    )
     excluded: list[dict[str, object]] = []
 
     for entry in entries:

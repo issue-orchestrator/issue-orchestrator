@@ -37,6 +37,7 @@ class PRToReviewDict(TypedDict):
     branch: str
     files: PRFilesDict
     head_sha: NotRequired[str]
+    issue_numbers: NotRequired[list[int]]
 
 
 class TechLeadManifestDict(TypedDict):
@@ -68,11 +69,15 @@ class PRToReview:
     branch: str
     files: PRFiles = field(default_factory=PRFiles)
     head_sha: str = ""
+    #: The issues the PR belongs to (its ``N-`` branch, its closing or ``Refs``
+    #: links): whose standing rulings bind it (#8347).
+    issue_numbers: tuple[int, ...] = ()
 
     def to_dict(self) -> PRToReviewDict:
         data: PRToReviewDict = {
             "number": self.number, "title": self.title, "url": self.url,
             "branch": self.branch, "files": {"diff": self.files.diff, "metadata": self.files.metadata},
+            "issue_numbers": list(self.issue_numbers),
         }
         if self.head_sha:
             data["head_sha"] = self.head_sha
@@ -111,6 +116,7 @@ class TechLeadManifest:
                 url=pr_data["url"],
                 branch=pr_data["branch"],
                 head_sha=pr_data.get("head_sha", ""),
+                issue_numbers=tuple(pr_data.get("issue_numbers", [])),
                 files=PRFiles(
                     diff=files_data.get("diff", ""),
                     metadata=files_data.get("metadata", ""),
@@ -134,6 +140,14 @@ class TechLeadManifest:
         """Read manifest from file."""
         data = json.loads(path.read_text())
         return cls.from_dict(data)
+
+    def covered_issues(self) -> dict[int, tuple[int, ...]]:
+        """Each issue a PR in the batch belongs to, with those PRs (#8347)."""
+        covered: dict[int, list[int]] = {}
+        for pr in self.prs:
+            for issue_number in pr.issue_numbers:
+                covered.setdefault(issue_number, []).append(pr.number)
+        return {issue_number: tuple(sorted(prs)) for issue_number, prs in covered.items()}
 
     def get_pr_numbers(self) -> list[int]:
         """Get list of PR numbers for completion handling."""

@@ -87,6 +87,7 @@ and this table is the same set with the tier each command carries:
 | `tech_lead` | Runtime | Supported |
 | `health-review` | Runtime | Supported |
 | `reconcile-case-files` | Runtime | Supported |
+| `hold-merge-for-human` | Runtime | Supported |
 | `refresh` | Runtime | Supported |
 | `restart` | Runtime | Supported |
 | `setup` | Setup | Supported |
@@ -103,6 +104,7 @@ and this table is the same set with the tier each command carries:
 | `executor-status` | Diagnostics | Supported |
 | `worktree-custody` | Diagnostics | Supported |
 | `action-liveness` | Diagnostics | Supported |
+| `engine-audit` | Diagnostics | Supported |
 | `test-reset` | Development | Internal |
 | `e2e-reset` | Development | Internal |
 
@@ -354,7 +356,9 @@ contracted route goes missing or stops using its generated response model.
 | `/api/completion/submissions` | Repository Engine |
 | `/api/config` | Repository Engine |
 | `/api/control-center/repositories/{repo_key}/engines/{instance_key}/stop-validated-work-owner` | Control Center |
+| `/api/control-center/repositories/{repo_key}/tech-lead/proposals` | Control Center |
 | `/api/control-center/repositories/{repo_key}/validated-work` | Control Center |
+| `/api/control-center/tech-lead` | Control Center |
 | `/api/debug` | Repository Engine |
 | `/api/dependency-problems` | Repository Engine |
 | `/api/doctor` | Repository Engine |
@@ -382,7 +386,8 @@ contracted route goes missing or stops using its generated response model.
 | `/api/issue-rows` | Repository Engine |
 | `/api/retrospective-review` | Repository Engine |
 | `/api/retrospective-review/preflight` | Repository Engine |
-| `/api/tech-lead/rework-proposals` | Repository Engine |
+| `/api/tech-lead/page` | Repository Engine |
+| `/api/tech-lead/proposals` | Repository Engine |
 | `/api/tech-lead/runs` | Repository Engine |
 | `/api/view-model` | Repository Engine |
 | `/api/view-model-snapshot` | Repository Engine |

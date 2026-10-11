@@ -7,6 +7,7 @@ from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass
 from typing import Literal
 
+from ..domain.integration_branch import step_issue_number, step_pr_number
 from ..domain.models import OrchestratorState
 
 logger = logging.getLogger(__name__)
@@ -294,9 +295,9 @@ class RetryHistoryState:
     def record_expedite_pending(self, issue_number: int) -> None:
         """Remember a gated (propose-authority) expedite follow-up (#6870).
 
-        The issue is created behind the ``proposed-tech-lead`` gate, so it must
-        NOT jump the lane yet. :meth:`promote_expedite_pending` moves it to the
-        front once an operator removes the gate.
+        The issue is created awaiting approval, so it must NOT jump the lane
+        yet. :meth:`promote_expedite_pending` moves it to the front once a
+        verified approval admits it (#7763).
         """
         if issue_number not in self._state.tech_lead_expedite_pending:
             self._state.tech_lead_expedite_pending.append(issue_number)
@@ -424,6 +425,10 @@ class RetryHistoryState:
             superseded_prs=tuple(sorted(superseded_pr_numbers)),
         )
 
+    def forget_observations(self, issue_number: int) -> None:
+        """Drop every planner fact discovered about the issue: a reset superseded it (#8219)."""
+        self._clear_discovered_facts(issue_number, set())
+
     def _clear_pending_workflow_queues(
         self,
         issue_number: int,
@@ -451,10 +456,14 @@ class RetryHistoryState:
         ]
 
     def _clear_attempt_scoped_state(self, issue_number: int) -> None:
-        """Validation retries — purely per-attempt records."""
+        """Validation retries and immediate cleanups — purely per-attempt records."""
         self._state.pending_validation_retries = [
             r for r in self._state.pending_validation_retries
             if r.issue_number != issue_number
+        ]
+        self._state.immediate_cleanups = [
+            c for c in self._state.immediate_cleanups
+            if c.issue_number != issue_number
         ]
 
     def _clear_discovered_facts(
@@ -462,7 +471,7 @@ class RetryHistoryState:
         issue_number: int,
         superseded_pr_numbers: set[int],
     ) -> None:
-        """Discovered_* and immediate_cleanups — planner inputs, attempt-scoped."""
+        """Discovered_* — planner inputs, attempt-scoped."""
         self._state.discovered_reviews = [
             d for d in self._state.discovered_reviews
             if d.issue_number != issue_number
@@ -480,6 +489,10 @@ class RetryHistoryState:
         ]
         self._state.discovered_failures = [
             d for d in self._state.discovered_failures
+            if d.issue_number != issue_number
+        ]
+        self._state.discovered_retrospective_reviews = [
+            d for d in self._state.discovered_retrospective_reviews
             if d.issue_number != issue_number
         ]
         self._state.discovered_awaiting_merge_reconciliations = [
@@ -502,9 +515,15 @@ class RetryHistoryState:
             if d.issue_number != issue_number
             and d.pr_number not in superseded_pr_numbers
         ]
-        self._state.immediate_cleanups = [
-            c for c in self._state.immediate_cleanups
-            if c.issue_number != issue_number
+        self._state.discovered_ci_reruns = [
+            d for d in self._state.discovered_ci_reruns
+            if d.issue_number != issue_number
+            and d.pr_number not in superseded_pr_numbers
+        ]
+        self._state.discovered_integration_steps = [
+            step for step in self._state.discovered_integration_steps
+            if step_issue_number(step) != issue_number
+            and step_pr_number(step) not in superseded_pr_numbers
         ]
 
     def _clear_progress_flags(self, issue_number: int) -> None:

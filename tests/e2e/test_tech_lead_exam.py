@@ -33,7 +33,16 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.testing.exam import render_summary
 from issue_orchestrator.testing.exam.cases import (
     BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+    BLOCKED_ITEMS_TRIAGED,
+    MERGE_HELD_WORK_PROCEEDS,
+    BLOCK_RESOLUTIONS_PROPOSED,
+    BLOCKS_RESOLVED_UNDER_EXECUTE,
+    DECISION_STEPS_RUN_ON_APPROVAL,
+    EXAM_CASE_IDS,
+    INTEGRATION_BRANCH_LANDS_APPROVED_WORK,
     HALTED_EXCHANGE_WITH_VALIDATED_WORK,
+    POSITIVE_APPROVAL_EXECUTES_ONCE,
+    RULING_BINDS_REWORK_AND_REVIEW,
     STALE_CLAIM_PAUSED_FOR_RECONCILE,
     UPGRADE_WITH_WORK_IN_FLIGHT,
 )
@@ -49,10 +58,25 @@ from tests.e2e.exam.scenarios import (
     case_a,
     case_b,
     case_c,
+    case_d,
+    case_h,
+    case_e,
+    case_f_resolved,
+    case_g_proposed,
+    case_i,
+    case_j,
+    case_k,
     case_u,
     run_case_a,
     run_case_b,
     run_case_c,
+    run_case_d,
+    run_case_h,
+    run_case_i,
+    run_case_j,
+    run_case_k,
+    run_case_e,
+    run_case_resolution,
     run_case_u,
 )
 from tests.e2e.flows import E2EFlow
@@ -107,12 +131,10 @@ def _cleanup(repo: str, run_label: str, flows: list[E2EFlow], branches: list[str
 @pytest.mark.gh_activity_limit(test_gh_activity_limit=5000, system_gh_activity_limit=5000)
 @pytest.mark.parametrize(
     "case_id",
-    [
-        HALTED_EXCHANGE_WITH_VALIDATED_WORK,
-        BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
-        STALE_CLAIM_PAUSED_FOR_RECONCILE,
-        UPGRADE_WITH_WORK_IN_FLIGHT,
-    ],
+    # ``case-<id>`` ids, so ``make test-tech-lead-exam EXAM_CASE=D`` selects
+    # with ``-k case-D-``: a bare ``-k D-`` (pytest -k folds case) also
+    # matched "paused-for" and "blocked-issue" in the other cases' ids.
+    [pytest.param(case_id, id=f"case-{case_id}") for case_id in EXAM_CASE_IDS],
 )
 async def test_tech_lead_exam(
     case_id: str,
@@ -127,6 +149,14 @@ async def test_tech_lead_exam(
         BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW: case_b,
         STALE_CLAIM_PAUSED_FOR_RECONCILE: case_c,
         UPGRADE_WITH_WORK_IN_FLIGHT: case_u,
+        BLOCKED_ITEMS_TRIAGED: case_d,
+        POSITIVE_APPROVAL_EXECUTES_ONCE: case_h,
+        MERGE_HELD_WORK_PROCEEDS: case_e,
+        BLOCKS_RESOLVED_UNDER_EXECUTE: case_f_resolved,
+        BLOCK_RESOLUTIONS_PROPOSED: case_g_proposed,
+        RULING_BINDS_REWORK_AND_REVIEW: case_i,
+        DECISION_STEPS_RUN_ON_APPROVAL: case_j,
+        INTEGRATION_BRANCH_LANDS_APPROVED_WORK: case_k,
     }[case_id]
     run = ExamRun(
         case=make_case(e2e_session_config),
@@ -143,15 +173,30 @@ async def test_tech_lead_exam(
             return await run_case_a(run, flows)
         if case_id == STALE_CLAIM_PAUSED_FOR_RECONCILE:
             return await run_case_c(run, flows)
+        if case_id == MERGE_HELD_WORK_PROCEEDS:
+            return await run_case_e(run, flows)
+        if case_id == INTEGRATION_BRANCH_LANDS_APPROVED_WORK:
+            return await run_case_k(run, flows)
         if case_id == UPGRADE_WITH_WORK_IN_FLIGHT:
             return await run_case_u(
                 run, flows, base_ref=os.environ.get("E2E_EXAM_BASE_REF", "origin/main")
             )
-        return await run_case_b(
-            run,
-            flows,
-            tech_lead_model=os.environ.get("E2E_EXAM_TECH_LEAD_MODEL", "opus"),
-        )
+        model = os.environ.get("E2E_EXAM_TECH_LEAD_MODEL", "opus")
+        if case_id == BLOCKED_ITEMS_TRIAGED:
+            return await run_case_d(run, flows, tech_lead_model=model)
+        if case_id in (BLOCKS_RESOLVED_UNDER_EXECUTE, BLOCK_RESOLUTIONS_PROPOSED):
+            return await run_case_resolution(
+                run, flows, tech_lead_model=model,
+                resolve_block="execute" if case_id == BLOCKS_RESOLVED_UNDER_EXECUTE else "propose",
+            )
+        if case_id == RULING_BINDS_REWORK_AND_REVIEW:
+            return await run_case_i(run, flows, tech_lead_model=model)
+        if case_id == DECISION_STEPS_RUN_ON_APPROVAL:
+            return await run_case_j(run, flows, tech_lead_model=model)
+        if case_id == POSITIVE_APPROVAL_EXECUTES_ONCE:
+            # Configured so approval verification runs; never launched (case_h_engine).
+            return await run_case_h(run, flows, tech_lead_model=model)
+        return await run_case_b(run, flows, tech_lead_model=model)
 
     # The scorecard is written before cleanup, so a GitHub hiccup in cleanup
     # cannot cost the result of an hour-long run (run_recorded).

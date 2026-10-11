@@ -408,9 +408,9 @@ def _plan_setup_labels(
 
     tech_lead_review_agent = review_config.get("tech_lead_review_agent")
     if tech_lead_review_agent:
+        from ..domain.tech_lead_approval import APPROVAL_MODEL_LABELS
         from ..domain.tech_lead_session import (
             HEALTH_REVIEW_MARKER_LABEL,
-            PROPOSED_TECH_LEAD_LABEL,
             TECH_LEAD_OBSERVATION_LABEL,
         )
         observation_color, observation_description = tech_lead_issue_label_metadata(
@@ -438,15 +438,9 @@ def _plan_setup_labels(
                     "B60205",
                     "Tech-lead review failed",
                 ),
-                # Gate label for act-level tech_lead proposals (#6779 R3): a fresh
-                # install must provision it, else a proposal issue is created
-                # with the tech_lead/filter labels but no blocking gate and becomes
-                # schedulable as ordinary tech_lead work.
-                (
-                    PROPOSED_TECH_LEAD_LABEL,
-                    "B60205",
-                    "Tech Lead proposal awaiting operator approval",
-                ),
+                # The proposal approval model (#7763; provisioned since #6779 R3):
+                # provenance, waiting state and approval labels.
+                *((label, *tech_lead_issue_label_metadata(label)) for label in APPROVAL_MODEL_LABELS),
                 # Health-review anchor marker (ADR-0031 §4): same class of
                 # orchestrator-managed workflow label; a fresh install needs it
                 # so the marker is not silently dropped at anchor creation.
@@ -474,7 +468,7 @@ def required_repo_labels(config: "Config") -> list[str]:
 
     Base workflow labels (including the orchestrator-owned ``tech-lead-needs-human``
     marker from the #6771 redesign) + priority tiers + configured worker agents
-    + tech_lead workflow labels (the #6779 R3 proposal gate, the tech-lead-agent
+    + tech_lead workflow labels (the #7763 approval model, the tech-lead-agent
     label, the health-review marker, and the #6781 observation marker) when
     tech_lead is configured. De-duped so labels appearing in more than one source
     (e.g. an agent that is also the tech lead agent) are not provisioned twice.
@@ -493,9 +487,9 @@ def required_repo_labels(config: "Config") -> list[str]:
     ]
     labels.extend(config.agents.keys())
     if config.tech_lead_review_agent:
+        from ..domain.tech_lead_approval import APPROVAL_MODEL_LABELS
         from ..domain.tech_lead_session import (
             HEALTH_REVIEW_MARKER_LABEL,
-            PROPOSED_TECH_LEAD_LABEL,
             TECH_LEAD_OBSERVATION_LABEL,
         )
 
@@ -506,7 +500,7 @@ def required_repo_labels(config: "Config") -> list[str]:
                 config.tech_lead_watch_label,
                 config.tech_lead_reviewed_label,
                 config.tech_lead_failed_label,
-                PROPOSED_TECH_LEAD_LABEL,
+                *APPROVAL_MODEL_LABELS,
                 HEALTH_REVIEW_MARKER_LABEL,
                 TECH_LEAD_OBSERVATION_LABEL,
             )

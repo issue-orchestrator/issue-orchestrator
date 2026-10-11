@@ -17,7 +17,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, cast
 
 from ..infra.logging_config import get_repo_log_path, read_log_tail
 from ..ports.budgeted_validation import BudgetedValidationReports, DisabledBudgetedValidationReports
@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from ..control.retry_history_state import ExpediteEligibility, ExpediteLane
     from ..control.tech_lead_run_activity import TechLeadRunActivity
     from ..ports import Issue
+    from ..control.orchestrator_deps import OrchestratorDeps
     from ..control.tech_lead_board import TechLeadBoardPublisher
     from ..domain.board_snapshot import (
         BoardE2EHealth,
@@ -45,6 +46,7 @@ if TYPE_CHECKING:
     from ..infra.config import Config
     from ..infra.orchestrator import Orchestrator
     from ..ports import EventSink, RepositoryHost
+    from ..ports.approval_evidence import ApprovalEvidenceReader
     from ..ports.promotion_target import PromotionTargetHost
     from ..ports.queue_cache_store import QueueCacheStore
     from ..ports.timeline_store import TimelineStore
@@ -132,6 +134,22 @@ def create_open_issue_corpus_store(config: "Config") -> "OpenIssueCorpusStore":
     return SqliteOpenIssueCorpusStore.for_repo(config.repo_root)
 
 
+def wire_tech_lead_approvals(deps: "OrchestratorDeps") -> None:
+    """ONE approval owner (#7763) for verification (the fact scan), the
+    apply-time consent re-check and settlement writes (the applier), and the
+    scheduler's admission rule. Every composition calls this, so no build can
+    verify an approval with one owner and admit it with another. It also binds
+    the block episodes the fact scan's triage check reads (#8688, #8731)."""
+    fact_gatherer, applier, scheduler = deps.fact_gatherer, deps.action_applier, deps.planner.scheduler
+    from ..control.blocked_item_custody_reader import build_block_episodes
+
+    fact_gatherer.block_episodes = build_block_episodes(fact_gatherer.config, deps)
+    approvals = fact_gatherer.approvals
+    applier.tech_lead_approvals = approvals
+    if approvals is not None:
+        scheduler.approval_admission = approvals.admits
+
+
 def wire_tech_lead_act_executors(orchestrator: "Orchestrator") -> None:
     """Post-construction wiring for act-level tech_lead executors (#6764/#6778).
 
@@ -142,13 +160,16 @@ def wire_tech_lead_act_executors(orchestrator: "Orchestrator") -> None:
     terminal handling) and the create-issue boundary can record them.
     """
     from .tech_lead_reset_retry_wiring import (
+        build_tech_lead_block_resolution_executor,
         build_tech_lead_kill_session_executor,
+        build_tech_lead_operator_decision_executor,
         build_tech_lead_reset_retry_executor,
         build_tech_lead_review_release_executor,
         build_tech_lead_validated_work_recovery_executor,
     )
 
     applier = orchestrator.deps.action_applier
+    wire_tech_lead_approvals(orchestrator.deps)
     applier.tech_lead_reset_retry = build_tech_lead_reset_retry_executor(orchestrator)
     applier.tech_lead_kill_session = build_tech_lead_kill_session_executor(orchestrator)
     applier.recover_validated_work = (
@@ -160,6 +181,10 @@ def wire_tech_lead_act_executors(orchestrator: "Orchestrator") -> None:
     applier.pattern_registry = orchestrator.deps.services.pattern_registry
     if orchestrator.deps.repository_host is not None:
         applier.release_withheld_review = build_tech_lead_review_release_executor(
+            orchestrator, orchestrator.deps.repository_host)
+        applier.apply_operator_decision = build_tech_lead_operator_decision_executor(
+            orchestrator, orchestrator.deps.repository_host)
+        applier.resolve_block = build_tech_lead_block_resolution_executor(
             orchestrator, orchestrator.deps.repository_host)
         applier.request_rework = RequestReworkExecutor(
             repository=orchestrator.deps.repository_host,
@@ -188,8 +213,8 @@ def build_expedite_lane(orchestrator: "Orchestrator") -> "ExpediteLane":
 
     Eligibility mirrors the scheduler's availability rule: a pending gated
     follow-up becomes promotable exactly when it is in the runnable queue with
-    no blocking label left (the ``proposed-tech-lead`` gate removed), i.e. when
-    it first becomes eligible for work.
+    no blocking label left and the approval owner admits it (a verified
+    approval, #7763), i.e. when it first becomes eligible for work.
     """
     from ..control.retry_history_state import (
         ExpediteEligibility,
@@ -200,10 +225,11 @@ def build_expedite_lane(orchestrator: "Orchestrator") -> "ExpediteLane":
     def eligibility() -> "ExpediteEligibility":
         state = orchestrator.state
         label_manager = orchestrator.deps.label_manager
+        admits = orchestrator.deps.planner.scheduler.approval_admission
         eligible = frozenset(
             issue.number
             for issue in state.cached_queue_issues
-            if not label_manager.get_blocking(issue.labels)
+            if not label_manager.get_blocking(issue.labels) and admits(issue)
         )
         in_scope = frozenset(issue.number for issue in state.cached_scope_issues)
         return ExpediteEligibility(eligible=eligible, in_scope=in_scope)
@@ -294,12 +320,21 @@ def create_tech_lead_fact_gatherer(
     if repository_host is None:
         return None
     from ..control.fact_gatherer import FactGatherer
+    from ..control.tech_lead_approval import TechLeadApprovals, ledger_proposal_numbers
     from ..infra.e2e_slot_policy import make_e2e_slot_reader
 
     return FactGatherer(
         config=config,
         repository_host=repository_host,
         events=events,
+        # The GitHub adapter is the approval evidence reader (#7763): label
+        # events and repository roles, read only for items carrying `approved`.
+        approvals=TechLeadApprovals(
+            evidence=cast("ApprovalEvidenceReader", repository_host),
+            records=authority.operator_approvals,
+            index=authority.proposal_index,
+            ledger_numbers=lambda: ledger_proposal_numbers(authority, config.repo),
+        ),
         tech_lead_authority=authority,
         board_publisher=board_publisher,
         promotion_target=promotion_target,
@@ -486,13 +521,31 @@ def create_board_snapshot_builder(
         tech_lead_write_health_reader=_make_tech_lead_write_health_reader(
             config, timeline_store
         ),
-        session_activity_reader=_make_session_activity_reader(working_copy),
+        session_activity_reader=_make_session_activity_reader(working_copy, _worktree_base_branch(config, working_copy)),
         clock=datetime.now,
     )
 
 
+def _worktree_base_branch(config: "Config", working_copy: "WorkingCopy") -> Callable[[], str]:
+    """The branch session worktrees are based on, resolved once on first use.
+
+    The same resolution worktree creation uses (``worktrees.base_branch_override``
+    - integration mode's branch, #8144 - else the repository's default branch),
+    so "commits ahead of base" counts this session's commits, not its base's.
+    """
+    from functools import cache
+
+    from ..infra.worktree_base import resolve_base_branch
+
+    return cache(lambda: resolve_base_branch(
+        config.repo_root, config_override=config.worktree_base_branch_override,
+        default_branch_resolver=working_copy.default_branch,
+    ).branch)
+
+
 def _make_session_activity_reader(
     working_copy: "WorkingCopy",
+    base_branch: Callable[[], str],
 ) -> "Callable[[Session], SessionActivityFacts | None]":
     """Best-effort hung-EVIDENCE probe feed for each active session (ADR-0031).
 
@@ -510,7 +563,7 @@ def _make_session_activity_reader(
 
     def _read(session: "Session") -> "SessionActivityFacts | None":
         return SessionActivityFacts(
-            commits_ahead=_session_commits_ahead(working_copy, session),
+            commits_ahead=_session_commits_ahead(working_copy, session, base_branch),
             last_activity_at=_recording_last_activity_iso(session),
         )
 
@@ -533,7 +586,7 @@ def _recording_last_activity_iso(session: "Session") -> str | None:
     return datetime.fromtimestamp(mtime).isoformat()
 
 
-def _session_commits_ahead(working_copy: "WorkingCopy", session: "Session") -> int:
+def _session_commits_ahead(working_copy: "WorkingCopy", session: "Session", base_branch: Callable[[], str]) -> int:
     """Commits on the session branch ahead of base, or the unknown sentinel.
 
     ``COMMITS_AHEAD_UNKNOWN`` when the worktree is gone or the read raises: a
@@ -550,7 +603,7 @@ def _session_commits_ahead(working_copy: "WorkingCopy", session: "Session") -> i
     try:
         if not worktree.exists():
             return COMMITS_AHEAD_UNKNOWN
-        return len(working_copy.get_commits_ahead_of_main(worktree))
+        return len(working_copy.get_commits_ahead_of(worktree, base_branch()))
     except (OSError, GitError):
         return COMMITS_AHEAD_UNKNOWN
 

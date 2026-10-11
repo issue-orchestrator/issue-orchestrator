@@ -114,6 +114,7 @@ from ..control.action_applier import ActionApplier
 from ..control.governed_label_set import GovernedLabelSet
 from ..control.fact_gatherer import FactGatherer
 from ..control.health_gate import HealthGate
+from ..control.human_gates import HumanGates
 from ..adapters.github import GitHubAuth, GitHubIssueResolver, GitHubCache, build_github_auth
 from ..adapters.github.ref_claim_adapter import (
     GitHubRefClaimAdapter,
@@ -130,7 +131,7 @@ from ..ports.provider_readiness import (
 )
 from ..execution.session_output_adapter import FileSystemSessionOutput
 from ..execution.review_artifact_reader import ManifestReviewArtifactReader
-from ..execution.internal_review_prompt import build_coder_prompt_addendum_provider
+from .bootstrap_standing_rulings import build_issue_prompt_owners
 from ..execution.thread_background_job_runner import ThreadBackgroundJobRunner
 from ..control.completion_dispatcher import (
     BackgroundCompletionDispatcher,
@@ -143,7 +144,7 @@ from .bootstrap_tech_lead import (
     create_board_snapshot_builder,
     create_rework_scanner,
     create_tech_lead_composition,
-    wire_tech_lead_act_executors,
+    wire_tech_lead_act_executors, wire_tech_lead_approvals,
 )
 from ..infra.repo_identity import state_dir
 from ..infra.secret_env import (
@@ -526,7 +527,6 @@ def build_orchestrator(
         build_budgeted_validation_services(config, command_runner, github)
         if github else (DisabledBudgetedValidation(), DisabledBudgetedValidationReports())
     )
-    coder_prompt_addendum = build_coder_prompt_addendum_provider(config)
 
     provider_readiness_probe = build_provider_readiness_probe(command_runner)
     provider_launch_sampler = build_provider_launch_sampler(
@@ -627,12 +627,18 @@ def build_orchestrator(
     # the shared-block owner: the agent's typed needs_human outcome routes
     # through it (#6999 F2 round 4).
     repository_host = require_repository_host(github)
+    launch_prompt, standing_rulings = build_issue_prompt_owners(config, repository_host, action_applier)  # #8141
     pending_work = build_pending_work_wiring(
         repo_root=config.repo_root,
         repository_host=repository_host,
         action_applier=cast("ActionApplier", action_applier),
         label_writer=repository_host,
         label_manager=label_manager, events=events)
+    human_gates = HumanGates.over(pending_work.needs_human_block, label_manager)  # #7678
+    if fact_gatherer is not None:
+        fact_gatherer.human_gates = human_gates
+    if pr_scanner is not None:
+        pr_scanner.attach_human_gates(human_gates)
 
     runtime_state = OrchestratorState()
     issue_run_ledger, issue_run_allocator = build_issue_run_services(config, session_output, working_copy)
@@ -679,7 +685,7 @@ def build_orchestrator(
             open_issue_corpus=tech_lead.open_issue_corpus,
             repository_host=github,
             needs_human_block=pending_work.needs_human_block,
-            coder_prompt_addendum=coder_prompt_addendum,
+            launch_prompt=launch_prompt, standing_rulings=standing_rulings,
         )
     )
     stack_gate = _wire_stack_publish_gate(
@@ -796,14 +802,15 @@ def build_orchestrator(
         provider_readiness_probe=provider_readiness_probe,
         provider_credentials=build_provider_credentials(),
         needs_human_block=pending_work.needs_human_block,
-        coder_prompt_addendum=coder_prompt_addendum,
+        launch_prompt=launch_prompt,
         recovery_holds=validated_work.blocks,
     )
     runtime_lifecycle = build_issue_runtime(state=runtime_state, ledger=issue_run_ledger,
         intake=completion_intake, validated_work=validated_work, working_copy=working_copy,
         sessions=session_manager, pair_registry=pair_registry, supervisor=background_job_supervisor,
         publish_recovery=publish_recovery, events=events, pull_requests=github, stuck_sweep=fact_gatherer, pending_work_claims=pending_work.claims,
-        base_branch=pull_request_base_branch(config, working_copy.default_branch, stack_gate))
+        base_branch=pull_request_base_branch(config, working_copy.default_branch, stack_gate),
+        repository=config.repo_root)
     action_applier.runtime_lifecycle = runtime_lifecycle
     action_liveness = build_action_liveness(
         config, events=events, action_applier=action_applier, label_manager=label_manager,
@@ -842,6 +849,7 @@ def build_orchestrator(
         pending_work_claims=pending_work.claims,
         claim_quarantine=pending_work.quarantine,
         needs_human_block=pending_work.needs_human_block,
+        standing_rulings=standing_rulings, launch_prompt=launch_prompt,
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
         session_controller=session_controller_instance,
@@ -958,7 +966,7 @@ def build_orchestrator_for_testing(
     completion_intake = build_completion_intake(
         config, issue_run_ledger, issue_run_allocator, working_copy, command_runner, validated_work
     )
-    coder_prompt_addendum = build_coder_prompt_addendum_provider(config)
+    launch_prompt, standing_rulings = build_issue_prompt_owners(config, github)  # #8141
 
     # A test composition must never shell out to a real provider CLI: readiness
     # defaults to the explicit "no probe wired" reader (UNKNOWN => launchable,
@@ -1062,6 +1070,7 @@ def build_orchestrator_for_testing(
         action_applier.background_job_supervisor = background_job_supervisor
         action_applier.tech_lead_ops = tech_lead_authority_for_testing
         action_applier.promotion_target = tech_lead.promotion_target
+        action_applier.standing_rulings = standing_rulings  # integration merges re-judge by it (#8144)
 
     def _cancel_review_exchange_for_testing(issue_number: int, reason: str) -> ReviewExchangeCancellation:
         return action_applier.runtime_lifecycle.cancel_exchange(issue_number, reason)
@@ -1070,6 +1079,9 @@ def build_orchestrator_for_testing(
         repo_root=config.repo_root, repository_host=github,
         action_applier=action_applier, label_writer=github,
         label_manager=label_manager, events=events)
+    human_gates = HumanGates.over(pending_work.needs_human_block, label_manager)  # #7678
+    pr_scanner.attach_human_gates(human_gates)
+    fact_gatherer.human_gates = human_gates
 
     if action_applier is not None:
         action_applier.completion_intake = completion_intake
@@ -1087,7 +1099,7 @@ def build_orchestrator_for_testing(
             pair_registry_for_testing,
             completion_intake=completion_intake,
             turn_mailbox=turn_mailbox,
-            coder_prompt_addendum=coder_prompt_addendum,
+            launch_prompt=launch_prompt,
         ),
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),
@@ -1102,6 +1114,7 @@ def build_orchestrator_for_testing(
         runtime_identity=runtime_identity.resolve_runtime_identity(),
         tech_lead_authority=tech_lead_authority_for_testing,
         needs_human_block=pending_work.needs_human_block,
+        standing_rulings=standing_rulings,
     )
     stack_gate = _wire_stack_publish_gate(
         completion_processor, _dependency_evaluator, github, command_runner, config,
@@ -1219,7 +1232,7 @@ def build_orchestrator_for_testing(
         agent_callback_endpoint=agent_callback_endpoint,
         provider_readiness_probe=provider_readiness_probe,
         needs_human_block=pending_work.needs_human_block,
-        coder_prompt_addendum=coder_prompt_addendum,
+        launch_prompt=launch_prompt,
     )
     completion_handler_factory = build_completion_handler_factory(
         config,
@@ -1236,7 +1249,8 @@ def build_orchestrator_for_testing(
         intake=completion_intake, validated_work=validated_work, working_copy=working_copy,
         sessions=session_manager, pair_registry=pair_registry_for_testing, supervisor=background_job_supervisor,
         publish_recovery=publish_recovery, events=events, pull_requests=github, stuck_sweep=fact_gatherer, pending_work_claims=pending_work.claims,
-        base_branch=pull_request_base_branch(config, working_copy.default_branch, stack_gate))
+        base_branch=pull_request_base_branch(config, working_copy.default_branch, stack_gate),
+        repository=config.repo_root)
     action_applier.runtime_lifecycle = runtime_lifecycle
     action_liveness = build_action_liveness(
         config, events=events, action_applier=action_applier, label_manager=label_manager,
@@ -1268,6 +1282,7 @@ def build_orchestrator_for_testing(
         pending_work_claims=pending_work.claims,
         claim_quarantine=pending_work.quarantine,
         needs_human_block=pending_work.needs_human_block,
+        standing_rulings=standing_rulings, launch_prompt=launch_prompt,
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
         session_controller=session_controller,
@@ -1298,5 +1313,5 @@ def build_orchestrator_for_testing(
         action_liveness=action_liveness,
         services=infra_services,
     )
-
+    wire_tech_lead_approvals(deps)
     return Orchestrator(config=config, deps=deps, state=runtime_state)

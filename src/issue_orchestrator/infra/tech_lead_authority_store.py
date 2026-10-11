@@ -34,6 +34,7 @@ from . import tech_lead_patterns_sql as patterns
 from . import tech_lead_proposal_sql
 from ..domain.tech_lead_proposal_creation import PendingTechLeadProposal
 from .scoped_rework_receipts import load_receipt, save_receipt, list_receipts
+from ..ports.operator_decision_retries import DecisionRetryState
 
 import json
 import logging
@@ -60,6 +61,7 @@ from ..domain.tech_lead_session import (
     TechLeadLaunchAuthority,
     TechLeadShippedFixSummary,
 )
+from ..ports.engine_audit import CaseFileRecord
 from ..ports.tech_lead_authority import (
     TechLeadAuthorityConflictError,
     TechLeadOpConflictError as TechLeadOpConflictError,
@@ -68,12 +70,17 @@ from ..ports.tech_lead_authority import (
     UnknownTechLeadPatternError,
 )
 from .repo_identity import state_dir
+from . import tech_lead_block_resolutions_sql as block_resolutions
 from . import tech_lead_dispositions_sql as dispositions
 from . import tech_lead_pending_intents as pending_intents
 from . import tech_lead_shipped_fixes_sql as shipped_fixes
 from .sqlite_connection import open_sqlite
 from .tech_lead_authority_schema import initialize_tech_lead_authority_schema
 from .tech_lead_charter_ledger_store import SqliteTechLeadCharterLedger
+from .tech_lead_operator_approvals_store import (
+    SqliteOperatorApprovalRecords,
+    SqliteProposalIssueIndex,
+)
 from .tech_lead_publication_lock import disposition_publication
 
 logger = logging.getLogger(__name__)
@@ -106,6 +113,17 @@ def _promotion_from_row(row: sqlite3.Row) -> PromotedFinding:
     )
 
 
+#: The tables a cold reader (``io engine-audit``, #7490) needs to find in a
+#: copy of this store's database before opening the store on it: opening
+#: creates missing tables, which would read a damaged file as an empty one.
+AUDIT_TABLES = (
+    "tech_lead_charter_decisions",
+    "tech_lead_promoted_findings",
+    "tech_lead_patterns",
+    "tech_lead_pattern_observations",
+)
+
+
 class SqliteTechLeadAuthorityStore:
     """Persists per-run tech_lead launch authority across restarts."""
 
@@ -117,11 +135,27 @@ class SqliteTechLeadAuthorityStore:
         self._charter_ledger = SqliteTechLeadCharterLedger(
             connection=self._get_connection, transaction=self._transaction
         )
+        self._operator_approvals = SqliteOperatorApprovalRecords(
+            connection=self._get_connection, transaction=self._transaction
+        )
+        self._proposal_index = SqliteProposalIssueIndex(
+            connection=self._get_connection, transaction=self._transaction
+        )
 
     @property
     def charter_ledger(self) -> SqliteTechLeadCharterLedger:
         """Charter decisions (#7330), sharing this store's file, lock and transactions."""
         return self._charter_ledger
+
+    @property
+    def operator_approvals(self) -> SqliteOperatorApprovalRecords:
+        """Control Center approvals (#7763), sharing this store's file and lock."""
+        return self._operator_approvals
+
+    @property
+    def proposal_index(self) -> SqliteProposalIssueIndex:
+        """The approval scope's proposal index (#7763), sharing this store's file and lock."""
+        return self._proposal_index
 
     @classmethod
     def for_repo(cls, repo_root: Path) -> "SqliteTechLeadAuthorityStore":
@@ -288,6 +322,54 @@ class SqliteTechLeadAuthorityStore:
             return None
         return StoredTechLeadOp.from_dict(json.loads(row["op"]))
 
+    def begin_decision_retry(self, *, proposal_issue_number: int) -> None:
+        self._set_decision_retry(proposal_issue_number, DecisionRetryState.BEGUN)
+
+    def commit_decision_retry(self, *, proposal_issue_number: int) -> None:
+        self._set_decision_retry(proposal_issue_number, DecisionRetryState.COMMITTED)
+
+    def abandon_decision_retry(self, *, proposal_issue_number: int) -> None:
+        with self._transaction() as tx:
+            tx.execute(
+                "DELETE FROM tech_lead_decision_retries WHERE proposal_issue_number = ?",
+                (proposal_issue_number,),
+            )
+
+    def decision_retry_state(self, *, proposal_issue_number: int) -> DecisionRetryState | None:
+        row = self._get_connection().execute(
+            "SELECT state FROM tech_lead_decision_retries WHERE proposal_issue_number = ?",
+            (proposal_issue_number,),
+        ).fetchone()
+        return None if row is None else DecisionRetryState(str(row[0]))
+
+    def _set_decision_retry(self, proposal_issue_number: int, state: DecisionRetryState) -> None:
+        with self._transaction() as tx:
+            tx.execute(
+                "INSERT OR REPLACE INTO tech_lead_decision_retries"
+                " (proposal_issue_number, state, recorded_at) VALUES (?, ?, ?)",
+                (proposal_issue_number, state.value, datetime.now(timezone.utc).isoformat()),
+            )
+
+    def begin_block_resolution(
+        self, *, decision_id: str, issue_number: int, causes: frozenset[str]
+    ) -> None:
+        with self._transaction() as tx:
+            block_resolutions.begin(tx, decision_id=decision_id, issue_number=issue_number, causes=causes)
+
+    def commit_block_resolution(self, *, decision_id: str) -> None:
+        with self._transaction() as tx:
+            block_resolutions.commit(tx, decision_id=decision_id)
+
+    def abandon_block_resolution(self, *, decision_id: str) -> None:
+        with self._transaction() as tx:
+            block_resolutions.abandon(tx, decision_id=decision_id)
+
+    def block_resolution_state(self, *, decision_id: str) -> DecisionRetryState | None:
+        return block_resolutions.state(self._get_connection(), decision_id=decision_id)
+
+    def resolved_causes(self, *, issue_number: int) -> dict[str, frozenset[str]]:
+        return block_resolutions.resolved_causes(self._get_connection(), issue_number=issue_number)
+
     def discard_op(self, *, issue_number: int) -> None:
         """Remove a proposal issue's op row (once-only owner; no-op if absent)."""
         with self._transaction() as tx:
@@ -295,6 +377,10 @@ class SqliteTechLeadAuthorityStore:
                 "DELETE FROM tech_lead_proposal_ops WHERE issue_number = ?",
                 (issue_number,),
             ).rowcount
+            tx.execute(
+                "DELETE FROM tech_lead_decision_retries WHERE proposal_issue_number = ?",
+                (issue_number,),
+            )
         if deleted:
             logger.info("[tech_lead] Discarded proposal op: issue=#%d", issue_number)
 
@@ -471,6 +557,10 @@ class SqliteTechLeadAuthorityStore:
 
     def list_pattern_evidence(self) -> tuple[PatternEvidence, ...]:
         return patterns.list_evidence(self._get_connection())
+
+    def list_case_file_records(self) -> tuple[CaseFileRecord, ...]:
+        """Every case file with its observations (#7490, the improver's staging)."""
+        return patterns.list_case_file_records(self._get_connection())
 
     # -- Promoted findings (#6957) ------------------------------------------
 

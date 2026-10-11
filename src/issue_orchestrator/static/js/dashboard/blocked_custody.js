@@ -31,7 +31,7 @@ function custodyAgeText(custody) {
 
 function renderCustodyCharterHtml(charter) {
     const proposal = charter.proposal_issue_number > 0
-        ? `<dt>Proposal</dt><dd>#${charter.proposal_issue_number}</dd>`
+        ? `<dt>Proposal</dt><dd>#${charter.proposal_issue_number} <button type="button" class="custody-open-tech-lead" data-tech-lead-proposal="${charter.proposal_issue_number}">Open in the Tech lead page</button></dd>`
         : '';
     const lifecycle = charter.lifecycle_label
         ? ` (${escapeHtml(charter.lifecycle_label)})`

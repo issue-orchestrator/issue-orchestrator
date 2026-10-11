@@ -420,8 +420,16 @@ class E2EFlow:
         title: str,
         labels: list[str],
         body: str = "Created mid-test.",
+        *,
+        on_created: Callable[[int], None] | None = None,
+        ensure_labels: bool = True,
     ) -> tuple[IssueKey, int]:
         """Create a GitHub issue and return (key, issue_number).
+
+        ``on_created`` runs with the issue number the moment GitHub answers
+        the create, before the visibility wait. ``ensure_labels=False`` skips
+        the per-issue label writes for a caller that ran ``ensure_labels``
+        over every label (the filter label included) first.
 
         Returns:
             Tuple of (IssueKey, issue_number) - the key uses external_id from title prefix,
@@ -430,7 +438,9 @@ class E2EFlow:
         merged = list(labels)
         if self.filter_label and self.filter_label not in merged:
             merged.append(self.filter_label)
-        issue_key, issue_number = inflight_create(self.repo, title, merged, body=body)
+        issue_key, issue_number = inflight_create(
+            self.repo, title, merged, body=body, on_created=on_created, ensure_labels=ensure_labels
+        )
         self._created_issues.append(issue_number)
         self._created_issue_labels[issue_number] = tuple(merged)
         if self.watcher is not None:

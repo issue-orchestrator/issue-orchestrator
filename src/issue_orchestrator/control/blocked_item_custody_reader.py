@@ -30,9 +30,10 @@ policy turns into "custody unknown" — never into a guessed state.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable, Iterable, Mapping, Sequence, TypeVar
+from typing import TYPE_CHECKING, Callable, Iterable, Mapping, Sequence, TypeVar, cast
 
 from ..domain.blocked_item_custody import BlockedCustodyBoard, CustodyStaleThresholds
 from ..domain.host_rate_limit import episode_key
@@ -59,9 +60,12 @@ if TYPE_CHECKING:
     from ..domain.tech_lead_charter_decisions import TechLeadCharterDecision
     from ..infra.config import Config
     from .orchestrator_deps import OrchestratorDeps
+    from ..ports.label_application import LabelApplicationReader
+    from .block_episodes import BlockEpisodes
     from ..ports.blocked_item_custody import ParkedActionReader
     from ..ports.provider_resilience import ProviderCircuitStatusReader
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
+    from .blocked_item_triage import StateBlockedItemTriage
     from .label_manager import LabelManager
 
 logger = logging.getLogger(__name__)
@@ -526,3 +530,49 @@ __all__ = [
     "StateBlockedItemCustodyReader",
     "build_blocked_item_custody_reader",
 ]
+
+
+def build_blocked_item_triage(
+    config: "Config",
+    deps: "OrchestratorDeps",
+    state: Callable[[], "OrchestratorState"],
+) -> "StateBlockedItemTriage":
+    """Bind the triage owner (#7593) to the same read-only owners custody reads."""
+    from .blocked_item_triage import StateBlockedItemTriage, open_proposal_index
+
+    return StateBlockedItemTriage(
+        config=config,
+        state=state,
+        labels=deps.label_manager,
+        needs_human_causes=deps.needs_human_block.recorded_causes,
+        charter_ledger=deps.tech_lead_authority.charter_ledger,
+        open_proposals=lambda: open_proposal_index(deps.tech_lead_authority),
+        timeline_reader=lambda issue, limit: deps.timeline_store.read(issue, limit=limit),
+        standing_rulings=deps.standing_rulings.active,
+        episodes=build_block_episodes(config, deps),
+    )
+
+
+def build_block_episodes(config: "Config", deps: "OrchestratorDeps") -> "BlockEpisodes":
+    """The block-episode owner (#8688, #8731): the needs-human generations of
+    the deps' pending-work ledger and every other blocking label's application,
+    verified against GitHub's issue events and rechecked on the tick once per
+    health-review interval."""
+    from .block_episodes import BlockEpisodes
+    from .health_review_trigger import health_review_interval_minutes
+    from .needs_human_episodes import NeedsHumanEpisodes
+
+    def host() -> "LabelApplicationReader":
+        return cast("LabelApplicationReader", deps.repository_host)
+
+    return BlockEpisodes(
+        needs_human=NeedsHumanEpisodes(
+            store=deps.pending_work_claims,
+            label_applications=lambda number, labels: host().label_applications(number, labels),
+            labels=deps.label_manager,
+        ),
+        label_applications=lambda number, labels: host().label_applications(number, labels),
+        labels=deps.label_manager,
+        clock=time.time,
+        recheck_seconds=lambda: health_review_interval_minutes(config) * 60,
+    )

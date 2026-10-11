@@ -1,6 +1,7 @@
 """Concrete decision lowering after tech-lead authority and dedup policy."""
 from __future__ import annotations
 from typing import TYPE_CHECKING
+from ..domain.tech_lead_approval import with_proposal_marker
 from ..domain.tech_lead_artifacts import ProposedTechLeadAction
 from ..domain.tech_lead_comment import TechLeadCommentIntent, provenance_footer
 from ..domain.tech_lead_session import TechLeadDisposition, TechLeadCreationOrigin
@@ -55,7 +56,7 @@ def concrete_tech_lead_actions(
         # A gate reason both gates the issue and explains itself in the operator-
         # facing body — never a bare boolean whose meaning callers must guess.
         gated = gate_reason is not None
-        gated_body = f"{body}\n\n---\n> {gate_reason}" if gated else body
+        gated_body = with_proposal_marker(f"{body}\n\n---\n> {gate_reason}") if gated else body
         return [
             CreateTechLeadIssueAction(
                 title=apply_tech_lead_priority_prefix(config, action.title or ""),

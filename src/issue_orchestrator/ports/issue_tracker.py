@@ -179,6 +179,15 @@ class IssueTracker(Protocol):
         """
         ...
 
+    def issue_comment_bodies_containing(self, issue_number: int, needle: str) -> tuple[str, ...]:
+        """Every comment body on the issue/PR that contains ``needle``.
+
+        Scans **all** pages, uncached, like :meth:`issue_comment_marker_present`,
+        and raises rather than returning a partial answer: callers decide from
+        what is ABSENT (a durable resolution marker, #7658).
+        """
+        ...
+
     def issue_closed_on_or_after(self, issue_number: int, timestamp: str) -> bool:
         """Report whether the issue has a ``closed`` event at/after ``timestamp``.
 

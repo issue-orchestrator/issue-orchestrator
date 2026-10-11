@@ -1,0 +1,189 @@
+"""What ``io engine-audit`` reads, as narrow read-only ports (#7490).
+
+Each port is the subset of an owning store's reads the audit needs, so the
+audit gathers facts through the stores that own them, never through SQL that
+duplicates their knowledge. Every one is satisfied by the store opened on a
+snapshot of the engine's database, so none of them can reach the live file.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Collection, Iterable, Sequence
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Protocol
+
+from ..domain.action_liveness import LivenessRow
+from ..domain.tech_lead_charter_decisions import TechLeadCharterDecision
+from ..domain.tech_lead_findings import PromotedFinding
+from ..domain.tech_lead_run_record import TechLeadRunRecord
+from .action_liveness import PendingPause
+from .pending_work_claim_store import (
+    NeedsHumanCauseRow,
+    QuarantineRecord,
+    UnreadableClaim,
+    UnresolvedClaim,
+)
+from .pull_request_tracker import PRInfo
+from .timeline_store import TimelineRecord
+
+
+@dataclass(frozen=True, slots=True)
+class UnresolvedWorkRecord:
+    record_id: str
+    issue_number: int
+    state: str
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedWorkCensus:
+    """Every record counted by ``(state, resolution_kind)``, and the unresolved ones."""
+
+    by_state_resolution: tuple[tuple[str, str, int], ...]
+    unresolved: tuple[UnresolvedWorkRecord, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class OpenIssueLabels:
+    """One open issue, its title and every label on it."""
+
+    number: int
+    title: str
+    labels: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CaseFileObservation:
+    observation_id: str
+    recorded_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class CaseFileRecord:
+    """One pattern case file as the tech lead's ledger holds it, with its
+    diagnosis (the body the tech lead wrote) and every observation of it."""
+
+    signature: str
+    issue_number: int
+    recorded_at: str
+    observation_count: int
+    fix_class: str
+    area: str
+    diagnosis: str
+    disposition: str
+    retirement_pending: bool
+    observations: tuple[CaseFileObservation, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TimelineEvent:
+    issue_number: int
+    record: TimelineRecord
+
+
+class ValidatedWorkCensusReader(Protocol):
+    def census(self) -> ValidatedWorkCensus: ...
+
+
+class ActionLivenessAuditReader(Protocol):
+    def all_rows(self) -> tuple[LivenessRow, ...]: ...
+
+    def pending_pauses(self) -> tuple[PendingPause, ...]: ...
+
+
+class CharterAuditReader(Protocol):
+    def role_outcome_counts(self) -> tuple[tuple[str, str, int], ...]: ...
+
+    def effect_counts(self) -> tuple[tuple[str, str, str, str, int], ...]: ...
+
+    def list_recent(self, *, limit: int = 100) -> tuple[TechLeadCharterDecision, ...]: ...
+
+    def list_all(self) -> tuple[TechLeadCharterDecision, ...]:
+        """Every recorded decision, oldest decided first. Nothing prunes the
+        ledger, so from its first record on it is complete."""
+        ...
+
+
+class CaseFileAuditReader(Protocol):
+    def list_case_file_records(self) -> tuple[CaseFileRecord, ...]:
+        """Every case file with its observations. Nothing prunes either."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class TechLeadRunHistoryRead:
+    """Every run record read, and how many rows could not be read back."""
+
+    records: tuple[TechLeadRunRecord, ...]
+    unreadable: int
+
+
+class TechLeadRunAuditReader(Protocol):
+    def all_runs(self) -> TechLeadRunHistoryRead: ...
+
+
+class PromotionAuditReader(Protocol):
+    def list_promotions(self) -> tuple[PromotedFinding, ...]: ...
+
+
+class ClaimAuditReader(Protocol):
+    def list_unresolved_claims(self) -> tuple[UnresolvedClaim, ...]: ...
+
+    def list_unreadable_claims(self) -> tuple[UnreadableClaim, ...]: ...
+
+    def list_quarantines(self) -> tuple[QuarantineRecord, ...]: ...
+
+
+class TimelineAuditReader(Protocol):
+    def events_between(self, start: datetime, end: datetime) -> Iterable[TimelineEvent]:
+        """Every issue's events from ``start`` to ``end`` inclusive, oldest first."""
+        ...
+
+
+class TimelineIssueHistoryReader(Protocol):
+    def issue_events(self, issue_numbers: Collection[int], end: datetime) -> Iterable[TimelineEvent]:
+        """Every RETAINED event of ``issue_numbers`` up to ``end``, oldest
+        first. The store trims each issue's oldest rows, so this is a suffix
+        of the issue's history: an event not returned may have been trimmed."""
+        ...
+
+
+class NeedsHumanCauseAuditReader(Protocol):
+    def list_needs_human_causes(self) -> tuple[NeedsHumanCauseRow, ...]:
+        """Every recorded cause of the shared needs-human block, as stored."""
+        ...
+
+
+class OpenWorkHost(Protocol):
+    """The two repository listings the audit reads: open issues and open PRs.
+
+    Both are cursor-paged and complete or raise (a rate limit raises
+    :class:`~.repository_host.RepositoryHostRateLimitedError`).
+    """
+
+    def list_open_issue_labels_complete(self) -> Sequence[OpenIssueLabels]: ...
+
+    def list_open_prs_complete(self) -> Sequence[PRInfo]: ...
+
+
+__all__ = [
+    "ActionLivenessAuditReader",
+    "CaseFileAuditReader",
+    "CaseFileObservation",
+    "CaseFileRecord",
+    "CharterAuditReader",
+    "ClaimAuditReader",
+    "NeedsHumanCauseAuditReader",
+    "OpenIssueLabels",
+    "OpenWorkHost",
+    "PromotionAuditReader",
+    "TechLeadRunAuditReader",
+    "TechLeadRunHistoryRead",
+    "TimelineAuditReader",
+    "TimelineEvent",
+    "TimelineIssueHistoryReader",
+    "UnresolvedWorkRecord",
+    "ValidatedWorkCensus",
+    "ValidatedWorkCensusReader",
+]

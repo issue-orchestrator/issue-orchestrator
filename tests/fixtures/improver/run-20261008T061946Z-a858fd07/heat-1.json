@@ -1,0 +1,212 @@
+{
+  "schema_version": 6,
+  "engine_commit": "7404be40d0488815b4eaa1567f739052747460bc",
+  "engine_started_at": "2026-10-07T23:08:37.783320Z",
+  "findings": [
+    {
+      "id": "triage-watermark-survives-block-lift-and-reblock",
+      "engine": {"id": "repo-89afeb99eff0542e787f28211c93f58cd90aa3e0fe9d2bf3acd6fcdc63e2fb73", "repo": "porchpin/porchpin"},
+      "anomaly_keys": [{"kind": "attention_label", "subject": "#450", "signature": "needs-human"}],
+      "present_after_start": "true",
+      "recurs_after_start": "unknown",
+      "origin": "before_start",
+      "observed": [
+        {"at": "2026-10-08T06:19:46.381977+00:00", "kind": "snapshot", "source": "audit.json#/anomalies/11", "supports": "present_after_start"},
+        {"at": "2026-10-04T11:55:04.038248Z", "kind": "occurrence", "source": "blocked-items.json#/items/3/blocking_labels/0/since_at", "supports": "origin"}
+      ],
+      "grading_window": {"from": "2026-10-04T11:55:04.038248Z", "to": "2026-10-08T06:19:46.381977+00:00"},
+      "classification": "new_defect",
+      "stall_point": "noticed_not_acted",
+      "stall_evidence": [
+        "decision:20261004-143155Z-eb95680fb34e40ef83a4ca28dd61d723:A1",
+        "decision:20261004-123129Z-6632d8e8bfe3405ab30e63a8ed7836d5:A2",
+        "case-file:triage-in-force-survives-block-lift-and-reblock",
+        "tech-lead-run:20261008-011117Z-c6dca284bae545878c14001096f10de7:tech-lead-1",
+        "tech-lead-run:20261008-051607Z-0970d3313f0144709ab7878e338551f8:tech-lead-1"
+      ],
+      "output": "capability_issue",
+      "root_cause": {
+        "owner": "control/blocked_item_triage.py:owed_triages",
+        "why": "owed_triages treats an item's latest triage as still in force when prior.fingerprint == block_fingerprint(...) and the effect is applied, approved or declined. block_fingerprint (domain/blocked_item_triage.py) is only the sorted blocking label names, so it cannot tell one block episode from the next. On #450 the operator approved proposal #487, and the engine removed needs-human at 2026-10-04T14:37Z. A health review at 14:50Z still recorded a post_comment triage (explained, applied) with fingerprint 'needs-human': the cached labels were stale, which is #8113's shape and is contributory here. On 2026-10-08T00:54Z rework-450 ended needs_human with a new question, 're-run PR #521's failed Windows job', and the engine put needs-human back. The new fingerprint is again 'needs-human', the same as the 10-04 triage, so #450 counts as in force and no health review has been granted it since. The tech lead saw this itself: health review 011117Z T6 says 'the triage watermark keys on labels only, so #491's 10-04 triage covers #450's new block'. It then repeated advice on the anchor every hour and never applied a triage action on #450. The same class hits any item whose block is lifted (an approval, resolve_block or retry) and later re-raised under the same label. That is the normal path for an approved operator_decision followed by a new agent question.",
+        "same_shape_sites": [
+          "domain/blocked_item_triage.py:block_fingerprint",
+          "domain/blocked_item_triage.py:PriorTriage.in_force",
+          "control/blocked_item_triage.py:label_blocked_work_items"
+        ]
+      },
+      "reproduction": {
+        "kind": "unit_test",
+        "harness": "tests/unit/control/test_blocked_item_triage.py",
+        "planted_state": "Charter ledger: the latest triage for #450 is a post_comment with triage_class explained, effect applied, triage_fingerprint 'needs-human', decided at T0 (2026-10-04T14:50:13Z). The engine's own records then show the block lifted after T0: needs-human removed at T1 > T0 when an approved operator decision was applied. A rework completion then re-raised it at T2 > T1: an issue.needs_human event with a new agent question, a needs-human cause row recorded at T2, and the label added by completion_processor's add_needs_human_label. Cached scope issue #450: open, agent:backend, labels [agent:backend, needs-human]. No open proposal for #450.",
+        "assertions": [
+          "owed_triages(...) returns #450 among the owed items, not in the in-force tuple",
+          "the health-review TriageAgenda built from that state grants #450 (agenda.grants contains issue_number 450)"
+        ],
+        "fails_on": "7404be40d0488815b4eaa1567f739052747460bc"
+      },
+      "proposal": "Key the triage watermark to the block episode, not only to its labels. A prior triage is in force only if it was decided after the current block's onset: the latest blocking-label add, agent question or needs-human cause recorded for the item. One way is to add that onset to block_fingerprint and to label_blocked_work_items, so a lift followed by a re-block always owes a new triage.",
+      "missing_evidence": []
+    },
+    {
+      "id": "non-partial-receipt-publishes-closing-pr-on-partially-delivered-issue",
+      "engine": {"id": "repo-89afeb99eff0542e787f28211c93f58cd90aa3e0fe9d2bf3acd6fcdc63e2fb73", "repo": "porchpin/porchpin"},
+      "anomaly_keys": [{"kind": "attention_label", "subject": "#327", "signature": "needs-human"}],
+      "present_after_start": "true",
+      "recurs_after_start": "unknown",
+      "origin": "unknown",
+      "observed": [
+        {"at": "2026-10-08T06:19:46.381977+00:00", "kind": "snapshot", "source": "audit.json#/anomalies/10", "supports": "present_after_start"}
+      ],
+      "grading_window": {"from": "unknown", "to": "2026-10-08T06:19:46.381977+00:00"},
+      "classification": "new_defect",
+      "stall_point": "acted_not_effective",
+      "stall_evidence": [
+        "decision:20261007-132728Z-9fcd39986967493e8628d96fe0ab650e:A2",
+        "decision:20261004-183512Z-05b7f5c9fab7470194dd7b19ece09057:A2",
+        "decision:20261008-021147Z-c54f225608284440a49301a47d4e586a:A2",
+        "case-file:partial-flag-dropped-on-forced-completion-closes-multi-pr-issue",
+        "tech-lead-run:20261008-021147Z-c54f225608284440a49301a47d4e586a:tech-lead-1"
+      ],
+      "output": "capability_issue",
+      "root_cause": {
+        "owner": "control/partial_delivery_guard.py:PartialDeliveryGuard.refusal",
+        "why": "#327 is a multi-PR issue. Slices 1 and 2 merged as 'Refs #327' PRs #511 and #515. Slice 3a's review exchange halted, and the coder's forced last receipt omitted --partial (partial_pr=false, while the six earlier #327 records are true). Recovery therefore published PR #525 with body line 1 'Closes #327'. PartialDeliveryGuard.refusal returns None whenever the receipt does not claim partial and no commit closes the issue (lines 96-97). It never checks whether the issue was already delivered in part, so --partial depends on one receipt and nothing compares it with the issue's own history. The tech lead's remedies did take effect: resolve_block was applied on 10-05 and release_withheld_review on 10-07. The item is still held, though. The agent's ruling question (proposal #530, awaiting approval) can only move after the operator hand-edits PR #525's line 1 to 'Refs #327' and swaps needs-human for needs-rework on the PR. Otherwise merging closes #327 with slice 3b and the route unbuilt, and a later --partial rework is refused by honors_partial_claim.",
+        "same_shape_sites": [
+          "control/pull_request_preparation.py:partial_delivery_refusal",
+          "control/retained_completion_preparation.py:RetainedCompletionPreparation.prepare"
+        ]
+      },
+      "reproduction": {
+        "kind": "unit_test",
+        "harness": "tests/unit/control/test_partial_delivery_guard.py",
+        "planted_state": "Issue #327 has two merged PRs (#511 and #515) whose body line 1 is 'Refs #327', which declares partial delivery. A new completion record for #327 has partial_pr=false and a branch whose commit messages close nothing. There is no open PR on the branch. The fake GitHub host answers the issue's merged-PR history.",
+        "assertions": [
+          "Preparing the publication of that record (PullRequestPreparation, or the retained-completion path recovery uses) does not yield a PR body whose first line is 'Closes #327'; it either refuses the publication or publishes 'Refs #327'"
+        ],
+        "fails_on": "7404be40d0488815b4eaa1567f739052747460bc"
+      },
+      "proposal": "When an issue already has a merged PR that declares partial delivery (Refs #n), treat a completion without --partial as partial by default: publish 'Refs #n' and say so in the completion result. Do the same in the recovery path, so a forced receipt can no longer turn a multi-PR issue into a closing PR that the operator must hand-edit.",
+      "missing_evidence": []
+    },
+    {
+      "id": "handed-over-provisioning-block-onset-unretained",
+      "engine": {"id": "repo-89afeb99eff0542e787f28211c93f58cd90aa3e0fe9d2bf3acd6fcdc63e2fb73", "repo": "porchpin/porchpin"},
+      "anomaly_keys": [
+        {"kind": "attention_label", "subject": "#179", "signature": "needs-human"},
+        {"kind": "attention_label", "subject": "#179", "signature": "tech-lead-needs-human"}
+      ],
+      "present_after_start": "true",
+      "recurs_after_start": "unknown",
+      "origin": "before_start",
+      "observed": [
+        {"at": "2026-10-08T06:19:46.381977+00:00", "kind": "snapshot", "source": "audit.json#/anomalies/9", "supports": "present_after_start"},
+        {"at": "2026-10-08T06:19:46.381977+00:00", "kind": "snapshot", "source": "audit.json#/anomalies/12", "supports": "present_after_start"},
+        {"at": "2026-09-02T22:55:06.181348Z", "kind": "occurrence", "source": "blocked-items.json#/items/0/blocking_labels/0/since_at", "supports": "origin"}
+      ],
+      "grading_window": {"from": "2026-09-02T22:55:06.181348Z", "to": "2026-10-08T06:19:46.381977+00:00"},
+      "classification": "unknown",
+      "stall_point": "unknown",
+      "stall_evidence": ["decision:20261003-035343Z-85978f3ff5f24e08b2621dd43bc29ad8:A2"],
+      "output": "needs_investigation",
+      "missing_evidence": [
+        "When tech-lead-needs-human was put on #179: the engine's timeline does not retain it (since_at null). Without it, the applied escalate_to_human of 2026-10-03T04:13Z cannot be shown to cover the current block, so #179 cannot be shown to be awaiting the operator",
+        "Whether the operator has started the Cloudflare provisioning checklist in #179's body (D1 database, Access applications, deploy/service tokens, the cloud-test GitHub environment). This is genuine human account work",
+        "Why #179's only recorded needs-human cause is session_lifecycle 'stuck-sweep recovery budget exhausted (#6824)' when the body says the block is human provisioning: the cause store misdescribes the block the operator owns"
+      ]
+    }
+  ],
+  "blocked_items": [
+    {
+      "number": 179,
+      "disposition": "finding",
+      "finding_id": "handed-over-provisioning-block-onset-unretained",
+      "why": "Genuine human work: the issue body's provisioning checklist (Cloudflare D1, Access, tokens, the cloud-test GitHub environment) is account work only the maintainer can do. The tech lead handed it over with an applied escalate_to_human on 2026-10-03 and has since only commented. The engine still records the cause as a stuck-sweep budget exhaustion. Because the tech-lead-needs-human label's onset is not retained, the hand-over cannot be shown to cover the current block.",
+      "downstream": []
+    },
+    {
+      "number": 262,
+      "disposition": "awaiting_operator",
+      "evidence": ["decision:20261004-115532Z-dae5639181c044b9b9913e18d0a48579:A2"],
+      "why": "recovery-pending since 2026-10-04T09:03Z, with three parked validated-work records. The tech lead triaged it with propose_decision A2 at 12:06Z the same day. Proposal #485 is filed and still awaiting the operator's approval, now 90 hours later.",
+      "downstream": []
+    },
+    {
+      "number": 327,
+      "disposition": "finding",
+      "finding_id": "non-partial-receipt-publishes-closing-pr-on-partially-delivered-issue",
+      "why": "rework-327 asked the operator to amend ruling m-55cb838d2f51 (D1 row versus DO contact cannot be atomic). That is a genuine operator decision, and the tech lead proposed it as #530, still awaiting approval. The same question also asks the operator to hand-edit draft PR #525's line 1 from 'Closes #327' to 'Refs #327' and swap its labels. Those steps exist only because a forced non-partial receipt let recovery publish a closing PR on a multi-PR issue (an io defect). The needs-human label's onset is not retained.",
+      "downstream": []
+    },
+    {
+      "number": 450,
+      "disposition": "finding",
+      "finding_id": "triage-watermark-survives-block-lift-and-reblock",
+      "why": "rework-450 ended needs_human at 2026-10-08T00:54Z, after the engine start. It asked a person to re-run PR #521's one red CI job ('workspace watch · windows process tree', run 37709091572, still attempt 1). This is mechanical work a person must do only because io has no re-run action. The tech lead was never granted the new block: the triage watermark keys on labels only, so a 10-04 'needs-human' triage still counts as in force. Since then, every hourly health review has repeated 're-run and merge by hand' on its own anchor and applied no triage on #450. The staged since_at (10-04) is stale: GitHub shows the label re-added at 2026-10-08T00:54:00Z.",
+      "downstream": []
+    }
+  ],
+  "design_findings": [
+    {
+      "id": "no-engine-path-to-rerun-a-failed-ci-job",
+      "engine": {"id": "repo-89afeb99eff0542e787f28211c93f58cd90aa3e0fe9d2bf3acd6fcdc63e2fb73", "repo": "porchpin/porchpin"},
+      "kind": "missing_capability",
+      "summary": "Neither the agent, the tech lead nor the engine can re-run a failed GitHub Actions job or read its log. A flaky or infra-red check on finished, validated work therefore becomes a needs-human block. The engine's own App could re-run it through the run's rerun endpoint.",
+      "evidence": [
+        {"kind": "file", "path": "improver-data/blocked-items.json", "line": 787, "quote": "Please re-run that one failed job. If it fails again, paste its log into issue #450's body (agents cannot read Actions logs)."},
+        {"kind": "tool", "call": 11, "quote": "https://api.github.com/repos/porchpin/porchpin/actions/runs/37709091572/rerun"},
+        {"kind": "file", "path": "improver-data/case-files.json", "line": 2639, "quote": "On PR #521: re-run the Windows check (Actions run 37709091572) and merge."}
+      ],
+      "impact": "PR #521 (#450's finished work) has sat red on a single job for over 5 hours. Every hourly health review re-lists the step for the operator, and the issue counts as needs-human, all for a one-click action. Any flaky required check on any PR stalls the same way.",
+      "proposed_change": "Add an approvable tech-lead action (e.g. rerun_failed_checks, role flow) that re-runs a PR's failed jobs once per head SHA through the Actions rerun-failed-jobs API. Also let a coding or rework agent request it in its completion (with the failed job's log excerpt fed back to the next session) instead of ending needs_human."
+    },
+    {
+      "id": "rework-needs-human-crashes-issue-state-machine",
+      "engine": {"id": "repo-89afeb99eff0542e787f28211c93f58cd90aa3e0fe9d2bf3acd6fcdc63e2fb73", "repo": "porchpin/porchpin"},
+      "kind": "silent_assumption",
+      "summary": "completion_handler._update_issue_machine assumes a NEEDS_HUMAN or BLOCKED completion always comes from an issue in IN_PROGRESS. A rework session runs while the issue machine is PR_PENDING, so its needs_human completion raises InvalidStateTransition. The tick aborts inside finalize_terminal_outcome, after the trace event but before the later terminal commits. Only the pr_created transition is guarded with can_transition.",
+      "evidence": [
+        {"kind": "file", "path": "toolbox/logs/orchestrator.log", "line": 2285397, "quote": "SESSION COMPLETE: status=needs_human outcome=needs_human pr=none recovered=False session=rework-450"},
+        {"kind": "file", "path": "toolbox/logs/orchestrator.log", "line": 2285434, "quote": "[LOOP] Error in iteration 187: \"Can't trigger event needs_human from state pr_pending!\""},
+        {"kind": "file", "path": "improver-data/engine-source/src/issue_orchestrator/control/completion_handler.py", "line": 819, "quote": "issue_machine.needs_human()  # type: ignore[attr-defined]"},
+        {"kind": "file", "path": "improver-data/engine-source/src/issue_orchestrator/control/completion_handler.py", "line": 799, "quote": "if issue_machine.can_transition(\"pr_created\"):"},
+        {"kind": "file", "path": "improver-data/engine-source/src/issue_orchestrator/control/completion_handler.py", "line": 600, "quote": "from .scoped_rework import note_scoped_rework_finished"},
+        {"kind": "file", "path": "toolbox/logs/orchestrator.log.2026-09-05", "line": 847650, "quote": "[LOOP] Error in iteration 610: \"Can't trigger event needs_human from state pr_pending!\""}
+      ],
+      "impact": "Every rework that ends needs_human or blocked aborts a tick. The completion also skips note_scoped_rework_finished, note_concluded and discard_tech_lead_authority_after_completion, which leaves scoped-rework and tech-lead run bookkeeping unsettled for that session. The defect has been latent since at least 2026-08-08 and recurred on the running engine.",
+      "proposed_change": "Guard the block and needs_human transitions in _update_issue_machine with can_transition, as pr_created already is. Alternatively, let needs_human and block leave PR_PENDING for rework sessions. Then run finalize_terminal_outcome's remaining commits even when a state-machine transition is refused."
+    },
+    {
+      "id": "operator-approval-does-not-carry-the-pr-hand-off",
+      "engine": {"id": "repo-89afeb99eff0542e787f28211c93f58cd90aa3e0fe9d2bf3acd6fcdc63e2fb73", "repo": "porchpin/porchpin"},
+      "kind": "operator_friction",
+      "summary": "Approving a tech-lead proposal settles the issue but not its PR. Before and after approving, the operator must hand-edit the PR's reference line, swap the PR's needs-human for needs-rework, and merge or re-run checks by hand. The tech lead can describe each of these steps but carry out none of them.",
+      "evidence": [
+        {"kind": "file", "path": "improver-data/blocked-items.json", "line": 519, "quote": "Please also change PR #525's first body line from 'Closes #327' to 'Refs #327', and then remove needs-human from PR #525."},
+        {"kind": "file", "path": "improver-data/case-files.json", "line": 2594, "quote": "approval does not route PR #525, so the maintainer edits its line 1 to Refs #327, approves A2, then swaps needs-human for needs-rework on the PR."},
+        {"kind": "file", "path": "improver-data/case-files.json", "line": 2579, "quote": "PR #521's Windows job is still red, and the PR has no routing label, so the maintainer re-runs the job and then merges by hand."},
+        {"kind": "file", "path": "improver-data/interventions.json", "line": 50, "quote": "https://github.com/porchpin/porchpin/pull/515"}
+      ],
+      "impact": "Both of the operator's open approvals (#530, and #485 waiting 90 hours) sit behind manual PR chores. Two of the four blocked items wait on hand edits and label swaps rather than decisions, and finished PRs are merged by hand.",
+      "proposed_change": "Let a propose_decision name its PR consequences (reference-line rewrite, label routing such as needs-rework, and merge eligibility), and have apply_operator_decision apply them on approval. The operator then answers one question in one place."
+    },
+    {
+      "id": "engine-label-adds-missing-from-timeline",
+      "engine": {"id": "repo-89afeb99eff0542e787f28211c93f58cd90aa3e0fe9d2bf3acd6fcdc63e2fb73", "repo": "porchpin/porchpin"},
+      "kind": "silent_assumption",
+      "summary": "The issue timeline is read as the record of when a block began. The completion processor's own add_needs_human_label write never reached it, though. #450's needs-human was re-added on 2026-10-08, but the timeline still dates the block to 2026-10-04, as if it had never been lifted.",
+      "evidence": [
+        {"kind": "file", "path": "toolbox/logs/orchestrator.log", "line": 2285386, "quote": "Action finished: add_needs_human_label for issue #450 in 1.76s"},
+        {"kind": "tool", "call": 10, "quote": "2026-10-08T00:54:00Z"},
+        {"kind": "file", "path": "improver-data/blocked-items.json", "line": 702, "quote": "\"since_at\": \"2026-10-04T11:55:04.038248Z\""}
+      ],
+      "impact": "Block onset and age are wrong for blocks the engine itself raises. That skews the custody board and every grade keyed on onset. It also removes the one record that could tell a re-block from a block that was triaged earlier (see triage-watermark-survives-block-lift-and-reblock).",
+      "proposed_change": "Record every engine-applied blocking-label change, including completion_processor's add_needs_human_label and its removals, as an issue.labels_changed timeline event at the moment it is applied. Derive a block's onset from those records."
+    }
+  ],
+  "trend": {
+    "exam_scores": "up",
+    "operator_interventions": "unobserved",
+    "notes": "All 10 latest exam scorecards pass, against 9 of 10 previously: H-positive-approval-executes-once failed before and passes now. The live objective has not moved the same way. Four items are still blocked. #262 has waited 90 hours on a filed proposal, and the tech lead handed over #179 five days ago. #327 and #450 wait on hand steps (PR edits, a CI re-run, label swaps) the system cannot perform. The tech lead has also not triaged #450's post-start block, because the label-only triage watermark counts an older triage as in force. Interventions are a floor (never complete), so their trend is unobserved; the window shows two hand merges (PRs #515 and #498)."
+  },
+  "improver_change": null
+}

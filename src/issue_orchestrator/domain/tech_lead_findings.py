@@ -365,20 +365,22 @@ class PromotionRoute:
                 " by any pipeline"
             )
 
-    def issue_labels(self, *, area: str, gate_label: str = "") -> tuple[str, ...]:
+    def issue_labels(
+        self, *, area: str, gate_labels: tuple[str, ...] = ()
+    ) -> tuple[str, ...]:
         """Every label a promoted issue must carry to be runnable in this target.
 
         Order is stable for the sake of readable diffs and assertions: worker
-        agent, target scope, area tag, then the approval gate (when gated) —
-        which is the ONLY blocking one, so removing it is the operator's whole
-        approval.
+        agent, target scope, area tag, then the approval model's labels (when
+        gated) — the only blocking ones, so a maintainer's approval in the
+        target repo is the whole approval (#7763).
         """
         return _deduped_labels(
             (
                 self.agent_label,
                 self.scope_label,
                 f"{_AREA_LABEL_PREFIX}{area}" if area else "",
-                gate_label,
+                *gate_labels,
             )
         )
 

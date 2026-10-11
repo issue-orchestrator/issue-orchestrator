@@ -16,6 +16,14 @@ from ..control.isolation import build_runtime_tool_env
 from ..ports.command_runner import CommandRunner
 
 
+# A real push hands the hook git's ref lines on stdin. This rehearsal has none,
+# so give the hook an empty stdin instead of the engine's own: generated hooks
+# read stdin to EOF (infra/hooks/pre_push_refs.py), and an inherited terminal
+# or open pipe would stop or hang them. No ref lines means the hook runs its
+# full gate, which is what this rehearsal is for.
+_NO_REF_LINES_STDIN = ("/bin/sh", "-c", 'exec "$0" "$@" < /dev/null')
+
+
 @dataclass(frozen=True)
 class PrePublishGateResult:
     allowed: bool
@@ -66,7 +74,7 @@ class PrePublishGate:
         hook_path = resolved_hook.path
 
         result = self._command_runner.run(
-            [str(hook_path), "origin", "origin"],
+            [*_NO_REF_LINES_STDIN, str(hook_path), "origin", "origin"],
             cwd=worktree,
             env=build_runtime_tool_env(worktree),
         )

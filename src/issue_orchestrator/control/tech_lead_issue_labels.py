@@ -3,7 +3,7 @@
 from __future__ import annotations
 from typing import Callable
 from ..ports import RepositoryHost
-from ..domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
+from ..domain.tech_lead_approval import GATED_PROPOSAL_LABELS
 from .actions import (
     CreateTechLeadProposalIssueAction,
     CreateTechLeadCaseFileIssueAction,
@@ -29,24 +29,17 @@ def required_label_provisioning_error(
     except Exception as exc:
         if isinstance(action, CreateTechLeadProposalIssueAction):
             return (
-                f"could not verify the {PROPOSED_TECH_LEAD_LABEL!r} gate label is"
-                f" provisioned; refusing to create an ungated proposal: {exc}"
+                f"could not verify the approval labels {GATED_PROPOSAL_LABELS!r}"
+                f" are provisioned; refusing to create an ungated proposal: {exc}"
             )
         return (
             "could not verify required pattern case-file labels; refusing to"
             f" create an issue: {exc}"
         )
 
-    if (
-        isinstance(action, CreateTechLeadProposalIssueAction)
-        and PROPOSED_TECH_LEAD_LABEL.casefold() not in existing
-    ):
-        return (
-            f"the {PROPOSED_TECH_LEAD_LABEL!r} gate label is not provisioned in"
-            " this repository; run `issue-orchestrator init` to create it."
-            " Refusing to create an ungated tech_lead proposal (#6779 R3)"
-        )
-
+    # Every label the action carries — the approval model's included — is
+    # provisioned before the issue exists, so GitHub can never silently drop
+    # one and leave an ungated, schedulable proposal (#6779 R3).
     for label in action.labels:
         folded = label.casefold()
         if folded in existing:

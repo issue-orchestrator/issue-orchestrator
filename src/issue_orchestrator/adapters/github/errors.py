@@ -49,6 +49,10 @@ class GitHubHttpError(RepositoryHostError):
         return self.failure_type == FailureType.ISSUE_LOCAL
 
 
+class GitHubResponseTooLarge(GitHubHttpError):
+    """A bounded read's response exceeded its byte limit; it was not decoded."""
+
+
 class GitHubTransportError(RepositoryHostError):
     """Raised when a GitHub request fails before an HTTP response."""
 

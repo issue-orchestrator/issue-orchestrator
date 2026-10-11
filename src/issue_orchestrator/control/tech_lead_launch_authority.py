@@ -57,6 +57,7 @@ from ..events import EventName
 from ..ports import make_trace_event
 from .tech_lead_launch_planning import (
     issue_run_eligibility,
+    paused_subject_refusal,
     plan_tech_lead_launch_gate,
 )
 from .tech_lead_run_admission import scope_of_pending
@@ -276,6 +277,12 @@ class TechLeadLaunchAuthority:
     ) -> Optional[TechLeadLaunchRefusal]:
         """Prove the whole-repository run's anchor is still open and runnable.
 
+        Runnable includes NOT paused for reconciliation: every output of the run
+        reconciles against its anchor, so a paused anchor withdraws the run
+        rather than spending a session whose outputs would all be refused
+        (porchpin #410). Anchor classification skips paused anchors too, so the
+        next due review gets a fresh anchor.
+
         Every engine requeues the same open anchor at startup, and a contended
         copy is deliberately RETAINED rather than withdrawn (round 2 F4). That
         retention is only safe if the loser re-checks the durable anchor before
@@ -309,6 +316,15 @@ class TechLeadLaunchAuthority:
                     f"Anchor #{tech_lead.issue_number} is closed; this"
                     " whole-repository review has already been completed."
                 ),
+                retained=False,
+            )
+        paused = paused_subject_refusal(issue)
+        if paused is not None:
+            return TechLeadLaunchRefusal(
+                scope.run_key,
+                tech_lead.issue_number,
+                paused[0],
+                paused[1],
                 retained=False,
             )
         return None

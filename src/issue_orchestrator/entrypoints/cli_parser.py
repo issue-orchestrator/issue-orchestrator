@@ -28,6 +28,7 @@ class CLICommandHandlers:
     tech_lead: CommandHandler
     health_review: CommandHandler
     reconcile_case_files: CommandHandler
+    hold_merge_for_human: CommandHandler
     refresh: CommandHandler
     restart: CommandHandler
     setup: CommandHandler
@@ -46,6 +47,7 @@ class CLICommandHandlers:
     executor_status: CommandHandler
     worktree_custody: CommandHandler
     action_liveness: CommandHandler
+    engine_audit: CommandHandler
 
 
 class CLIStability(StrEnum):
@@ -101,6 +103,7 @@ CLI_COMMAND_SURFACE: tuple[CLICommandSpec, ...] = (
     CLICommandSpec("tech_lead", CLIGroup.RUNTIME, CLIStability.SUPPORTED),
     CLICommandSpec("health-review", CLIGroup.RUNTIME, CLIStability.SUPPORTED),
     CLICommandSpec("reconcile-case-files", CLIGroup.RUNTIME, CLIStability.SUPPORTED),
+    CLICommandSpec("hold-merge-for-human", CLIGroup.RUNTIME, CLIStability.SUPPORTED),
     CLICommandSpec("refresh", CLIGroup.RUNTIME, CLIStability.SUPPORTED),
     CLICommandSpec("restart", CLIGroup.RUNTIME, CLIStability.SUPPORTED),
     # Setup
@@ -120,6 +123,7 @@ CLI_COMMAND_SURFACE: tuple[CLICommandSpec, ...] = (
     CLICommandSpec("executor-status", CLIGroup.DIAGNOSTICS, CLIStability.SUPPORTED),
     CLICommandSpec("worktree-custody", CLIGroup.DIAGNOSTICS, CLIStability.SUPPORTED),
     CLICommandSpec("action-liveness", CLIGroup.DIAGNOSTICS, CLIStability.SUPPORTED),
+    CLICommandSpec("engine-audit", CLIGroup.DIAGNOSTICS, CLIStability.SUPPORTED),
     # Development only - these operate on test and E2E state and carry no
     # compatibility promise of any kind.
     CLICommandSpec("test-reset", CLIGroup.DEVELOPMENT, CLIStability.INTERNAL),
@@ -128,6 +132,23 @@ CLI_COMMAND_SURFACE: tuple[CLICommandSpec, ...] = (
 
 CLI_COMMANDS: tuple[str, ...] = tuple(spec.name for spec in CLI_COMMAND_SURFACE)
 
+def add_engine_audit_arguments(parser: argparse.ArgumentParser) -> None:
+    """``engine-audit``'s options, shared with its standalone module entry point."""
+    parser.add_argument("--state-dir", required=True, help="The engine's .issue-orchestrator/state")
+    parser.add_argument("--repo", required=True, help="owner/repo the engine works")
+    parser.add_argument("--previous", help="An earlier report to diff against")
+    parser.add_argument("--output", help="Write the JSON report here (default: stdout)")
+    parser.add_argument(
+        "--window-hours", type=float, default=24.0,
+        help="How far back the log and timeline are read (default 24)",
+    )
+    parser.add_argument(
+        "--log-tail-mb", type=int, default=64,
+        help="How much of the log's tail is read (default 64)",
+    )
+    parser.add_argument("--no-github", action="store_true", help="Do not read GitHub")
+
+
 __all__ = [
     "CLICommandHandlers",
     "CLICommandSpec",
@@ -135,6 +156,7 @@ __all__ = [
     "CLIStability",
     "CLI_COMMANDS",
     "CLI_COMMAND_SURFACE",
+    "add_engine_audit_arguments",
     "build_parser",
 ]
 
@@ -425,6 +447,10 @@ def _register_runtime_commands(subparsers, handlers: CLICommandHandlers) -> None
     )
     reconcile_case_files_parser.set_defaults(func=handlers.reconcile_case_files)
 
+    from .cli_merge_hold import add_hold_merge_parser
+
+    add_hold_merge_parser(subparsers, handlers.hold_merge_for_human)
+
     refresh_parser = subparsers.add_parser(
         "refresh", help="Request immediate refresh of issues from GitHub"
     )
@@ -554,6 +580,16 @@ def _register_hook_commands(subparsers, handlers: CLICommandHandlers) -> None:
         help="Override validation.publish.cmd when generating scripts/verify-pr.sh",
     )
     setup_guardrails_parser.add_argument(
+        "--python",
+        type=Path,
+        default=None,
+        help=(
+            "Absolute issue-orchestrator interpreter to bake into scripts/verify-pr.sh "
+            "(default: $ISSUE_ORCHESTRATOR_PYTHON, else the running interpreter). "
+            "Refused when inside a linked git worktree or a temp dir."
+        ),
+    )
+    setup_guardrails_parser.add_argument(
         "--config", type=Path, help="Path to config file (default: auto-detect)"
     )
     setup_guardrails_parser.set_defaults(func=handlers.setup_guardrails)
@@ -651,3 +687,10 @@ def _register_utility_commands(subparsers, handlers: CLICommandHandlers) -> None
         help="list [--repo-root <path>] | release --subject S --action A [--repo-root <path>]",
     )
     liveness_parser.set_defaults(func=handlers.action_liveness)
+
+    audit_engine_parser = subparsers.add_parser(
+        "engine-audit",
+        help="Read-only outcome audit of an engine's state, log and GitHub (#7490)",
+    )
+    add_engine_audit_arguments(audit_engine_parser)
+    audit_engine_parser.set_defaults(func=handlers.engine_audit)

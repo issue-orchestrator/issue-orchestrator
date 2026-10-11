@@ -232,6 +232,22 @@ merge_queue:
   # enqueue_after: "code-reviewed"  # gate that must pass first: code-reviewed | tech-lead-reviewed
   # failure_action: "rework"        # how to route a failed queue entry: rework | needs_human
 
+# Optional integration-branch mode (#8144). When enabled, agents' worktrees and
+# PRs target `branch` (it implies worktrees.base_branch_override; io creates the
+# branch from the default branch if it is missing). io merges each approved PR
+# into it itself once its checks are green on a head that contains the
+# integration tip, brings a behind PR up to date mechanically before any agent
+# rework, and keeps ONE delivery PR (branch -> default branch) open: merge that
+# with a merge commit and io fast-forwards the branch to the default branch.
+# A PR held by needs-human, or whose issue carries a standing ruling, is never
+# auto-merged. Cannot be combined with merge_queue.enabled.
+integration:
+  enabled: false
+  # branch: "integration"           # never deleted by io
+  # deliver: "manual"               # only manual today (#9062)
+  # merge_method: "merge"           # merge | squash | rebase
+  # merge_after: "code-reviewed"    # code-reviewed | tech-lead-reviewed
+
 cleanup:
   # Orchestrator-owned issue worktrees are removed only after the applicable
   # review gate. Timing is independent of the action flags below: disabling
@@ -448,8 +464,10 @@ tech_lead:
   #   (except create_issue, see below).
   # escalate_to_human is not configurable: it always executes (the floor).
   # create_issue "propose" is NOT shadow: it files a REAL gated proposal issue
-  # carrying the proposed-tech-lead label, inert until an operator removes it
-  # (per-instance approval, #6778). "execute" files the follow-up issue directly.
+  # labelled tech-lead-proposal + awaiting-approval, inert until a maintainer
+  # adds the approved label or approves it in the Control Center's Approvals
+  # inbox (per-instance approval, #6778, #7763). An approved label added by a
+  # bot or an agent never counts. "execute" files the follow-up issue directly.
   # reset_retry is destructive (reset from scratch): it is always "propose"
   # (a gated proposal issue) and "execute" is rejected at startup (#7330).
   # kill_hung_session "execute" terminates only the exact session generation
@@ -465,6 +483,7 @@ tech_lead:
   #   request_rework: "propose"     # Gated scoped rework; preserves the PR branch
   #   recover_validated_work: "propose" # Recover one exact retained validated head
   #   release_withheld_review: "execute" # Lift only blocked-failed so a green PR's review runs (#7399)
+  #   resolve_block: "propose"      # Decide a needs-human work block (answer, split, lift stale); execute = no approval (#7658)
   # Charter (#7330): per-role dials for what the tech lead may do UNATTENDED.
   # The orchestrator classifies every action by its type into a role and a
   # required depth (the agent cannot choose them), then decides:
@@ -516,8 +535,9 @@ tech_lead:
   # tech lead classified `fix:code` - a human-gated problem made runnable just
   # manufactures doomed rework.
   #   promote: off | gated | auto
-  #     gated (default) files the issue carrying `proposed-tech-lead`, so
-  #       operator approval is exactly one action: removing the label. Closing
+  #     gated (default) files the issue labelled `tech-lead-proposal` and
+  #       `awaiting-approval`, so operator approval is exactly one action: a
+  #       maintainer's `approved` label in the target repo. Closing
   #       the issue while gated declines it permanently (never re-filed).
   #     auto files it ungated - immediately runnable in the target's pipeline.
   #     off disables the lane entirely (no issues filed, no follow-up reads).
@@ -626,6 +646,20 @@ claims:
 
 state:
   # file: ".issue-orchestrator/state.json"
+
+# How a reviewer-approved PR's failed required check is answered (#8692).
+# The engine reads the failed jobs' log tails with its own credential:
+# a transient failure (runner/infrastructure/known-flaky) is re-run once per
+# head commit, without spending a rework cycle; any other failure goes to
+# rework with the log excerpt in the agent's brief.
+ci_failure_triage:
+  enabled: true
+  log_tail_bytes: 65536
+  # transient_signatures:   # case-insensitive regexes; replaces the built-in list
+  #   - "The runner has received a shutdown signal"
+  #   - "workspace watch .* windows process tree"   # a known flaky test
+  # genuine_signatures:     # replaces the built-in test/assertion list
+  #   - "AssertionError"
 
 # Retained recovery evidence is stored outside disposable worktrees.
 validated_work:

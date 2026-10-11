@@ -95,7 +95,7 @@ class TestFiling:
             repo=REPO,
             title="t",
             body=f"b\n{MARKER}",
-            labels=["proposed-tech-lead", "agent:backend"],
+            labels=["awaiting-approval", "agent:backend"],
             idempotency_marker=MARKER,
         )
 
@@ -103,7 +103,7 @@ class TestFiling:
         assert filed.recovered is False  # this call really did create it
         # The gate label was provisioned FIRST; a dropped gate would leave an
         # ungated, immediately schedulable promotion.
-        assert calls == ["label:proposed-tech-lead", "issue"]
+        assert calls == ["label:awaiting-approval", "issue"]
 
     def test_existing_labels_are_not_recreated(self, target, http_client):
         target.file_issue(
@@ -152,7 +152,7 @@ class TestFiling:
             repo=REPO,
             title="changed title does not matter",
             body=f"new body\n\n{MARKER}",
-            labels=["proposed-tech-lead"],
+            labels=["awaiting-approval"],
             idempotency_marker=MARKER,
         )
 
@@ -486,7 +486,7 @@ class TestFilingReadiness:
         http_client.get_repository.return_value = {"permissions": {role: True}}
 
         reason = target.check_filing_ready(
-            _contract(labels=("agent:backend", "proposed-tech-lead"))
+            _contract(labels=("agent:backend", "awaiting-approval"))
         )
 
         assert reason is None
@@ -500,11 +500,11 @@ class TestFilingReadiness:
         http_client.get_repository.return_value = {"permissions": {"triage": True}}
         http_client.list_all_labels.return_value = [
             {"name": "agent:backend"},
-            {"name": "Proposed-Tech-Lead"},  # GitHub folds label names
+            {"name": "Awaiting-Approval"},  # GitHub folds label names
         ]
 
         reason = target.check_filing_ready(
-            _contract(labels=("agent:backend", "proposed-tech-lead"))
+            _contract(labels=("agent:backend", "awaiting-approval"))
         )
 
         assert reason is None
@@ -522,11 +522,11 @@ class TestFilingReadiness:
         http_client.list_all_labels.return_value = [{"name": "agent:backend"}]
 
         reason = target.check_filing_ready(
-            _contract(labels=("agent:backend", "proposed-tech-lead"))
+            _contract(labels=("agent:backend", "awaiting-approval"))
         )
 
         assert reason is not None
-        assert "proposed-tech-lead" in reason
+        assert "awaiting-approval" in reason
         assert "triage" in reason
 
     def test_triage_cannot_serve_a_route_with_unknowable_labels(

@@ -10,15 +10,55 @@ routers one answer shape and one place where the lifecycle vocabulary is typed.
 from __future__ import annotations
 
 import json
+from functools import partial
+from typing import Protocol
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+from .engine_custody import in_arrival_order
 from ..domain.pause_state import (
     PauseActor,
+    PauseReason,
     PauseTransitionOutcome,
     PauseTransitionStatus,
 )
+
+
+class PausableEngine(Protocol):
+    """The facade methods a pause/resume route drives."""
+
+    def pause(
+        self, *, reason: PauseReason, actor: PauseActor, detail: str = ""
+    ) -> PauseTransitionOutcome: ...
+
+    def resume(
+        self, *, actor: PauseActor, detail: str = ""
+    ) -> PauseTransitionOutcome: ...
+
+
+# Pause and resume wait for the state lock a running tick holds; they commit
+# off the event loop, uncancellable, in arrival order (see engine_custody).
+
+
+async def pause_engine(
+    request: Request, engine: PausableEngine, default_actor: PauseActor
+) -> JSONResponse:
+    """Operator pause, reported as what the owner committed."""
+    actor = await requested_actor(request, default_actor)
+    outcome = await in_arrival_order(
+        partial(engine.pause, reason=PauseReason.OPERATOR, actor=actor)
+    )
+    return transition_response(PauseTransitionStatus.PAUSED, outcome)
+
+
+async def resume_engine(
+    request: Request, engine: PausableEngine, default_actor: PauseActor
+) -> JSONResponse:
+    """Operator resume, reported as what the owner committed."""
+    actor = await requested_actor(request, default_actor)
+    outcome = await in_arrival_order(partial(engine.resume, actor=actor))
+    return transition_response(PauseTransitionStatus.RESUMED, outcome)
 
 
 def transition_response(

@@ -1,9 +1,11 @@
 """Gated tech_lead proposal issues (#6778, amends ADR-0031 §2).
 
-Consequential tech_lead proposals become **gated GitHub issues** carrying
-:data:`~..domain.tech_lead_session.PROPOSED_TECH_LEAD_LABEL`. Removing the label is
-per-instance operator approval. This module is the single policy owner for
-the whole gated lifecycle:
+Consequential tech_lead proposals become **gated GitHub issues** carrying the
+approval model's provenance and waiting labels
+(:data:`~..domain.tech_lead_approval.GATED_PROPOSAL_LABELS`). A maintainer's
+``approved`` label, verified by :mod:`~.tech_lead_approval`, is per-instance
+approval (#7763). This module is the single policy owner for the whole gated
+lifecycle:
 
 * **Composition** — :func:`build_tech_lead_proposal_issue_action` turns an
   act-level decision proposal under ``propose`` authority into a
@@ -25,8 +27,9 @@ the whole gated lifecycle:
   (#7014). It is the visibility counterpart to reconciliation below.
 * **Reconciliation** — :func:`reconcile_tech_lead_proposals` is the lifecycle
   owner that partitions the fact gatherer's EXHAUSTIVE open-issue scan (#6779
-  R2/R4) against the durable ledger in one pass: a gate-labeled issue is an
-  open proposal; an op-backed issue WITHOUT the gate label was approved; a
+  R2/R4) against the durable ledger in one pass: an op-backed issue whose
+  approval the approval owner verified is approved; any other proposal is
+  inert; a
   ledger row whose issue is absent from the scan is only a CANDIDATE for
   terminal cleanup (#6779 R7) — the scan can be truncated, so absence alone
   never proves terminality. Reconciliation stays READ-ONLY: it classifies but
@@ -49,34 +52,48 @@ the whole gated lifecycle:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Collection, Iterable, Mapping, Sequence
 
+from ..domain.decision_steps import DecisionFollowThrough, follow_through_section
 from ..domain.scoped_rework import ReworkRequest, ReworkReceipt
 from ..domain.validated_work import RemoteBaselineStatus
+from ..domain.tech_lead_approval import (
+    GATED_PROPOSAL_LABELS,
+    HOW_TO_APPROVE,
+    ApprovalVerdict,
+    known_proposal_state,
+    with_proposal_marker,
+)
 from ..domain.tech_lead_session import (
-    PROPOSED_TECH_LEAD_LABEL,
     ApprovedTechLeadOp,
     GatedTechLeadProposal,
+    OperatorDecision,
     StoredTechLeadOp,
     TechLeadCreationOrigin,
     TechLeadSessionGeneration,
-    is_proposed_tech_lead_gate,
 )
 from .actions import (
     Action,
     ActionResult,
+    ApplyOperatorDecisionAction,
     CreateTechLeadProposalIssueAction,
     DiscardTerminalTechLeadProposalOpsAction,
     KillHungSessionAction,
     RecoverValidatedWorkAction,
+    ReleaseValidatedWorkAction,
     ReleaseWithheldReviewAction,
     RequestReworkAction,
     ResetRetryIssueAction,
+    ResolveBlockAction,
 )
 from .reconciliation import build_expected_for_mutation
+from .block_resolution_proposal import resolution_proposal_section
+from .validated_work_release_proposal import release_proposal_section
 from .tech_lead_charter_lifecycle import link_declined_proposal
 from .tech_lead_proposal_execution import (
     execute_approved_tech_lead_op as execute_approved_tech_lead_op,
@@ -84,9 +101,10 @@ from .tech_lead_proposal_execution import (
 )
 
 if TYPE_CHECKING:
-    from ..domain.scoped_rework import TechLeadProposalCommand, TechLeadProposalCommandOutcome
+    from ..domain.block_resolution import BlockResolution
     from ..domain.tech_lead_artifacts import ProposedTechLeadAction
     from ..domain.validated_work_commands import ValidatedWorkAuthoritySnapshot
+    from ..domain.validated_work_release import ValidatedWorkRelease
     from ..infra.config import Config
     from ..ports import RepositoryHost
     from ..ports.issue import Issue
@@ -104,6 +122,8 @@ logger = logging.getLogger(__name__)
 # counts (≤2 anchors + a handful of proposals) are orders of magnitude below.
 TECH_LEAD_PROPOSAL_SCAN_LIMIT = 2000
 
+_MAX_DECISION_TITLE_CHARS = 200
+
 # Human-facing verbs per op type, used in proposal issue titles/bodies.
 # Titles must never contain "Batch Review"/"Tech Lead Review" (the historical
 # batch-anchor title heuristic), and classification additionally excludes
@@ -113,7 +133,10 @@ _OP_TITLES: dict[str, str] = {
     "reset_retry": "reset & retry issue #{target} from scratch",
     "kill_hung_session": "kill hung session for issue #{target}",
     "recover_validated_work": "recover retained validated work for issue #{target}",
+    "release_validated_work": "release retained validated work of issue #{target} rebuilt elsewhere",
     "release_withheld_review": "release the withheld review of issue #{target}'s PR",
+    "propose_decision": "decide for issue #{target}",
+    "resolve_block": "resolve the needs-human block of issue #{target}",
 }
 
 
@@ -126,16 +149,17 @@ def proposal_issue_labels(config: "Config") -> tuple[str, ...]:
 
     The tech lead agent label keeps the proposal inside the fact gatherer's ONE
     anchor scan; the filtering label keeps it inside the active scope (the
-    anchor classifier ignores out-of-scope issues); the gate label blocks
-    pickup and is the approval affordance. Orchestrator-attached: the gate
-    label is exempt here and ONLY here — the agent-label allowlist rejects it.
+    anchor classifier ignores out-of-scope issues); the approval model's
+    provenance and waiting labels block pickup until a maintainer approves.
+    Orchestrator-attached: those labels are exempt here and ONLY here — the
+    agent-label allowlist rejects them.
     """
     return tuple(
         value
         for value in (
             config.tech_lead_review_agent,
             config.filtering.label,
-            PROPOSED_TECH_LEAD_LABEL,
+            *GATED_PROPOSAL_LABELS,
         )
         if value
     )
@@ -149,8 +173,10 @@ def build_stored_tech_lead_op(
     target_session: TechLeadSessionGeneration | None = None,
     rework_request: ReworkRequest | None = None,
     validated_work_authority: "ValidatedWorkAuthoritySnapshot | None" = None,
+    validated_work_release: "ValidatedWorkRelease | None" = None,
     observed_at: str = "",
     now_iso: str | None = None,
+    follow_through: DecisionFollowThrough | None = None,
 ) -> StoredTechLeadOp:
     """The orchestrator-side executable payload for an act-level proposal.
 
@@ -166,6 +192,7 @@ def build_stored_tech_lead_op(
         target_issue_number=rework_request.target.issue_number if rework_request else proposed.target_number,
         rework_request=rework_request,
         validated_work_authority=validated_work_authority,
+        validated_work_release=validated_work_release,
         rationale=proposed.body or "",
         source_run_id=source_run_id,
         source_session_name=source_session_name,
@@ -176,7 +203,51 @@ def build_stored_tech_lead_op(
         target_session_type=(target_session.task_kind.value if target_session else ""),
         finding_ids=tuple(proposed.finding_ids),
         observed_at=observed_at,
+        decision=operator_decision_of(proposed),
+        resolution=proposed.resolution if proposed.action_type == "resolve_block" else None,
+        # Bound by the planner (a PR rework to its observed head); never the agent's own.
+        follow_through=follow_through if follow_through is not None else DecisionFollowThrough(),
     )
+
+
+def operator_decision_of(proposed: "ProposedTechLeadAction") -> OperatorDecision | None:
+    """The decision a ``propose_decision`` puts to the operator, else None."""
+    if proposed.action_type != "propose_decision":
+        return None
+    return OperatorDecision(
+        title=proposed.title or "", body=proposed.body or "", follow_ups=proposed.follow_up_issues,
+    )
+
+
+def _decision_section(op: StoredTechLeadOp) -> str:
+    """What approving a ``propose_decision`` does, in the operator's words (#7593)."""
+    assert op.decision is not None
+    follow_ups = "".join(
+        f"\n#### Follow-up {index}: {item.title}\n\n{item.body}\n"
+        for index, item in enumerate(op.decision.follow_ups, start=1)
+    )
+    filed = (
+        f"\n### Issues approval files\n{follow_ups}"
+        if op.decision.follow_ups
+        else "\nApproval files no new issue.\n"
+    )
+    return f"""## Decision for #{op.target_issue_number}: {op.decision.title}
+
+{op.decision.body}
+{filed}{follow_through_section(op.follow_through, subject=op.target_issue_number)}
+### What approving does
+
+1. Files the issues above, if any, with #{op.target_issue_number}'s own labels
+   and milestone.
+2. Posts this decision on #{op.target_issue_number}, so the session that resumes
+   it works to it, and executes the steps above, if any (a PR rework runs
+   right after the retry).
+3. Retries #{op.target_issue_number} last, through the operator's own retry (its
+   blocking labels come off). If the item closed or is no longer blocked, or a
+   cause the retry may not override (such as a claim quarantine) holds it, the
+   item is not retried and this proposal closes saying so.
+
+"""
 
 
 def _proposal_issue_body(
@@ -231,7 +302,14 @@ def _proposal_issue_body(
             f"| Approved remote baseline | `{remote_head}`;"
             f" PR `{authority.pr_number if authority.pr_number is not None else 'none'}` |\n"
         )
-    return f"""## Gated tech_lead proposal (ADR-0031 §2)
+    if op.validated_work_release is not None:
+        session_row += release_proposal_section(op.validated_work_release)
+    decision = (
+        _decision_section(op) if op.decision is not None
+        else resolution_proposal_section(op) if op.resolution is not None
+        else ""
+    )
+    return f"""{decision}## Gated tech_lead proposal (ADR-0031 §2)
 
 A tech_lead session proposed an act-level operation. It is **inert** until a
 human approves it.
@@ -250,12 +328,10 @@ human approves it.
 
 ### How to approve
 
-**Remove the `{PROPOSED_TECH_LEAD_LABEL}` label.** The orchestrator re-validates
-the operation's preconditions against current state and executes it exactly
-once, then closes this issue with the outcome. If the preconditions no longer
-hold, it comments and closes without acting.
-
-To reject, close this issue.
+{HOW_TO_APPROVE} Once approved, the orchestrator re-validates the operation's
+preconditions against current state and executes it exactly once, then closes
+this issue with the outcome. If the preconditions no longer hold, it comments
+and closes without acting.
 
 > This body is documentation only. The executable payload was recorded
 > orchestrator-side when this issue was created; editing this issue has no
@@ -274,8 +350,10 @@ def build_tech_lead_proposal_issue_action(
     target_session: TechLeadSessionGeneration | None = None,
     rework_request: ReworkRequest | None = None,
     validated_work_authority: "ValidatedWorkAuthoritySnapshot | None" = None,
+    validated_work_release: "ValidatedWorkRelease | None" = None,
     observed_at: str = "",
     now_iso: str | None = None,
+    follow_through: DecisionFollowThrough | None = None,
 ) -> CreateTechLeadProposalIssueAction:
     """Compose the gated proposal issue creation for an act-level proposal.
 
@@ -289,17 +367,23 @@ def build_tech_lead_proposal_issue_action(
         target_session=target_session,
         rework_request=rework_request,
         validated_work_authority=validated_work_authority,
+        validated_work_release=validated_work_release,
         observed_at=observed_at,
         now_iso=now_iso,
+        follow_through=follow_through,
     )
     title_detail = _OP_TITLES[op.op_type].format(target=op.target_issue_number)
+    headline = op.decision.title if op.decision is not None else op.resolution.title if op.resolution is not None else None
+    if headline is not None:
+        # GitHub caps a title at 256 characters; the full decision is in the body.
+        title_detail = f"{title_detail}: {headline}"[:_MAX_DECISION_TITLE_CHARS]
     return CreateTechLeadProposalIssueAction(
         title=f"Tech Lead proposal: {title_detail}",
-        body=_proposal_issue_body(
+        body=with_proposal_marker(_proposal_issue_body(
             op,
             anchor_issue_number=anchor_issue_number,
             finding_ids=proposed.finding_ids,
-        ),
+        )),
         labels=proposal_issue_labels(config),
         pr_count=0,
         op=op,
@@ -312,18 +396,55 @@ def build_tech_lead_proposal_issue_action(
     )
 
 
+def proposal_ledger_key(
+    op_type: str,
+    target_issue_number: int,
+    *,
+    rework_request: ReworkRequest | None = None,
+    decision: OperatorDecision | None = None,
+    resolution: "BlockResolution | None" = None,
+    follow_through: DecisionFollowThrough | None = None,
+    release: "ValidatedWorkRelease | None" = None,
+) -> tuple[str, int | str]:
+    """The identity one open proposal owns: the op and what it would do.
+
+    A scoped rework is keyed by its request; an operator decision by its
+    target AND the exact decision (#7593 review F2), because approval executes
+    the stored payload: a re-proposal of a DIFFERENT decision for the same item
+    must not be recorded as awaiting approval on a proposal that would run the
+    old one. A release is keyed by its records and superseding PR (#9092) for
+    the same reason. Every other op is keyed by its target issue.
+    """
+    if rework_request is not None:
+        return (op_type, rework_request.key)
+    payload = next((item.to_dict() for item in (decision, resolution, release) if item is not None), None)
+    steps = follow_through.identity() if follow_through is not None else None
+    if payload is not None and steps is not None:
+        # The steps are part of what approval runs (#8691); none keeps the old key.
+        payload = {**payload, "follow_through": steps}
+    if payload is not None:
+        digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
+        return (op_type, f"{target_issue_number}:{digest}")
+    return (op_type, target_issue_number)
+
+
 def build_op_ledger(
     ops: Iterable[tuple[int, StoredTechLeadOp]],
     receipts: Iterable[ReworkReceipt] = (),
 ) -> dict[tuple[str, int | str], int]:
-    """Project store rows to a (op_type, target) -> proposal-issue map.
+    """Project store rows to a :func:`proposal_ledger_key` -> proposal-issue map.
 
     The store row lifetime IS the "open proposal" window: rows are created
     with the proposal issue and discarded at terminal handling, so this
-    ledger enforces one open proposal per (op, target) without a GitHub read.
+    ledger enforces one open proposal per identity without a GitHub read.
     """
     return {("request_rework", receipt.request.key): receipt.proposal_issue_number for receipt in receipts if receipt.proposal_issue_number} | {
-        (op.op_type, op.rework_request.key if op.rework_request else op.target_issue_number): issue_number for issue_number, op in ops
+        proposal_ledger_key(
+            op.op_type, op.target_issue_number,
+            rework_request=op.rework_request, decision=op.decision, resolution=op.resolution,
+            follow_through=op.follow_through, release=op.validated_work_release,
+        ): issue_number
+        for issue_number, op in ops
     }
 
 
@@ -336,7 +457,7 @@ def build_duplicate_proposal_comment(
         f"A tech_lead session (anchor #{anchor_issue_number}, action"
         f" {proposed.id}) proposed `{proposed.action_type}` for"
         f" #{proposed.target_number} again. This open proposal already covers"
-        f" it — remove the `{PROPOSED_TECH_LEAD_LABEL}` label to approve.\n\n"
+        f" it. {HOW_TO_APPROVE}\n\n"
         f"### Latest rationale\n\n{proposed.body or ''}"
     )
 
@@ -346,10 +467,10 @@ class ReconciledTechLeadProposals:
     """Live partition of the EXHAUSTIVE open tech-lead-agent scan vs the ledger.
 
     The single lifecycle-owner view every caller reads instead of re-deriving
-    proposal state from an open-only scan (#6779 R2). A live proposal (gated or
-    approved) always carries the tech-lead-agent label and is open, so its
-    presence in the scan is authoritative: gate-labeled -> open proposal,
-    op-backed-without-gate -> approved.
+    proposal state from an open-only scan (#6779 R2). A live proposal always
+    carries the tech-lead-agent label and is open, so its presence in the scan
+    is authoritative: op-backed with a VERIFIED approval -> approved; any other
+    proposal -> inert (#7763).
 
     Absence is NOT authoritative, though (#6779 R7): the exhaustive scan can be
     truncated by a later-page API failure or a >2000-issue repo, dropping a
@@ -360,52 +481,50 @@ class ReconciledTechLeadProposals:
     """
 
     anchor_candidate_issues: list["Issue"]  # -> batch/health anchor classifier
-    approved: tuple[ApprovedTechLeadOp, ...]  # gate removed -> execute
+    approved: tuple[ApprovedTechLeadOp, ...]  # verified approval -> execute
     # Ledger rows whose proposal issue was absent from the exhaustive scan:
     # candidates for cleanup, confirmed terminal (deleted/closed) before discard.
     absent_op_issue_numbers: tuple[int, ...]
-
-
-def _issue_carries_gate(issue: "Issue") -> bool:
-    """True iff *issue* carries the owned proposal gate, case-insensitively.
-
-    The ONE gate predicate shared by reconciliation classification and the
-    apply-time consent re-check (#6779 R15/R16), delegating the case fold to
-    :func:`is_proposed_tech_lead_gate`. GitHub folds label names, so a repo whose
-    canonical spelling is ``Proposed-Tech-Lead`` still gates: classification and
-    blocking cannot diverge on case.
-    """
-    return any(is_proposed_tech_lead_gate(name) for name in issue.labels)
 
 
 def reconcile_tech_lead_proposals(
     issues: Sequence["Issue"],
     *,
     ops: Mapping[int, StoredTechLeadOp],
+    verdicts: Mapping[int, ApprovalVerdict],
     pending_markers: tuple[str, ...] = (),
+    known: Collection[int] = frozenset(),
 ) -> ReconciledTechLeadProposals:
     """Classify the exhaustive open scan against the durable ledger.
 
-    Gated issues are inert; ungated stored ops are approved for execution.
-    Missing op-backed issues are cleanup CANDIDATES, since a truncated scan
-    can omit live issues. The confirm-and-discard owner re-reads them (#6779 R7).
+    ``verdicts`` are the approval owner's answers for the scanned items that
+    carry ``approved``. An op is approved only when its verdict approves: a
+    stripped label, a retry, or a bot's ``approved`` never executes anything
+    (#7763). An op-backed issue is never an anchor, approved or not. Missing
+    op-backed issues are cleanup CANDIDATES, since a truncated scan can omit
+    live issues; the confirm-and-discard owner re-reads them (#6779 R7).
     Issues attributed to pending creations stay out of anchor classification
-    until the creation owner restores their op. Everything else can be an anchor.
+    until the creation owner restores their op. Proposals are never anchors.
     """
     open_numbers = {issue.number for issue in issues}
     remaining: list["Issue"] = []
     approved: list[ApprovedTechLeadOp] = []
     for issue in issues:
-        if _issue_carries_gate(issue):
-            continue  # open proposal (or foreign gate-labeled issue): inert
         op = ops.get(issue.number)
         if op is not None:
-            approved.append(
-                ApprovedTechLeadOp(proposal_issue_number=issue.number, op=op)
-            )
+            verdict = verdicts.get(issue.number)
+            if verdict is not None and verdict.approved:
+                approved.append(
+                    ApprovedTechLeadOp(proposal_issue_number=issue.number, op=op)
+                )
+            continue
+        if known_proposal_state(issue.labels, issue.body, known=issue.number in known).is_proposal:
+            # A proposal without an op (follow-up, promotion): inert, and its
+            # body marker keeps it one even with every gate label stripped
+            # (#7763 review r10 F2).
             continue
         # Accepted creates awaiting ledger recovery are never review anchors,
-        # even if the operator already removed their gate.
+        # even if their labels were edited.
         if not any(marker in (issue.body or "") for marker in pending_markers):
             remaining.append(issue)
     absent = tuple(sorted(number for number in ops if number not in open_numbers))
@@ -418,8 +537,9 @@ def reconcile_tech_lead_proposals(
 
 def observe_gated_tech_lead_proposals(
     *observed: Sequence["Issue"],
+    known: Collection[int] = frozenset(),
 ) -> tuple[GatedTechLeadProposal, ...]:
-    """The approval backlog as LABEL truth: every open gate-labeled issue (#7014).
+    """The approval backlog as LABEL truth: every open, unapproved proposal (#7014).
 
     The lifecycle owner's answer to "what is waiting on the operator?", and the
     counterpart to :func:`reconcile_tech_lead_proposals`, which classifies the
@@ -459,7 +579,7 @@ def observe_gated_tech_lead_proposals(
     backlog: dict[int, GatedTechLeadProposal] = {
         number: _gated_proposal_summary(issue)
         for number, issue in latest.items()
-        if _awaits_approval(issue)
+        if _awaits_approval(issue, known)
     }
     return tuple(backlog[number] for number in sorted(backlog))
 
@@ -473,9 +593,12 @@ def _gated_proposal_summary(issue: "Issue") -> GatedTechLeadProposal:
     )
 
 
-def _awaits_approval(issue: "Issue") -> bool:
-    """True iff *issue* is open and still carries the operator-approval gate."""
-    return issue.state == "open" and _issue_carries_gate(issue)
+def _awaits_approval(issue: "Issue", known: Collection[int]) -> bool:
+    """True iff *issue* is an open proposal no one has approved (#7763): one
+    the approval owner's index names counts even when an edit stripped its
+    labels and marker (#7763 review r16 F1)."""
+    state = known_proposal_state(issue.labels, issue.body, known=issue.number in known)
+    return issue.state == "open" and state.gate_closed
 
 
 def _proposal_issue_is_open(tracker: "RepositoryHost", issue_number: int) -> bool:
@@ -591,6 +714,9 @@ def plan_approved_tech_lead_op_executions(
                     expected=build_expected_for_mutation(),
                 )
             )
+        elif op.op_type == "release_validated_work":
+            actions.append(ReleaseValidatedWorkAction.approved(
+                op, item.proposal_issue_number, reason=reason, expected=build_expected_for_mutation()))
         elif op.op_type == "release_withheld_review":
             actions.append(
                 ReleaseWithheldReviewAction(
@@ -606,6 +732,31 @@ def plan_approved_tech_lead_op_executions(
                     expected=build_expected_for_mutation(),
                 )
             )
+        elif op.op_type == "propose_decision":
+            assert op.decision is not None
+            actions.append(
+                ApplyOperatorDecisionAction(
+                    issue_number=op.target_issue_number,
+                    decision=op.decision,
+                    follow_through=op.follow_through,
+                    proposal_id=op.source_action_id,
+                    finding_ids=op.finding_ids,
+                    anchor_issue_number=item.proposal_issue_number,
+                    proposal_issue_number=item.proposal_issue_number,
+                    reason=reason,
+                    expected=build_expected_for_mutation(),
+                )
+            )
+        elif op.op_type == "resolve_block":
+            assert op.resolution is not None
+            actions.append(ResolveBlockAction(
+                issue_number=op.target_issue_number, resolution=op.resolution,
+                follow_through=op.follow_through, rationale=op.rationale, proposal_id=op.source_action_id,
+                finding_ids=op.finding_ids, anchor_issue_number=item.proposal_issue_number,
+                proposal_issue_number=item.proposal_issue_number, observed_at=op.observed_at,
+                source_session_name=op.source_session_name, source_run_id=op.source_run_id,
+                reason=reason, expected=build_expected_for_mutation(),
+            ))
         elif op.op_type == "kill_hung_session":
             actions.append(
                 KillHungSessionAction(
@@ -642,37 +793,3 @@ def plan_approved_tech_lead_op_executions(
             op.target_issue_number,
         )
     return actions
-
-
-def apply_tech_lead_proposal_command(
-    command: "TechLeadProposalCommand", *, repository: "RepositoryHost", ops: "TechLeadAuthorityStore"
-) -> "TechLeadProposalCommandOutcome":
-    """The UI gesture for the EXISTING gate, with no second execution path.
-
-    Approval removes the same label GitHub operators remove. The existing
-    reconciliation/planner/consent-checked dispatcher performs execution on
-    the next tick, under its normal pause and mutation guards.
-    """
-    from ..domain.scoped_rework import TechLeadProposalCommandOutcome
-
-    number = command.proposal_issue_number
-    op = ops.load_op(issue_number=number)
-    if op is None or op.op_type != "request_rework":
-        return TechLeadProposalCommandOutcome("unavailable", "No stored scoped-rework proposal exists", number)
-    assert op.rework_request is not None
-    if ops.load_rework_receipt(op.rework_request.key) is not None:
-        return TechLeadProposalCommandOutcome("unavailable", "Execution has started; the recorded outcome is authoritative", number)
-    try:
-        issue = repository.get_issue(number)
-        if issue is None or issue.state != "open":
-            return TechLeadProposalCommandOutcome("unavailable", "Proposal is closed or missing", number)
-        if command.decision == "decline":
-            repository.update_issue_state(number, "closed")
-            ops.discard_op(issue_number=number)
-            return TechLeadProposalCommandOutcome("declined", "Proposal declined", number)
-        for label in issue.labels:
-            if is_proposed_tech_lead_gate(label):
-                repository.remove_label(number, label)
-        return TechLeadProposalCommandOutcome("approved", "Approval recorded; the engine will revalidate and execute the stored operation", number)
-    except Exception as exc:
-        return TechLeadProposalCommandOutcome("failed", str(exc), number)

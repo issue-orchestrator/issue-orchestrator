@@ -48,6 +48,13 @@ TECH_LEAD_AUTHORITY_MODES = ("execute", "propose")
 # cannot park work against an arbitrary agent-chosen tracker.
 TECH_LEAD_AUTHORITY_FLOOR_ACTIONS = ("escalate_to_human", "defer_to_tracker")
 
+# Always filed for the operator to approve (#7593): the decision is the
+# operator's, so no setting can let the tech lead execute it. Releasing
+# validated work no proof connects to its rebuild (#9092) is the operator's
+# call in the same way: it has no authority key, because no value but
+# ``propose`` could ever be honored.
+TECH_LEAD_AUTHORITY_OPERATOR_DECISION_ACTIONS = ("propose_decision", "release_validated_work")
+
 # Action types whose authority mode is configurable — the complement of the
 # floor set above.
 TECH_LEAD_AUTHORITY_CONFIGURABLE_ACTIONS = (
@@ -59,6 +66,7 @@ TECH_LEAD_AUTHORITY_CONFIGURABLE_ACTIONS = (
     "request_rework",
     "recover_validated_work",
     "release_withheld_review",
+    "resolve_block",
 )
 
 
@@ -70,8 +78,8 @@ class TechLeadAuthorityConfig:
     ``propose`` — for ``post_comment``/``flag_pattern``: shadow mode (the
     proposal is surfaced as would-have-done). For ``create_issue`` and
     act-level actions: a GATED ISSUE (#6778) — the proposal is created as a
-    GitHub issue carrying ``proposed-tech-lead``; removing that label is
-    per-instance operator approval. Per-instance approval and config-level
+    GitHub issue labelled ``tech-lead-proposal`` + ``awaiting-approval``; a
+    maintainer's ``approved`` label is per-instance operator approval (#7763). Per-instance approval and config-level
     trust coexist.
 
     ``escalate_to_human`` and ``defer_to_tracker`` are intentionally not
@@ -99,6 +107,12 @@ class TechLeadAuthorityConfig:
     # so the per-action ceiling stays open and the charter's flow-role dials
     # decide execute versus propose.
     release_withheld_review: str = "execute"
+    # Decides a needs-human WORK block in the operator's stead (#7658):
+    # answers an agent's question from the spec, decides a split, or lifts a
+    # stale block. ``propose`` (the default) files each decision for the
+    # operator to approve; ``execute`` lets the tech lead clear the block
+    # itself. Human-only work and non-work causes are never resolvable.
+    resolve_block: str = "propose"
 
     @classmethod
     def from_mapping(cls, data: dict) -> "TechLeadAuthorityConfig":
@@ -128,6 +142,8 @@ class TechLeadAuthorityConfig:
         """
         if action_type in TECH_LEAD_AUTHORITY_FLOOR_ACTIONS:
             return "execute"
+        if action_type in TECH_LEAD_AUTHORITY_OPERATOR_DECISION_ACTIONS:
+            return "propose"
         if action_type not in TECH_LEAD_AUTHORITY_CONFIGURABLE_ACTIONS:
             raise ValueError(f"unknown tech_lead action type: {action_type!r}")
         return getattr(self, action_type)
@@ -391,8 +407,8 @@ class TechLeadFindingsConfig:
 
     ``promote`` is the master switch. ``off`` disables the whole lane (no
     promotion issues, no loop-closure reads); ``gated`` (the default) files the
-    promotion carrying the ``proposed-tech-lead`` gate, so the operator's
-    approval is exactly one action — removing the label; ``auto`` files it
+    promotion carrying the approval model's labels, so the operator's
+    approval is exactly one action — a maintainer's ``approved``; ``auto`` files it
     ungated, i.e. immediately runnable in the target repo's own pipeline.
 
     ``min_evidence`` is how many observations a signature must accrue before it

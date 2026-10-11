@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from .label_manager import LabelManager
 from .scheduler import Scheduler
 from .dependency_evaluator import DependencyEvaluator
+from .dependency_scope_label import plan_dependency_scope_labels
 from .provider_availability import ProviderAvailabilityPolicy
 from .workflows import (
     ReviewWorkflow,
@@ -70,6 +71,8 @@ from .actions import (
     SessionType,
     SyncLabelsAction,
 )
+from .ci_failure_triage import plan_ci_reruns
+from .integration_branch import plan_integration_steps
 from .awaiting_merge_post_publish_policy import (
     build_post_publish_validation_comment,
     POST_PUBLISH_VALIDATION_SOURCE,
@@ -283,6 +286,8 @@ class Planner:
         # the planner just turns each fact into the protected enqueue action.
         merge_queue_actions = self._plan_merge_queue_enqueues(snapshot)
         actions.extend(merge_queue_actions)
+        actions.extend(plan_ci_reruns(snapshot.discovered_ci_reruns))  # transient CI failures (#8692)
+        actions.extend(plan_integration_steps(snapshot.discovered_integration_steps))  # #8144
 
         # 1e+1f2. Reactive tech_lead (tech-lead reaction, ADR-0031): the storm
         # cohort escalates to one unscheduled health-review anchor OR the
@@ -1187,7 +1192,8 @@ class Planner:
             if not decision.available and not decision.is_dependency_blocked
         )
 
-        # Record dependency-blocked items and add cross-milestone labels
+        # Record dependency-blocked items; the derived cross-milestone label
+        # is reconciled, both ways, by its owner (#7333).
         for issue, reason in dependency_blocked:
             logger.info(issue_log(issue.number, "Skipped: reason=blocked_by_dependency detail=%s"), reason)
             skipped.append(SkippedItem(
@@ -1195,15 +1201,12 @@ class Planner:
                 number=issue.number,
                 reason=f"dependency: {reason}",
             ))
-            # Add cross-milestone label if this is a milestone scope violation
-            if "cross-milestone" in reason.lower():
-                actions.append(AddLabelAction(
-                    issue_number=issue.number,
-                    label=self._lm.blocked_cross_milestone,
-                    reason=f"dependency violates milestone scope: {reason}",
-                    expected=build_expected_for_mutation(),
-                    issue_key=issue.key.stable_id(),
-                ))
+        if self.dependency_evaluator is not None:
+            actions.extend(plan_dependency_scope_labels(
+                scheduler_decisions,
+                label_manager=self._lm,
+                evaluator=self.dependency_evaluator,
+            ))
 
         # Filter out issues whose provider cannot be launched against. Routed
         # through the shared skip owner like every other queue, so the issue

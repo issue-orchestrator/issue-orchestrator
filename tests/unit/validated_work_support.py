@@ -71,6 +71,9 @@ class GraphAncestry:
             return AncestryRelation.DESCENDANT
         return AncestryRelation.DIVERGENT
 
+    def retain(self, reference: CommitReference) -> bool:
+        return reference.key.validated_head_sha not in self.missing
+
     def contains(self, head: str, ancestor: str) -> bool:
         while head in self.parents:
             head = self.parents[head]
@@ -275,3 +278,14 @@ def owned_intake(task=None):
     )
     intake.evidence_receive_sequence.return_value = 1
     return intake
+
+
+@dataclass
+class UnpublishedRecords:
+    """The scope sweep's open-PR publication owner when no open PR carries any record."""
+
+    asked: list[str] = field(default_factory=list)
+
+    def record(self, record) -> bool:
+        self.asked.append(record.disposition.record_id)
+        return False

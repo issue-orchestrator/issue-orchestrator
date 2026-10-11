@@ -335,3 +335,20 @@ def test_settling_an_issue_forgets_its_owed_pause(tmp_path) -> None:
     store.clear_escalation_issue(410)
 
     assert [p.issue_number for p in store.pending_pauses()] == [7]
+
+
+def test_one_engine_reprobe_is_claimed_once_per_commit(tmp_path) -> None:
+    """The claim is the race's referee (#7592): the planner and the drain may
+    both read the same park before either claims its re-try under a commit."""
+    path = tmp_path / "l.sqlite"
+    store = SQLiteActionLivenessStore(path)
+    parked, backing_off = _row(), _row(fingerprint="b" * 32, parked=False)
+    store.put(parked)
+    store.put(backing_off)
+
+    assert store.claim_engine_reprobe(parked.key, "new1111") is True
+    assert SQLiteActionLivenessStore(path).claim_engine_reprobe(parked.key, "new1111") is False
+    assert store.row(parked.key).parked_on_engine == "new1111"
+    assert store.claim_engine_reprobe(parked.key, "next2222") is True
+    assert store.claim_engine_reprobe(backing_off.key, "new1111") is False
+    assert store.row(backing_off.key).parked_on_engine is None

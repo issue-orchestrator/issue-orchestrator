@@ -148,6 +148,8 @@ def audit_queue(
     issue_tracker: Optional["IssueTracker"] = None,
     issue_branches: Optional[dict[int, str]] = None,
     preloaded_issues: Optional[list[Issue]] = None,
+    *,
+    known_proposals: frozenset[int],
 ) -> list[IssueAuditEntry]:
     """Audit all issues and explain why each is queued or skipped.
 
@@ -158,6 +160,8 @@ def audit_queue(
         issue_branches: Map of issue numbers to branch names.
         preloaded_issues: Pre-fetched issues to use instead of calling GitHub.
             When provided, skips the ``fetch_all_issues`` call entirely.
+        known_proposals: Issues the approval owner's durable identity names
+            as tech-lead proposals (#7763 review r27 F1), whatever their labels.
 
     Returns:
         List of audit entries, one per issue.
@@ -189,7 +193,9 @@ def audit_queue(
 
     # Audit each issue
     for issue in all_issues:
-        entry = audit_issue(issue, config, history_numbers, active_numbers, issue_branches)
+        entry = audit_issue(
+            issue, config, history_numbers, active_numbers, issue_branches, known_proposals=known_proposals
+        )
         entries.append(entry)
 
     return entries
@@ -224,9 +230,12 @@ def audit_issue(
     history_numbers: set[int],
     active_numbers: set[int],
     issue_branches: Optional[dict[int, str]] = None,
+    *,
+    known_proposals: frozenset[int],
 ) -> IssueAuditEntry:
     """Determine why an issue is queued or skipped."""
     from ..control.label_manager import LabelManager
+    from ..control.tech_lead_approval import admits_without_evidence
     lm = LabelManager(config)
 
     if issue.state == "closed":
@@ -246,6 +255,11 @@ def audit_issue(
 
     if lm.requires_human_any(list(issue.labels)):
         return IssueAuditEntry(issue, SkipReason.NEEDS_HUMAN)
+
+    # The scheduler's approval rule, fail-closed with no evidence (#7763):
+    # labels alone never admit a tech-lead proposal.
+    if issue.number in known_proposals or not admits_without_evidence(issue):
+        return IssueAuditEntry(issue, SkipReason.BLOCKED, "tech-lead proposal without a verified approval")
 
     if issue.number in history_numbers:
         return IssueAuditEntry(issue, SkipReason.IN_HISTORY, "already processed this run")

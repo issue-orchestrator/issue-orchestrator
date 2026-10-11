@@ -72,6 +72,9 @@ NOT_CARRIERS = {
         "ScopeRetirement: a store compare-and-set outcome, never a host error"
     ),
     ("control/completion_pr_collision.py", "push_result"): "a local git push result",
+    ("control/publication_source_guards.py", "paths"): (
+        "BranchPathsResult: a local git path query (the standing-rulings review rule, #8141)"
+    ),
     ("control/staged_published_work_finalizer.py", "checkpoint"): (
         "FinalizationCheckpoint: a durable phase the store recorded, not a host answer"
     ),

@@ -259,6 +259,16 @@ class DependencyGateReport:
         return self.work.is_open
 
     @property
+    def work_violates_milestone_scope(self) -> bool:
+        """True when an ADR-0009 milestone-scope violation blocks work (#7333).
+
+        The one fact the derived ``blocked-cross-milestone`` label projects.
+        """
+        return any(
+            block.reason is GateBlockReason.CROSS_MILESTONE for block in self.work.blocks
+        )
+
+    @property
     def host_rate_limit(self) -> HostRateLimit | None:
         """A host rate limit behind any edge that could not be looked up (#7297)."""
         return next(

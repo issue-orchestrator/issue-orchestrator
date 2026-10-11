@@ -52,7 +52,7 @@ def is_required_act_level_action(action: Action) -> bool:
     """True for a decision-MANDATED act-level action (ADR-0031 §2).
 
     THE single source of "which actions carry mandated authority", shared by the
-    apply-time GATE (:func:`partition_required_act_level_actions`, which withholds
+    apply-time GATE (:func:`partition_completion_effects`, which withholds
     success-only effects) and the terminal VERDICT
     (:func:`evaluate_required_act_level_outcome`), so authority and the effects it
     gates classify the same actions and cannot drift (#6779 R13). A
@@ -67,20 +67,68 @@ def is_required_act_level_action(action: Action) -> bool:
                                CreateTechLeadProposalIssueAction))
 
 
-def partition_required_act_level_actions(
-    actions: Sequence[Action],
-) -> tuple[list[Action], list[Action]]:
-    """Split completion actions into (mandated act-level, success-only remainder).
+def is_independent_observation(action: Action) -> bool:
+    """True for a tech-lead observation that stands whatever the mandated acts do.
 
-    Relative order within each partition is preserved. The mandated partition is
-    the authority gate applied first; the remainder holds the success-only effects
-    (labels/comments/close) that must NOT commit unless the gate commits (#6779).
+    A decision's own findings, written where they belong: a ``flag_pattern``'s
+    surfaced pattern, case file and observation, a ``create_issue`` follow-up
+    (or its dedup comment), a ``post_comment``, a surfaced proposal record, and
+    any other effect of a decision the charter let EXECUTE (stamped with its
+    decision, #7362) that is not itself mandated. None of them says the
+    completion SUCCEEDED, so none is a success-only effect: withholding them
+    behind an unrelated mandated write that failed discarded what the tech lead
+    noticed (porchpin #410: 10 flag_pattern, 2 create_issue and 2 post_comment
+    dropped). Each is still guarded by its own reconciliation gate.
     """
-    mandated = [action for action in actions if is_required_act_level_action(action)]
-    remainder = [
-        action for action in actions if not is_required_act_level_action(action)
-    ]
-    return mandated, remainder
+    from .required_issue_comment import TechLeadDecisionCommentAction
+    from .tech_lead_actions import (
+        AppendPatternObservationAction,
+        CreateTechLeadIssueAction,
+        SurfaceTechLeadProposalAction,
+    )
+
+    if is_required_act_level_action(action):
+        return False
+    return bool(action.charter_decisions) or isinstance(
+        action,
+        (
+            SurfaceTechLeadProposalAction,
+            CreateTechLeadIssueAction,
+            AppendPatternObservationAction,
+            TechLeadDecisionCommentAction,
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class CompletionEffects:
+    """A completion's actions by what may commit them (planned order kept).
+
+    * ``mandated`` — the decision-mandated act-level actions: the authority
+      gate, applied first (:func:`is_required_act_level_action`);
+    * ``observations`` — the tech lead's independent observations, applied
+      whatever the gate did (:func:`is_independent_observation`);
+    * ``success_only`` — the completion's own bookkeeping (anchor labels,
+      completion comments, close), which says the completion succeeded and so
+      commits ONLY when the gate commits and nothing raised (#6779).
+    """
+
+    mandated: tuple[Action, ...]
+    observations: tuple[Action, ...]
+    success_only: tuple[Action, ...]
+
+
+def partition_completion_effects(actions: Sequence[Action]) -> CompletionEffects:
+    """Split completion actions into mandated, observation and success-only."""
+    mandated = tuple(action for action in actions if is_required_act_level_action(action))
+    observations = tuple(action for action in actions if is_independent_observation(action))
+    success_only = tuple(
+        action
+        for action in actions
+        if not is_required_act_level_action(action)
+        and not is_independent_observation(action)
+    )
+    return CompletionEffects(mandated, observations, success_only)
 
 
 def require_investigation_terminal_effect(actions: list[Action], *,

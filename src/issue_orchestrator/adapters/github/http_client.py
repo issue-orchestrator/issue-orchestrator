@@ -9,7 +9,7 @@ import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, Iterator, Literal, cast
 from urllib.parse import quote
 
@@ -18,7 +18,9 @@ import httpx
 from ...events import EventName
 from ...infra import gh_audit
 from ... import __version__
+from ...domain.issue_delivery import MergedPullRequest
 from ...ports.comment_receipt import IssueCommentReceipt
+from .app_bot_account import GitHubAppBotAccount
 from .auth import (
     GitHubAppInstallationTokenProvider,
     GitHubAuth,
@@ -29,6 +31,7 @@ from .errors import (
     GitHubAuthError,
     GitHubHttpError,
     GitHubRateLimitedError,
+    GitHubResponseTooLarge,
     GitHubScanIncompleteError,
     GitHubTransportError,
 )
@@ -82,6 +85,12 @@ _RollupSignal = tuple[bool, bool, bool]
 # page; a head commit with >2000 check runs is implausible, so this is purely a
 # runaway-loop backstop, not an expected limit.
 _MAX_CHECK_RUN_PAGES = 20
+
+# Pages of 100 status-check contexts read for one PR head before the read is
+# refused as incomplete (#8692): far more than any real head carries.
+_MAX_CHECK_CONTEXT_PAGES = 10
+# Pages of 100 jobs read for one workflow-run attempt (#8692).
+_MAX_ATTEMPT_JOB_PAGES = 5
 
 # Why one REST rollup source did (not) yield a trustworthy reading. ``ok`` =
 # read in full; ``permission_denied`` = the token lacks the read scope;
@@ -221,6 +230,38 @@ def _aggregate_check_runs(payload: object) -> _RollupSignal:
             # → non-passing, so it blocks merge like any other failure.
             failure = True
     return failure, pending, present
+
+
+_CHECK_RUN_STATUSES = frozenset({"queued", "in_progress", "completed", "waiting", "requested", "pending"})
+_COMMIT_STATUS_STATES = frozenset({"success", "pending", "failure", "error"})
+
+
+def _well_formed_check_runs(payload: object, *, page: int) -> bool:
+    """A `/check-runs` page GitHub actually answered (#8144 review r4/r5).
+
+    A list of run objects each with a known status, and - on a short (last)
+    page - as many runs in all as ``total_count`` says: fewer means runs the
+    answer left out, any of which could be a failure.
+    """
+    runs = payload.get("check_runs") if isinstance(payload, dict) else None
+    total = payload.get("total_count") if isinstance(payload, dict) else None
+    if not isinstance(runs, list) or type(total) is not int:
+        return False
+    if not all(isinstance(run, dict) and run.get("status") in _CHECK_RUN_STATUSES for run in runs):
+        return False
+    return len(runs) == 100 or total == (page - 1) * 100 + len(runs)
+
+
+def _well_formed_combined_status(payload: object) -> bool:
+    """A `/status` answer: a known state and status objects with known states."""
+    if not isinstance(payload, dict):
+        return False
+    statuses = payload.get("statuses")
+    return (
+        payload.get("state") in _COMMIT_STATUS_STATES
+        and isinstance(statuses, list)
+        and all(isinstance(status, dict) and status.get("state") in _COMMIT_STATUS_STATES for status in statuses)
+    )
 
 
 def _aggregate_combined_status(payload: object) -> _RollupSignal:
@@ -532,6 +573,7 @@ class GitHubHttpClient:
     def __init__(self, config: GitHubHttpConfig) -> None:
         self._config = config
         self._etag_cache = _ETagCache()
+        self._app_bot_account: GitHubAppBotAccount | None = None
         if config.auth is not None:
             self._auth = config.auth
         elif config.token_provider is not None:
@@ -1078,6 +1120,94 @@ class GitHubHttpClient:
 
         return collected[:limit], oldest_updated_at
 
+    def graphql_query(self, query: str, variables: dict[str, Any], *, caller: str) -> dict[str, Any]:
+        """A read-only GraphQL query's ``data`` (raises on any GraphQL error)."""
+        if query.lstrip().startswith("mutation"):
+            raise ValueError("graphql_query reads; a mutation goes through its own method")
+        data = self._graphql(query, variables, caller=caller).get("data")
+        if not isinstance(data, dict):
+            raise GitHubHttpError("GitHub GraphQL returned no data", method="POST", url="/graphql")
+        return data
+
+    def get_json_bounded(
+        self, path: str, *, params: dict[str, Any] | None = None, max_bytes: int, caller: str
+    ) -> Any:
+        """An uncached ``GET`` of an API path (``/repos/...``), as decoded JSON,
+        read as a stream and refused past ``max_bytes`` before it is decoded
+        (raises :class:`GitHubResponseTooLarge`). Redirects are not followed.
+
+        For a caller whose own policy decides which paths are readable and
+        how much it may hold (the improver's toolbox, #8001); it never writes.
+        """
+        # Uncompressed only: httpx decompresses each chunk before yielding
+        # it, so a small compressed body could expand past any limit before
+        # it is counted (#8001 r8). An encoded answer is refused unread.
+        headers = {**self._auth_headers(), "Accept-Encoding": "identity"}
+        start = time.monotonic()
+        error: str | None = None
+        received = 0
+        try:
+            try:
+                with self._client.stream("GET", path, params=params, headers=headers) as response:
+                    declared = int(response.headers.get("Content-Length") or 0)
+                    encoding = response.headers.get("Content-Encoding", "identity").strip().lower()
+                    if encoding not in ("", "identity"):
+                        error = f"refused a {encoding}-encoded response"
+                        raise GitHubResponseTooLarge(
+                            f"GitHub GET {path} answered {encoding}-encoded; only an uncompressed answer is read",
+                            method="GET",
+                            url=str(response.url),
+                            status_code=response.status_code,
+                        )
+                    body = bytearray()
+                    if declared <= max_bytes:
+                        for chunk in response.iter_bytes():
+                            body += chunk
+                            if len(body) > max_bytes:
+                                break
+                    received = len(body)
+                    if declared > max_bytes or received > max_bytes:
+                        error = f"response larger than {max_bytes} bytes"
+                        raise GitHubResponseTooLarge(
+                            f"GitHub GET {path} returned more than {max_bytes} bytes",
+                            method="GET",
+                            url=str(response.url),
+                            status_code=response.status_code,
+                        )
+                    text = body.decode("utf-8", errors="replace")
+                    # Only the target's own answer: a redirect's body (a renamed
+                    # repository) is not it, and is never followed.
+                    if response.status_code != 200:
+                        error = f"{response.status_code} {text.strip()[:280]}"
+                        summary = _summarize_github_error(text)
+                        raise github_http_failure(
+                            f"GitHub GET {path} failed: {response.status_code}" + (f" — {summary}" if summary else ""),
+                            method="GET",
+                            url=str(response.url),
+                            status_code=response.status_code,
+                            headers=response.headers,
+                            response_text=text,
+                        )
+            except (httpx.TimeoutException, httpx.HTTPError, OSError) as exc:
+                error = f"transport_error: {exc}"
+                raise GitHubTransportError(
+                    f"GitHub transport error for GET {path}", method="GET", url=path, original=exc
+                ) from exc
+            return _decode_response_payload(text, "json")
+        finally:
+            gh_audit.record_live_call(command=f"GET {path}", caller=caller, error=error, rate_limit=None)
+            gh_audit.record(
+                args=["GET", path],
+                repo=self._config.repo,
+                duration_ms=int((time.monotonic() - start) * 1000),
+                error=error,
+                caller=caller,
+                bytes_returned=received,
+                items_returned=0,
+                full_scan=False,
+                rate_limit=None,
+            )
+
     def get_issue(self, issue_number: int, *, use_cache: bool = True) -> dict[str, Any] | None:
         payload = self._request_json(
             "GET",
@@ -1167,7 +1297,7 @@ class GitHubHttpClient:
             # Same page-1 hole just closed for exhaustive issue scans. This
             # method promises the COMPLETE label set, and its callers make
             # negative-existence decisions on it — notably refusing gated
-            # tech-lead proposal creation when `proposed-tech-lead` is absent.
+            # tech-lead proposal creation when an approval label is absent.
             # An empty list is not valid exhaustion for a 2xx carrying a
             # non-list body; it is a contract violation that would prove every
             # label absent.
@@ -1181,7 +1311,7 @@ class GitHubHttpClient:
         # The port promises ALL labels (#6779 R8): page 1 keeps its ETag cache
         # for the common (<=100 labels) case, but a FULL first page means more
         # may exist, so continue paging. Without this a gate label sorted onto a
-        # later page (e.g. proposed-tech-lead in a repo with 100+ labels) is missed
+        # later page (e.g. awaiting-approval in a repo with 100+ labels) is missed
         # and valid proposal creation is falsely refused. Mirrors list_issues.
         if len(labels) >= 100:
             labels = list(labels) + self._paginate_all_labels(start_page=2)
@@ -1283,7 +1413,7 @@ class GitHubHttpClient:
 
         The port promises ALL labels, and control/tech_lead_proposals.py makes a
         gate-ABSENT decision from this list — a truncated scan that misses the
-        ``proposed-tech-lead`` gate would falsely refuse valid proposals. So this
+        approval labels would falsely re-provision them. So this
         never returns a silently partial result: it drains the shared fail-loud
         pager (:meth:`_paginate_fresh`), which raises on a transport failure, a
         later-page non-200, or a cap-exhausted scan. Uncached: later pages are
@@ -1497,43 +1627,67 @@ class GitHubHttpClient:
         Transport/HTTP errors propagate as ``RepositoryHostError`` so callers
         can fail loud.
         """
+        return any(
+            marker in body
+            for body in self._scan_issue_comment_bodies(
+                issue_number, caller="issue_comment_marker_present"
+            )
+        )
+
+    def issue_comment_bodies_containing(
+        self, issue_number: int, needle: str
+    ) -> tuple[str, ...]:
+        """Every comment body on the issue/PR that contains ``needle``.
+
+        The same complete, uncached, fail-loud scan as
+        :meth:`issue_comment_marker_present`: a caller that decides from the
+        ABSENCE of a body (a durable marker, #7658) never reads a truncated or
+        stale listing as "none".
+        """
+        return tuple(
+            body
+            for body in self._scan_issue_comment_bodies(
+                issue_number, caller="issue_comment_bodies_containing"
+            )
+            if needle in body
+        )
+
+    def _scan_issue_comment_bodies(
+        self, issue_number: int, *, caller: str
+    ) -> Iterator[str]:
+        """Yield every comment body, page by page, to the true final page.
+
+        Ends only on a short or empty page (the true final page). A non-list
+        page or hitting the page cap raises ``GitHubScanIncompleteError``
+        rather than ending early: a truncated read is not evidence that a body
+        is absent. Not ETag-cached: these reads are correctness-critical.
+        """
         page = 1
         while True:
             payload = self._request_json(
                 "GET",
                 f"/repos/{self._config.repo}/issues/{issue_number}/comments",
                 params={"per_page": 100, "page": page},
-                caller="issue_comment_marker_present",
+                caller=caller,
                 use_cache=False,
             )
             if not isinstance(payload, list):
-                # A non-list 2xx body is a contract violation (proxy/mock drift
-                # or malformed GitHub response), not evidence of "no marker".
-                # Fail loud so a dedupe caller never posts a duplicate from a
-                # response we could not actually scan.
                 raise GitHubScanIncompleteError(
                     f"Comment listing for #{issue_number} page {page} was not "
                     f"a list ({type(payload).__name__}); cannot confirm marker "
                     f"absence",
                     issue_number=issue_number,
                 )
-            if not payload:
-                # Empty page = the true final page with nothing on it: the
-                # marker is genuinely absent.
-                return False
             for comment in payload:
                 if not isinstance(comment, dict):
                     continue
                 body = comment.get("body")
-                if isinstance(body, str) and marker in body:
-                    return True
+                if isinstance(body, str):
+                    yield body
             if len(payload) < 100:
-                return False
+                return
             page += 1
             if page > _MARKER_SCAN_PAGE_CAP:
-                # The cap exists only to bound a pathological loop, not to
-                # define "marker absent". Fail loud so the dedupe caller never
-                # mistakes a truncated scan for a clean one.
                 raise GitHubScanIncompleteError(
                     f"Comment marker scan for #{issue_number} exceeded "
                     f"{_MARKER_SCAN_PAGE_CAP} pages without reaching the final "
@@ -1589,6 +1743,120 @@ class GitHubHttpClient:
                     f"page; cannot confirm close-event absence",
                     issue_number=issue_number,
                 )
+
+    def standing_label_events(
+        self, issue_number: int, label: str, *, removed: bool = False, close_voids: bool = True
+    ) -> list[dict[str, Any]]:
+        """Every ``labeled`` (or, with ``removed``, ``unlabeled``) event for
+        ``label`` (case-insensitive) in its STANDING run, oldest first.
+
+        Approval evidence (#7763, #8346): the approval owner judges who put
+        an ``approved`` label on. Fail-loud like ``issue_closed_on_or_after``:
+        every page is read fresh, a malformed or truncated listing raises,
+        and an empty answer is given only after the true final page. GitHub
+        lists events oldest first.
+
+        The run is every matching transition since the last opposite one, so
+        an ``approved`` removed after the caller read the issue is no
+        approval (#7763 review r8 F1). A ``closed`` or ``reopened`` event
+        voids the run too (#7763 review r7 F2, r17 F1): closing a proposal
+        declines it; with ``close_voids=False`` only the label's own transitions
+        bound the run, as for a block's episode (#8688): a label kept on through
+        a close and reopen is the same application. The WHOLE run is returned,
+        not its newest event (#8346):
+        GitHub records the labels an issue is filed with asynchronously,
+        attributing every label present when that job runs — a bot's
+        ``approved`` added seconds after filing included — to the issue's
+        author, so a later labeled event of a standing label is not who
+        applied it.
+        """
+        return self.standing_label_runs(
+            issue_number, (label,), removed=removed, close_voids=close_voids,
+        )[label.casefold()]
+
+    def standing_label_runs(
+        self,
+        issue_number: int,
+        labels: Sequence[str],
+        *,
+        removed: bool = False,
+        close_voids: bool = True,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """:meth:`standing_label_events` for several labels from ONE scan of
+        the issue's events, keyed by casefolded label name (#8731): a blocked
+        item's every blocking label is dated by one read, not one per label."""
+        kind = "unlabeled" if removed else "labeled"
+        runs: dict[str, list[dict[str, Any]]] = {label.casefold(): [] for label in labels}
+        for batch in self._paginate_fresh(
+            f"/repos/{self._config.repo}/issues/{issue_number}/events",
+            params={"per_page": 100},
+            start_page=1,
+            page_cap=_MARKER_SCAN_PAGE_CAP,
+            what=f"issue #{issue_number} events",
+        ):
+            for event in batch:
+                if not isinstance(event, dict) or not str(event.get("event") or ""):
+                    # A row we cannot read could be this label's removal: no
+                    # standing answer exists (#7763 review r26 F2).
+                    raise GitHubScanIncompleteError(f"issue #{issue_number} events: a malformed event row")
+                if event.get("event") in ("closed", "reopened"):
+                    if close_voids:
+                        runs = {folded: [] for folded in runs}
+                    continue
+                if event.get("event") not in ("labeled", "unlabeled"):
+                    continue
+                named = event.get("label")
+                if not isinstance(named, dict) or not str(named.get("name") or ""):
+                    # A label transition we cannot attribute to a label could
+                    # be the removal of this one: no standing answer exists
+                    # (#7763 review r23 F2).
+                    raise GitHubScanIncompleteError(
+                        f"issue #{issue_number} events: a {event.get('event')} event names no label"
+                    )
+                folded = str(named["name"]).casefold()
+                if folded in runs:
+                    runs[folded] = [*runs[folded], event] if event.get("event") == kind else []
+        return runs
+
+    def app_bot_account(self) -> GitHubAppBotAccount | None:
+        """The engine App's bot account, the actor of its installation writes,
+        or None for a personal token (#8987). Read once: ``GET /app`` names the
+        slug, ``GET /users/<slug>[bot]`` the account's immutable id."""
+        if self._app_bot_account is None:
+            login = self._auth.app_bot_login()
+            if login is None:
+                return None
+            payload = self._request_json(
+                "GET", f"/users/{quote(login, safe='')}", use_cache=False, caller="app_bot_account"
+            )
+            self._app_bot_account = GitHubAppBotAccount.from_user_payload(login, payload)
+        return self._app_bot_account
+
+    def repository_role(self, login: str) -> str | None:
+        """``login``'s repository role, or None when GitHub knows no such user.
+
+        ``role_name`` is GitHub's fine-grained answer (``admin``, ``maintain``,
+        ``write``, ``triage``, ``read``); the legacy ``permission`` field folds
+        ``maintain`` into ``write``, so it is used only when ``role_name`` is
+        absent. Uncached: an approval decision must not ride a stale role.
+        """
+        try:
+            payload = self._request_json(
+                "GET",
+                f"/repos/{self._config.repo}/collaborators/{quote(login, safe='')}/permission",
+                use_cache=False,
+                caller="repository_role",
+            )
+        except GitHubHttpError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        if not isinstance(payload, dict):
+            raise GitHubHttpError(
+                f"GitHub permission payload for {login!r} was not an object"
+            )
+        role = payload.get("role_name") or payload.get("permission")
+        return str(role) if role else None
 
     # -------------------- Git refs / commits --------------------
 
@@ -1726,6 +1994,93 @@ class GitHubHttpClient:
             caller="delete_git_ref",
         )
 
+    # -------------------- Integration-branch mode (#8144) --------------------
+
+    def compare_commits(self, base: str, head: str) -> dict[str, Any]:
+        """GitHub's ``base...head`` comparison (first page of commits).
+
+        ETag-revalidated: a branch name's comparison changes as it moves, so the
+        cache only ever answers a 304 GitHub itself confirmed.
+        """
+        basehead = f"{quote(base, safe='')}...{quote(head, safe='')}"
+        payload = self._request_json(
+            "GET",
+            f"/repos/{self._config.repo}/compare/{basehead}",
+            params={"per_page": 250},
+            caller="compare_commits",
+        )
+        if not isinstance(payload, dict):
+            raise GitHubHttpError("GitHub compare payload was not an object")
+        return payload
+
+    def merge_branch(self, *, base: str, head: str, message: str) -> dict[str, Any]:
+        """POST /merges: merge *head* into *base*; ``{}`` when nothing to merge (204).
+
+        A conflict raises :class:`GitHubHttpError` with status 409.
+        """
+        payload = self._request_json(
+            "POST",
+            f"/repos/{self._config.repo}/merges",
+            json_body={"base": base, "head": head, "commit_message": message},
+            use_cache=False,
+            caller="merge_branch",
+        )
+        if not isinstance(payload, dict):
+            raise GitHubHttpError("GitHub merge payload was not an object")
+        return payload
+
+    def update_pull_request_branch(self, pr_number: int, *, expected_head_sha: str) -> None:
+        """PUT /pulls/{n}/update-branch, guarded by the expected head (202 accepted)."""
+        self._request_json(
+            "PUT",
+            f"/repos/{self._config.repo}/pulls/{pr_number}/update-branch",
+            json_body={"expected_head_sha": expected_head_sha},
+            use_cache=False,
+            caller="update_pull_request_branch",
+        )
+        self.invalidate_pr_etag(pr_number)
+
+    def list_pulls(
+        self,
+        *,
+        state: str,
+        base: str,
+        head: str | None = None,
+        sort: str | None = None,
+        direction: str | None = None,
+        page: int = 1,
+    ) -> list[dict[str, Any]]:
+        """One page (100) of PRs into *base*; *head* is a branch of this repo."""
+        params: dict[str, Any] = {"state": state, "base": base, "per_page": 100, "page": page}
+        if head is not None:
+            owner = self._config.repo.split("/", 1)[0]
+            params["head"] = f"{owner}:{head}"
+        if sort is not None:
+            params["sort"] = sort
+        if direction is not None:
+            params["direction"] = direction
+        payload = self._request_json(
+            "GET",
+            f"/repos/{self._config.repo}/pulls",
+            params=params,
+            use_cache=False,
+            caller="list_pulls",
+        )
+        if not isinstance(payload, list):
+            raise GitHubHttpError("GitHub pulls payload was not a list")
+        return payload
+
+    def update_pr_body(self, pr_number: int, body: str) -> None:
+        """PATCH /pulls/{n}: replace the PR's description."""
+        self._request_json(
+            "PATCH",
+            f"/repos/{self._config.repo}/pulls/{pr_number}",
+            json_body={"body": body},
+            use_cache=False,
+            caller="update_pr_body",
+        )
+        self.invalidate_pr_etag(pr_number)
+
     def get_git_commit(self, sha: str) -> dict[str, Any]:
         encoded = quote(sha, safe="")
         payload = self._request_json(
@@ -1820,6 +2175,16 @@ class GitHubHttpClient:
             caller="update_issue_state",
         )
 
+    def update_issue_body(self, issue_number: int, body: str) -> dict[str, Any] | None:
+        payload = self._request_json(
+            "PATCH",
+            f"/repos/{self._config.repo}/issues/{issue_number}",
+            json_body={"body": body},
+            use_cache=False,
+            caller="update_issue_body",
+        )
+        return payload if isinstance(payload, dict) else None
+
     def update_issue_milestone(
         self, issue_number: int, milestone: int | None
     ) -> dict[str, Any] | None:
@@ -1869,8 +2234,10 @@ class GitHubHttpClient:
             raise GitHubHttpError("Malformed publication PR response")
         return payload
 
-    def read_publication_prs(self, branch: str) -> list[dict[str, Any]]:
-        """Complete, uncached branch candidate set; refuse a capped scan."""
+    def read_publication_prs(self, branch: str, *, state: str = "open") -> list[dict[str, Any]]:
+        """Complete, uncached branch candidate set in ``state``; refuse a capped scan."""
+        if state not in {"open", "closed"}:
+            raise ValueError("publication PR state must be open or closed")
         owner = self._config.repo.split("/")[0]
         result: list[dict[str, Any]] = []
         for page in range(1, 21):
@@ -1879,7 +2246,7 @@ class GitHubHttpClient:
                 f"/repos/{self._config.repo}/pulls",
                 params={
                     "head": f"{owner}:{branch}",
-                    "state": "open",
+                    "state": state,
                     "per_page": 100,
                     "page": page,
                 },
@@ -2064,6 +2431,11 @@ class GitHubHttpClient:
                     exc,
                 )
                 return _SourceReadout((False, False, False), outcome=outcome)
+            if not _well_formed_check_runs(payload, page=page):
+                # A 200 without a list of run objects is not "no runs": an
+                # unread failure could hide behind it (#8144 review r4 F1).
+                logger.warning("check-runs payload for %s (page %d) is malformed; unreadable", encoded_sha, page)
+                return _SourceReadout((False, False, False), outcome="transient_error")
             page_failure, page_pending, page_present = _aggregate_check_runs(payload)
             failure = failure or page_failure
             pending = pending or page_pending
@@ -2122,8 +2494,10 @@ class GitHubHttpClient:
                 "Combined commit status unavailable for %s (%s): %s", sha, outcome, exc
             )
             return _CommitStatusReadout(payload=None, outcome=outcome)
-        normalized = payload if isinstance(payload, dict) else None
-        return _CommitStatusReadout(payload=normalized, outcome="ok")
+        if not _well_formed_combined_status(payload):
+            logger.warning("Combined commit status payload for %s is malformed; unreadable", sha)
+            return _CommitStatusReadout(payload=None, outcome="transient_error")
+        return _CommitStatusReadout(payload=payload, outcome="ok")
 
     def list_prs(
         self, *, state: str = "open", limit: int = 100
@@ -2156,7 +2530,7 @@ class GitHubHttpClient:
                 pullRequests(states: OPEN, first: 100, after: $after,
                              orderBy: {field: CREATED_AT, direction: ASC}) {
                     pageInfo { hasNextPage endCursor }
-                    nodes { number title url body headRefName headRefOid baseRefName }
+                    nodes { number title url body headRefName headRefOid baseRefName isDraft }
                 }
             }
         }
@@ -2180,9 +2554,12 @@ class GitHubHttpClient:
                     isinstance(node, dict)
                     and type(node.get("number")) is int
                     and isinstance(node.get("headRefName"), str)
+                    and type(node.get("isDraft")) is bool
                 ):
                     raise self._incomplete_open_prs(f"returned a malformed node: {node!r}")
-                prs.append({**node, "state": "open"})
+                # ``draft`` is the REST spelling ``_pr_info_from_api`` reads;
+                # an open PR is always one or the other (#7490).
+                prs.append({**node, "state": "open", "draft": node["isDraft"]})
             page_info = connection.get("pageInfo")
             if not isinstance(page_info, dict) or type(page_info.get("hasNextPage")) is not bool:
                 raise self._incomplete_open_prs("returned no pageInfo.hasNextPage")
@@ -2230,6 +2607,77 @@ class GitHubHttpClient:
                 break
         return [collected[number] for number in sorted(collected)]
 
+    def list_open_issue_labels_complete(
+        self, *, page_cap: int = 20
+    ) -> list[tuple[int, str, tuple[str, ...]]]:
+        """Every open issue's number, title and labels, or an error: never a partial list.
+
+        Walks GraphQL ``issues(states: OPEN)`` by CURSOR, like
+        :meth:`list_open_prs_complete`: an issue closing mid-walk cannot shift
+        another past a page boundary the way offset pagination does (#7490).
+        An issue with more labels than one page carries is refused rather than
+        reported with some of them.
+        """
+        owner, repo = self._config.repo.split("/", 1)
+        query = """
+        query($owner: String!, $repo: String!, $after: String) {
+            repository(owner: $owner, name: $repo) {
+                issues(states: OPEN, first: 100, after: $after,
+                       orderBy: {field: CREATED_AT, direction: ASC}) {
+                    pageInfo { hasNextPage endCursor }
+                    nodes { number title labels(first: 100) { totalCount nodes { name } } }
+                }
+            }
+        }
+        """
+        issues: list[tuple[int, str, tuple[str, ...]]] = []
+        after: str | None = None
+        for _page in range(page_cap):
+            result = self._graphql(
+                query, {"owner": owner, "repo": repo, "after": after},
+                caller="list_open_issue_labels_complete",
+            )
+            connection = ((result.get("data") or {}).get("repository") or {}).get("issues")
+            if not isinstance(connection, dict) or not isinstance(connection.get("nodes"), list):
+                raise self._incomplete_open_issues("returned no issues connection")
+            for node in connection["nodes"]:
+                issues.append(self._open_issue_labels(node))
+            page_info = connection.get("pageInfo")
+            if not isinstance(page_info, dict) or type(page_info.get("hasNextPage")) is not bool:
+                raise self._incomplete_open_issues("returned no pageInfo.hasNextPage")
+            if not page_info["hasNextPage"]:
+                return issues
+            after = page_info.get("endCursor")
+            if not isinstance(after, str) or not after:
+                raise self._incomplete_open_issues("reported another page without a cursor")
+        raise self._incomplete_open_issues(f"exceeded the {page_cap * 100}-issue page cap")
+
+    def _open_issue_labels(self, node: object) -> tuple[int, str, tuple[str, ...]]:
+        if (
+            not isinstance(node, dict)
+            or type(node.get("number")) is not int
+            or not isinstance(node.get("title"), str)
+        ):
+            raise self._incomplete_open_issues(f"returned a malformed node: {node!r}")
+        labels = node.get("labels")
+        if not isinstance(labels, dict) or not isinstance(labels.get("nodes"), list):
+            raise self._incomplete_open_issues(f"returned a malformed node: {node!r}")
+        names = [n.get("name") for n in labels["nodes"] if isinstance(n, dict)]
+        if len(names) != len(labels["nodes"]) or not all(isinstance(n, str) for n in names):
+            raise self._incomplete_open_issues(f"returned a malformed node: {node!r}")
+        if labels.get("totalCount") != len(names):
+            raise self._incomplete_open_issues(
+                f"returned issue #{node['number']} with only some of its labels"
+            )
+        return node["number"], node["title"], tuple(str(n) for n in names)
+
+    def _incomplete_open_issues(self, why: str) -> GitHubScanIncompleteError:
+        return GitHubScanIncompleteError(
+            f"Listing open issues {why}; refusing to treat it as complete",
+            method="POST",
+            url="/graphql",
+        )
+
     def _incomplete_open_prs(self, why: str) -> GitHubScanIncompleteError:
         return GitHubScanIncompleteError(
             f"Listing open pull requests {why}; refusing to treat it as complete",
@@ -2241,8 +2689,11 @@ class GitHubHttpClient:
         "timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 100{after}) "
         "{{ pageInfo {{ hasNextPage endCursor }} nodes {{ ... on CrossReferencedEvent "
         "{{ isCrossRepository source {{ __typename ... on PullRequest "
-        "{{ number merged }} }} }} }} }}"
+        "{{ {pr_fields} }} }} }} }} }}"
     )
+    _REFERENCE_PR_NUMBERS = "number merged"
+    _REFERENCE_PR_HISTORY = "number merged mergedAt body"
+    _REFERENCE_PR_STATES = "number state headRefName"
 
     def merged_prs_referencing_issues(
         self,
@@ -2271,7 +2722,7 @@ class GitHubHttpClient:
             batch = numbers[offset:offset + batch_size]
             fields = "\n".join(
                 f"i{n}: issue(number: {int(n)}) {{ "
-                + self._REFERENCE_TIMELINE.format(after="")
+                + self._REFERENCE_TIMELINE.format(after="", pr_fields=self._REFERENCE_PR_NUMBERS)
                 + " }"
                 for n in batch
             )
@@ -2280,19 +2731,88 @@ class GitHubHttpClient:
                 timeline = self._reference_timeline_of(repository, n)
                 if timeline is None:  # explicitly null: no such issue, so no PRs
                     continue
-                merged.update(self._merged_reference_prs(owner, repo, n, timeline, page_cap))
+                for source in self._merged_reference_prs(
+                    owner, repo, n, timeline, page_cap, self._REFERENCE_PR_NUMBERS
+                ):
+                    merged.add(source["number"])
         return frozenset(merged)
 
+    def merged_pr_history(self, issue_number: int, *, page_cap: int = 10) -> tuple[MergedPullRequest, ...]:
+        """Every merged same-repository PR that references ``issue_number``,
+        with its body and merge time (#8689).
+
+        The same timeline walk as :meth:`merged_prs_referencing_issues`, with
+        the same completeness rules, but each node carries what the delivery
+        rule reads, so no per-PR fetch follows. A missing issue has no PRs.
+        """
+        owner, repo = self._config.repo.split("/", 1)
+        n = int(issue_number)
+        fields = f"i{n}: issue(number: {n}) {{ " + self._REFERENCE_TIMELINE.format(
+            after="", pr_fields=self._REFERENCE_PR_HISTORY
+        ) + " }"
+        timeline = self._reference_timeline_of(
+            self._reference_query(owner, repo, fields, variables={}), n
+        )
+        if timeline is None:
+            return ()
+        history: list[MergedPullRequest] = []
+        for source in self._merged_reference_prs(
+            owner, repo, n, timeline, page_cap, self._REFERENCE_PR_HISTORY
+        ):
+            merged_at, body = source.get("mergedAt"), source.get("body")
+            if not isinstance(merged_at, str) or not merged_at or not isinstance(body, str):
+                raise self._incomplete_reference_prs(f"returned a merged PR without its body or merge time for #{n}")
+            history.append(MergedPullRequest(
+                source["number"], body, datetime.fromisoformat(merged_at.replace("Z", "+00:00"))
+            ))
+        return tuple(history)
+
+    def pull_requests_referencing_issue(
+        self, issue_number: int, *, page_cap: int = 10
+    ) -> tuple[tuple[int, str], ...]:
+        """Every OPEN or MERGED same-repository PR that references
+        ``issue_number``, on any branch, as ``(number, head branch)`` (#8137).
+
+        The same complete timeline walk as :meth:`merged_prs_referencing_issues`
+        - a closing PR and a partial ``Refs #N`` PR alike - keeping open PRs
+        too; a PR closed unmerged is not the issue's work. The head branch
+        lets a caller skip a PR before spending a detail read on it. Raises
+        instead of returning part of the answer. A missing issue has no PRs.
+        """
+        owner, repo = self._config.repo.split("/", 1)
+        n = int(issue_number)
+        fields = f"i{n}: issue(number: {n}) {{ " + self._REFERENCE_TIMELINE.format(
+            after="", pr_fields=self._REFERENCE_PR_STATES
+        ) + " }"
+        timeline = self._reference_timeline_of(
+            self._reference_query(owner, repo, fields, variables={}), n
+        )
+        if timeline is None:
+            return ()
+        return tuple(sorted(
+            (source["number"], self._reference_field(source, "headRefName", str, n))
+            for source in self._merged_reference_prs(
+                owner, repo, n, timeline, page_cap, self._REFERENCE_PR_STATES,
+                on_page=self._open_or_merged_prs_on_page,
+            )
+        ))
+
     def _merged_reference_prs(
-        self, owner: str, repo: str, n: int, timeline: dict[str, Any], page_cap: int
-    ) -> set[int]:
-        """Walk one issue's reference timeline to its end, starting from page one."""
-        merged: set[int] = set()
+        self, owner: str, repo: str, n: int, timeline: dict[str, Any], page_cap: int,
+        pr_fields: str,
+        *,
+        on_page: Callable[[dict[str, Any], int], list[dict[str, Any]]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Walk one issue's reference timeline to its end, starting from page
+        one; the same-repository PR sources ``on_page`` keeps (merged ones by
+        default), each read once."""
+        keep = self._merged_prs_on_page if on_page is None else on_page
+        merged: dict[int, dict[str, Any]] = {}
         for page in range(1, page_cap + 1):
-            merged.update(self._merged_prs_on_page(timeline, n))
+            merged.update((source["number"], source) for source in keep(timeline, n))
             page_info = timeline["pageInfo"]
             if not page_info["hasNextPage"]:
-                return merged
+                return list(merged.values())
             if page == page_cap:
                 break
             cursor = page_info.get("endCursor")
@@ -2301,7 +2821,7 @@ class GitHubHttpClient:
                     f"reported another page without a cursor for #{n}"
                 )
             fields = f"i{n}: issue(number: {int(n)}) {{ " + self._REFERENCE_TIMELINE.format(
-                after=", after: $after"
+                after=", after: $after", pr_fields=pr_fields
             ) + " }"
             repository = self._reference_query(
                 owner, repo, fields, variables={"after": cursor}, cursor=True
@@ -2355,8 +2875,28 @@ class GitHubHttpClient:
             raise self._incomplete_reference_prs(f"returned no pageInfo for #{n}")
         return timeline
 
-    def _merged_prs_on_page(self, timeline: dict[str, Any], n: int) -> set[int]:
-        merged: set[int] = set()
+    def _merged_prs_on_page(self, timeline: dict[str, Any], n: int) -> list[dict[str, Any]]:
+        return [
+            source for source in self._reference_pr_sources(timeline, n)
+            if self._reference_field(source, "merged", bool, n)
+        ]
+
+    def _open_or_merged_prs_on_page(self, timeline: dict[str, Any], n: int) -> list[dict[str, Any]]:
+        return [
+            source for source in self._reference_pr_sources(timeline, n)
+            if self._reference_field(source, "state", str, n) in {"OPEN", "MERGED"}
+        ]
+
+    def _reference_field(self, source: dict[str, Any], field: str, kind: type, n: int) -> Any:
+        """One field of a referencing PR, exactly typed; a malformed node raises."""
+        value = source.get(field)
+        if type(value) is not kind:
+            raise self._incomplete_reference_prs(f"returned a malformed node for #{n}")
+        return value
+
+    def _reference_pr_sources(self, timeline: dict[str, Any], n: int) -> list[dict[str, Any]]:
+        """The page's same-repository PR sources, each with an integer number."""
+        sources: list[dict[str, Any]] = []
         for node in timeline["nodes"]:
             if not isinstance(node, dict) or type(node.get("isCrossRepository")) is not bool:
                 raise self._incomplete_reference_prs(f"returned a malformed node for #{n}")
@@ -2367,11 +2907,10 @@ class GitHubHttpClient:
                 raise self._incomplete_reference_prs(f"returned a malformed node for #{n}")
             if source["__typename"] != "PullRequest":
                 continue  # an issue that mentions this one
-            if type(source.get("number")) is not int or type(source.get("merged")) is not bool:
+            if type(source.get("number")) is not int:
                 raise self._incomplete_reference_prs(f"returned a malformed node for #{n}")
-            if source["merged"]:
-                merged.add(source["number"])
-        return merged
+            sources.append(source)
+        return sources
 
     def _incomplete_reference_prs(self, why: str) -> GitHubScanIncompleteError:
         return GitHubScanIncompleteError(
@@ -2471,6 +3010,205 @@ class GitHubHttpClient:
             mutation,
             {"pullRequestId": node_id},
             caller="enqueue_pull_request",
+        )
+
+    def get_failed_check_contexts(self, pr_number: int) -> dict[str, Any]:
+        """The head commit and every status-check context, required-ness included.
+
+        One GraphQL call per 100 contexts (#8692), up to ``_MAX_CHECK_CONTEXT_PAGES``
+        pages; a head with more raises rather than answer from a partial list.
+        Returns ``{"head_sha", "contexts"}``; the adapter decides which failed.
+        """
+        owner, repo = self._config.repo.split("/", 1)
+        query = """
+        query($owner: String!, $repo: String!, $number: Int!, $after: String) {
+            repository(owner: $owner, name: $repo) {
+                pullRequest(number: $number) {
+                    headRefOid
+                    commits(last: 1) { nodes { commit { oid statusCheckRollup {
+                        contexts(first: 100, after: $after) {
+                            pageInfo { hasNextPage endCursor }
+                            nodes {
+                                __typename
+                                ... on CheckRun {
+                                    databaseId name status conclusion
+                                    isRequired(pullRequestNumber: $number)
+                                    checkSuite { workflowRun { databaseId } }
+                                }
+                                ... on StatusContext {
+                                    context state
+                                    isRequired(pullRequestNumber: $number)
+                                }
+                            }
+                        }
+                    } } } }
+                }
+            }
+        }
+        """
+        contexts: list[Any] = []
+        head: str | None = None
+        after: str | None = None
+        for _ in range(_MAX_CHECK_CONTEXT_PAGES):
+            result = self._graphql(
+                query,
+                {"owner": owner, "repo": repo, "number": pr_number, "after": after},
+                caller="get_failed_check_contexts",
+            )
+            pr_data = ((result.get("data") or {}).get("repository") or {}).get("pullRequest")
+            if not isinstance(pr_data, dict) or not isinstance(pr_data.get("headRefOid"), str):
+                raise GitHubHttpError(
+                    f"GitHub returned no head commit for PR #{pr_number}", method="POST", url="/graphql"
+                )
+            if head is not None and pr_data["headRefOid"] != head:
+                raise GitHubScanIncompleteError(
+                    f"PR #{pr_number}'s head moved while its checks were read", method="POST", url="/graphql"
+                )
+            head = pr_data["headRefOid"]
+            nodes = (pr_data.get("commits") or {}).get("nodes") or []
+            commit = nodes[0].get("commit") if nodes and isinstance(nodes[0], dict) else None
+            if (commit or {}).get("oid") != head:
+                raise GitHubScanIncompleteError(
+                    f"PR #{pr_number}'s last commit is not its head {head}", method="POST", url="/graphql"
+                )
+            connection = ((commit or {}).get("statusCheckRollup") or {}).get("contexts") or {}
+            contexts.extend(connection.get("nodes") or [])
+            page = connection.get("pageInfo") or {}
+            if not page.get("hasNextPage"):
+                return {"head_sha": head, "contexts": contexts}
+            after = page.get("endCursor")
+        raise GitHubScanIncompleteError(
+            f"PR #{pr_number} has more than {100 * _MAX_CHECK_CONTEXT_PAGES} check contexts",
+            method="POST",
+            url="/graphql",
+        )
+
+    def get_actions_job_log_tail(self, job_id: int, *, max_bytes: int) -> str:
+        """The last ``max_bytes`` of an Actions job's log (#8692).
+
+        GitHub answers the log endpoint with a redirect to a short-lived,
+        pre-signed download URL, fetched WITHOUT the engine's credential. A log
+        that declares itself longer than ``max_bytes`` is asked for its tail
+        with a byte range; a server that ignores the range (or a log of unknown
+        length) is streamed to its end through a ring buffer, so memory stays
+        bounded by ``max_bytes`` either way and the tail is always the real end.
+        """
+        path = f"/repos/{self._config.repo}/actions/jobs/{job_id}/logs"
+        start = time.monotonic()
+        error: str | None = None
+        received = 0
+        try:
+            try:
+                redirect = self._client.request(
+                    "GET", path, headers=self._auth_headers(), follow_redirects=False
+                )
+                location = redirect.headers.get("Location")
+                if redirect.status_code not in (301, 302, 303, 307) or not location:
+                    error = f"{redirect.status_code} {redirect.text.strip()[:280]}"
+                    raise github_http_failure(
+                        f"GitHub GET {path} failed: {redirect.status_code}",
+                        method="GET",
+                        url=str(redirect.url),
+                        status_code=redirect.status_code,
+                        headers=redirect.headers,
+                        response_text=redirect.text,
+                    )
+                tail, received = self._download_tail(location, max_bytes, job_id)
+            except (httpx.TimeoutException, httpx.HTTPError, OSError) as exc:
+                error = f"transport_error: {exc}"
+                raise GitHubTransportError(
+                    f"GitHub transport error for GET {path}", method="GET", url=path, original=exc
+                ) from exc
+            except GitHubHttpError as exc:
+                error = error or str(exc)
+                raise
+            return tail.decode("utf-8", errors="replace")
+        finally:
+            gh_audit.record_live_call(command=f"GET {path}", caller="get_actions_job_log_tail", error=error, rate_limit=None)
+            gh_audit.record(
+                args=["GET", path],
+                repo=self._config.repo,
+                duration_ms=int((time.monotonic() - start) * 1000),
+                error=error,
+                caller="get_actions_job_log_tail",
+                bytes_returned=received,
+                items_returned=0,
+                full_scan=False,
+                rate_limit=None,
+            )
+
+    def _download_tail(self, url: str, max_bytes: int, job_id: int) -> tuple[bytearray, int]:
+        """The last ``max_bytes`` of a pre-signed download, and the bytes received."""
+        headers: dict[str, str] = {}
+        for _ in range(2):
+            with self._client.stream("GET", url, headers=headers, follow_redirects=True) as blob:
+                if blob.status_code not in (200, 206):
+                    raise GitHubHttpError(
+                        f"Actions job {job_id} log download failed: {blob.status_code}",
+                        method="GET",
+                        url=f"actions/jobs/{job_id}/logs",
+                        status_code=blob.status_code,
+                    )
+                declared = int(blob.headers.get("Content-Length") or 0)
+                if blob.status_code == 200 and declared > max_bytes and not headers:
+                    # Ask for only the tail; the body of this answer is never read.
+                    headers = {"Range": f"bytes={declared - max_bytes}-"}
+                    continue
+                tail = bytearray()
+                received = 0
+                for chunk in blob.iter_bytes():
+                    received += len(chunk)
+                    tail += chunk
+                    if len(tail) > max_bytes:
+                        del tail[: len(tail) - max_bytes]
+                return tail, received
+        raise AssertionError("unreachable: the second request always returns")
+
+    def get_actions_run_latest_attempt(self, run_id: int) -> dict[str, Any]:
+        """A workflow run's current ``run_attempt`` and the job ids of that attempt.
+
+        ``GET /actions/runs/{id}`` for the attempt, then the attempt's own job
+        listing (``/attempts/{n}/jobs``, up to ``_MAX_ATTEMPT_JOB_PAGES`` pages).
+        Returns ``{"attempt", "job_ids", "started_at"}`` (``run_started_at``: when the
+        current attempt started); an unreadable or partial answer raises.
+        """
+        base = f"/repos/{self._config.repo}/actions/runs/{run_id}"
+        run = self._request_json("GET", base, use_cache=False, caller="get_actions_run_latest_attempt")
+        attempt = run.get("run_attempt") if isinstance(run, dict) else None
+        started = run.get("run_started_at") if isinstance(run, dict) else None
+        if type(attempt) is not int or attempt < 1 or not isinstance(started, str):
+            raise GitHubHttpError(f"GitHub {base} has no run_attempt/run_started_at", method="GET", url=base)
+        job_ids: list[int] = []
+        for page in range(1, _MAX_ATTEMPT_JOB_PAGES + 1):
+            listing = self._request_json(
+                "GET", f"{base}/attempts/{attempt}/jobs", params={"per_page": 100, "page": page},
+                use_cache=False, caller="get_actions_run_latest_attempt",
+            )
+            jobs = listing.get("jobs") if isinstance(listing, dict) else None
+            total = listing.get("total_count") if isinstance(listing, dict) else None
+            if not isinstance(jobs, list) or type(total) is not int:
+                raise GitHubHttpError(f"GitHub {base} attempt {attempt} jobs unreadable", method="GET", url=base)
+            job_ids.extend(job["id"] for job in jobs if isinstance(job, dict) and type(job.get("id")) is int)
+            if len(job_ids) >= total or len(jobs) < 100:
+                if len(job_ids) < total:
+                    raise GitHubScanIncompleteError(
+                        f"GitHub {base} attempt {attempt} listed {len(job_ids)} of {total} jobs",
+                        method="GET", url=base,
+                    )
+                return {"attempt": attempt, "job_ids": job_ids, "started_at": started}
+        raise GitHubScanIncompleteError(
+            f"GitHub {base} attempt {attempt} has more than {100 * _MAX_ATTEMPT_JOB_PAGES} jobs",
+            method="GET", url=base,
+        )
+
+    def rerun_failed_workflow_jobs(self, run_id: int) -> None:
+        """Re-run the failed jobs of one Actions workflow run (#8692)."""
+        self._request_json(
+            "POST",
+            f"/repos/{self._config.repo}/actions/runs/{run_id}/rerun-failed-jobs",
+            json_body={},
+            use_cache=False,
+            caller="rerun_failed_workflow_jobs",
         )
 
     def list_branches(self) -> list[str]:

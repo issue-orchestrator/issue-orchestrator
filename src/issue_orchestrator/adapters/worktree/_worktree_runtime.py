@@ -10,7 +10,6 @@ from __future__ import annotations
 import copy
 import json
 import logging
-import shutil
 import stat
 import uuid
 from pathlib import Path
@@ -24,6 +23,7 @@ from ...ports.worktree_manager import (
 )
 from ._worktree_errors import WorktreeError
 from ._worktree_git import _git_run
+from ._worktree_git_exclude import append_worktree_exclude_entries
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,6 @@ __all__ = [
     "install_worktree_identity",
     "read_reviewer_head_ownership",
     "install_claude_settings",
-    "sync_cli_tools",
 ]
 
 
@@ -107,48 +106,6 @@ def _configure_no_verify_dry_run(worktree_path: Path, allow: bool) -> None:
         raise WorktreeError(
             f"Failed to {action} no-verify dry-run flag at {flag_path}: {exc}"
         ) from exc
-
-
-def sync_cli_tools(worktree_path: Path) -> list[Path]:
-    """
-    Sync CLI tools from the orchestrator package to worktree.
-
-    This ensures the worktree has the latest orchestrator tools (especially
-    coding-done/reviewer-done) regardless of when the worktree was created or what branch
-    it's on.
-
-    Uses package-relative paths so this works even when the target repo is
-    a foreign (non-orchestrator) repository.
-
-    Args:
-        worktree_path: Path to the worktree
-    """
-    package_root = Path(__file__).resolve().parents[2]
-    src_cli_tools = package_root / "entrypoints" / "cli_tools"
-    dst_cli_tools = (
-        worktree_path / "src" / "issue_orchestrator" / "entrypoints" / "cli_tools"
-    )
-
-    if not src_cli_tools.exists():
-        logger.debug(
-            "No cli_tools in orchestrator package at %s, skipping sync", src_cli_tools
-        )
-        return []
-
-    dst_cli_tools.mkdir(parents=True, exist_ok=True)
-
-    synced_paths: list[Path] = []
-    for src_file in src_cli_tools.glob("*.py"):
-        dst_file = dst_cli_tools / src_file.name
-        try:
-            shutil.copy2(src_file, dst_file)
-            synced_paths.append(dst_file.relative_to(worktree_path))
-            logger.debug("Synced cli tool: %s -> %s", src_file.name, dst_file)
-        except OSError as e:
-            logger.warning("Failed to sync cli tool %s: %s", src_file.name, e)
-
-    logger.info("Synced cli_tools from orchestrator package to worktree")
-    return synced_paths
 
 
 def _read_worktree_identity(marker_path: Path) -> str | None:
@@ -254,72 +211,11 @@ def read_reviewer_head_ownership(worktree_path: Path) -> ReviewerHeadOwnership:
     return ReviewerHeadOwnership(marker_present=True, expected_head=expected_head)
 
 
-def _worktree_git_dir(worktree_path: Path) -> Path | None:
-    git_file = worktree_path / ".git"
-    if not git_file.exists():
-        return None
-    content = git_file.read_text().strip()
-    if not content.startswith("gitdir:"):
-        return None
-    return Path(content.split(":", 1)[1].strip())
+def _worktree_git_exclude_paths(worktree_path: Path) -> list[Path]:
+    """Return untracked runtime metadata paths to hide from plain git status.
 
-
-def _worktree_git_common_dir(worktree_path: Path) -> Path | None:
-    git_dir = _worktree_git_dir(worktree_path)
-    if git_dir is None:
-        return
-    commondir_file = git_dir / "commondir"
-    if not commondir_file.exists():
-        return git_dir
-    common_dir = Path(commondir_file.read_text().strip())
-    if not common_dir.is_absolute():
-        common_dir = (git_dir / common_dir).resolve()
-    return common_dir
-
-
-def _append_exclude_entries(exclude_path: Path, paths: list[Path]) -> None:
-    exclude_path.parent.mkdir(parents=True, exist_ok=True)
-    existing_lines: list[str] = []
-    existing_text = ""
-    if exclude_path.exists():
-        existing_text = exclude_path.read_text()
-        existing_lines = existing_text.splitlines()
-    existing = {line.strip() for line in existing_lines if line.strip()}
-    missing = [
-        str(path).replace("\\", "/")
-        for path in paths
-        if str(path).replace("\\", "/") not in existing
-    ]
-    if not missing:
-        return
-    suffix = "\n" if existing_lines and not existing_text.endswith("\n") else ""
-    with exclude_path.open("a", encoding="utf-8") as handle:
-        if suffix:
-            handle.write(suffix)
-        for entry in missing:
-            handle.write(f"{entry}\n")
-
-
-def _write_worktree_exclude_entries(worktree_path: Path, paths: list[Path]) -> None:
-    git_dir = _worktree_git_dir(worktree_path)
-    if git_dir is None:
-        return
-    common_dir = _worktree_git_common_dir(worktree_path)
-    exclude_paths = [git_dir / "info" / "exclude"]
-    if common_dir is not None and common_dir != git_dir:
-        exclude_paths.append(common_dir / "info" / "exclude")
-    for exclude_path in exclude_paths:
-        _append_exclude_entries(exclude_path, paths)
-
-
-def _worktree_git_exclude_paths(
-    worktree_path: Path, synced_cli_tool_paths: list[Path]
-) -> list[Path]:
-    """Return untracked paths that should be hidden from plain git status.
-
-    This covers both runtime-only metadata and the synced CLI helper files we
-    plant into foreign worktrees so first-run agents don't misread a clean
-    session as a dirty repo before they make any user-facing change.
+    First-run agents must not misread a clean session as a dirty repo before
+    they make any user-facing change.
     """
     # Path normalisation intentionally widens trailing-slash patterns from
     # directory-only to file-or-directory when writing Git excludes. The
@@ -328,19 +224,11 @@ def _worktree_git_exclude_paths(
     repo_local_runtime_paths = [
         Path(pattern) for pattern in load_runtime_ignore_patterns(worktree_path)
     ]
-    return [
-        *WORKTREE_LOCAL_EXCLUDE_PATHS,
-        *repo_local_runtime_paths,
-        *synced_cli_tool_paths,
-    ]
+    return [*WORKTREE_LOCAL_EXCLUDE_PATHS, *repo_local_runtime_paths]
 
 
-def _hide_runtime_artifacts_from_git_status(
-    worktree_path: Path,
-    synced_cli_tool_paths: list[Path],
-) -> None:
-    tracked_paths = [*WORKTREE_TRACKED_RUNTIME_PATHS, *synced_cli_tool_paths]
-    for path in tracked_paths:
+def _hide_runtime_artifacts_from_git_status(worktree_path: Path) -> None:
+    for path in WORKTREE_TRACKED_RUNTIME_PATHS:
         normalized = str(path).replace("\\", "/")
         tracked = _git_run(
             worktree_path,
@@ -354,9 +242,8 @@ def _hide_runtime_artifacts_from_git_status(
             ["update-index", "--skip-worktree", "--", normalized],
             check=False,
         )
-    _write_worktree_exclude_entries(
-        worktree_path,
-        _worktree_git_exclude_paths(worktree_path, synced_cli_tool_paths),
+    append_worktree_exclude_entries(
+        worktree_path, _worktree_git_exclude_paths(worktree_path)
     )
 
 

@@ -325,7 +325,7 @@ def _awaiting_approval(item: ItemCustodyFacts, board: BoardCustodyFacts) -> _Cla
     return _Claim(
         CustodyState.WAITING_ON_YOU,
         f"Proposal #{proposal.proposal_issue_number} ({action}) awaits your"
-        " approval; remove its proposed-tech-lead label to approve it.",
+        " approval in the Control Center's Approvals inbox.",
         _clock(proposal.created_at, "proposal filed"),
         _basis(decision),
     )

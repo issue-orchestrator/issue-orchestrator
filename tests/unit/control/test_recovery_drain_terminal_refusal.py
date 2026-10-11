@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.unit.control.liveness_doubles import drain_liveness
+from tests.unit.validated_work_support import UnpublishedRecords
 from issue_orchestrator.control.recovery_drain import RecoveryDrain
 from issue_orchestrator.control.validated_work_scope_retirement import (
     OutOfScopeRecordRetirement,
@@ -137,7 +138,7 @@ def test_zero_commit_head_reaches_terminal_needs_human_instead_of_looping(comple
             source=rig.store,
             store=rig.store,
             execution=rig.execution,
-            retirement=scope,
+            retirement=scope, publication=UnpublishedRecords(),
             batch_size=5,
             liveness=liveness,
         ),

@@ -25,6 +25,29 @@ flowchart TD
 
 **Cycle limits prevent infinite loops.** The orchestrator tracks rework iterations (`rework-cycle-N` labels on GitHub). After `max_rework_cycles` (default: 5), it stops the loop and escalates to a human. For in-process exchange modes, `max_rounds` and `max_no_progress` provide additional stopping conditions — if the reviewer reports no progress for consecutive rounds, the loop stops early.
 
+### A Blocked Issue Withholds Its PR's Review, With One Exception
+
+Review discovery, startup recovery and the review launch all drop a pending
+review whose issue or PR carries a block that holds its WORK. What a block
+holds is decided by one owner, `control/human_gates.py` (#7678), over the
+causes the shared needs-human block records against the number:
+
+| Where `needs-human` is | Recorded cause | Holds | Review / rework / conflict rework | Merge queue |
+|---|---|---|---|---|
+| issue | any (an agent's pre-work question, a sweep, an escalation, a label put on by hand) | the work | withheld | held |
+| PR | `merge_decision` only (an agent asked a person to decide before the PR merges) | only the merge | run | held |
+| PR | anything else (`merge_escalation`, none recorded, a tech-lead hand-over) | the PR's work | withheld | held |
+
+An agent asks for a merge decision with `coding-done ... --pr-labels needs-human`:
+the completion door types it as `HOLD_MERGE_FOR_HUMAN`, and the owner records a
+`merge_decision` cause on the PR once its number is known (a created PR, a
+reused PR, or a recovered one, before its publication resolves). The issue's
+work is not blocked. The awaiting-merge "now reworkable" clear withdraws only
+the engine's own `merge_escalation`, so it never takes a person's merge
+decision off. A PR-scoped request that #7595 had already put on the ISSUE is
+moved by the operator with `issue-orchestrator hold-merge-for-human --issue N
+--pr P --apply` (dry-run by default; the engine must be stopped).
+
 ### Internal Review Within a Coder Turn
 
 When `review.internal.enabled` is true, the orchestrator appends the configured
@@ -39,6 +62,54 @@ This is intentionally a prompt-level, high-speed loop. It creates no review
 artifacts, labels, completion protocol, or orchestrator-managed round state.
 The ordinary external reviewer remains independent and receives the improved
 implementation through the unchanged outer workflow.
+
+### Standing Rulings Bind Every Agent on the Issue (#8141)
+
+A standing ruling is a maintainer's binding decision about how an issue is
+built. It is a typed record (`domain/standing_ruling.py`): the ruling text, its
+authority (a maintainer, an approved tech-lead decision, or an approved
+`resolve_block` answer), its source, and its scope (the files it governs and the
+claims it settles; no files means the whole issue).
+
+- **Where it lives.** In a block at the top of the issue body
+  (`<!-- io:standing-rulings:begin -->`), where agents read first, and in the
+  engine's local index (`.issue-orchestrator/state/standing_rulings.sqlite`).
+  `control/standing_rulings.py` is the only reader and writer. Prompts and
+  reviews read the body fresh. Change rulings through the owner, never by hand.
+- **Who records one.** Three writers:
+  - an approved `propose_decision`, before the item is retried;
+  - a `resolve_block` answer or narrowing split, before the block is
+    discharged;
+  - a maintainer, through `POST /api/issues/{n}/rulings` with
+    `{"text", "files", "claims"}` (the admin token only).
+    `DELETE /api/issues/{n}/rulings/{id}` retires one.
+- **Who is told.** Every prompt for the issue starts with its rulings. That
+  covers coding, validation retry, rework of every kind, review, retrospective
+  review, both review-exchange roles (read again before every turn), tech
+  lead, and debug sessions. Every rework (conflict, CI, merge queue or review
+  feedback) gets them as its brief. A tech-lead run is also told the rulings
+  of every other issue whose work it covers, read fresh from each body: a
+  batch review's PRs' issues (the manifest lists each PR's `issue_numbers`), a
+  health review's problem cohort and the blocked items it triages (the triage
+  agenda points at them), again at every validation retry (#8347). Which
+  issues are covered is recorded once, in the run's launch authority. Every
+  binding section sits between `<!-- io:standing-ruling:binding:begin/end -->`
+  markers; a validation retry drops the sections its original prompt carried
+  and is bound only by the rulings read for the retry. A covered issue
+  whose read fails or whose block is damaged refuses the launch; a number
+  GitHub has no issue for binds nothing. The Tech lead page shows rulings as
+  of the engine's last read; at startup the owner compares the bodies the
+  queue sync just read with the index and re-reads, fresh, each issue that
+  differs, so rulings recorded before the index existed (or edited by hand)
+  show without waiting for a launch.
+- **The review rule.** An approval of a diff that touches a ruling's scope must
+  attest it: `reviewer-done approved ... --upholds-ruling <id>`, or
+  `upheld_rulings` in a review exchange's decision JSON. If it does not, the
+  orchestrator refuses the approval. It turns it into a changes-requested review
+  that names the ruling as implementation-required, so the PR goes back to
+  rework with the ruling as its brief. An approval the review exchange cached
+  is judged again before it is reused, with the attestations of its own final
+  decision, so a ruling recorded after it refuses it.
 
 ## Exchange Mechanisms
 
@@ -373,11 +444,12 @@ Editing the proposal issue body cannot change the approved instruction. A durabl
 creation intent and an opaque marker recover an accepted GitHub create before
 its response or local stored-op write completes.
 
-`tech_lead.authority.request_rework` defaults to `propose`. In Control Center's
-repository dashboard, open **Tech-lead rework proposals** to inspect the evidence,
-head, eligibility and predicted changes. **Approve rework** removes the same
-`proposed-tech-lead` gate that an operator can remove on GitHub; **Decline** closes
-the proposal. The engine executes approved operations through the existing
+`tech_lead.authority.request_rework` defaults to `propose`. The Control Center's
+**Tech lead** page lists it under *Waiting on you* with the evidence, head and
+predicted changes. **Approve** applies the same positive `approved` label a
+maintainer can add on GitHub (#7763); the engine only acts on an `approved` it
+verified came from a maintainer or from that Approve. **Decline** closes the
+proposal. The engine executes approved operations through the existing
 proposal lifecycle. Pausing the engine preserves inspection and consent while
 execution waits for resume.
 

@@ -13,6 +13,7 @@ from issue_orchestrator.adapters.github.errors import (
 )
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.merge_queue_coordinator import (
+    MergeQueueFollowup,
     MergeQueueCoordinator,
     decide_merge_queue_action,
 )
@@ -141,6 +142,63 @@ def test_clean_pr_produces_enqueue_fact() -> None:
     assert followup.rework is None and followup.escalation is None
     # Enqueue mutation is NOT performed here — that is the applier's job.
     repo.enqueue_to_merge_queue.assert_not_called()
+
+
+def test_an_approved_pr_waits_while_its_issue_awaits_a_human() -> None:
+    """#7593: a review may now run over the agent's own open question; its
+    approval must not then merge the work before the human has answered."""
+    coordinator, _ = _coordinator(MagicMock())
+    issue = _issue()
+    asking = Issue(
+        number=issue.number, title=issue.title,
+        labels=[*issue.labels, "needs-human"], state="open",
+    )
+
+    followup = coordinator.classify(
+        pr=_pr("clean"), issue=asking, issue_number=228, pr_number=318, entry=None
+    )
+
+    assert followup == MergeQueueFollowup()
+
+
+def test_an_approved_pr_waits_while_it_carries_a_merge_hold() -> None:
+    """#7678: a person deciding before the PR merges is a hold on the PR
+    itself; review and rework run, the merge queue does not."""
+    coordinator, _ = _coordinator(MagicMock())
+
+    followup = coordinator.classify(
+        pr=_pr("clean", labels=["code-reviewed", "needs-human"]), issue=_issue(),
+        issue_number=228, pr_number=318, entry=None,
+    )
+
+    assert followup == MergeQueueFollowup()
+
+
+def test_a_merge_held_pr_with_a_conflict_is_still_reworked() -> None:
+    """The hold blocks only the merge: a conflict still gets its rework."""
+    coordinator, _ = _coordinator(MagicMock())
+
+    followup = coordinator.classify(
+        pr=_pr("dirty", labels=["code-reviewed", "needs-human"]), issue=_issue(),
+        issue_number=228, pr_number=318, entry=None,
+    )
+
+    assert followup.rework is not None and followup.enqueue is None
+
+
+def test_only_a_failed_check_rework_goes_to_ci_failure_triage() -> None:
+    """A failed-check rework is flagged for the CI-failure triage (#8692); a conflict is not."""
+    coordinator, _ = _coordinator(MagicMock())
+    failed = coordinator.classify(
+        pr=_pr("unstable", labels=["code-reviewed"], status_check_rollup="FAILURE"),
+        issue=_issue(), issue_number=228, pr_number=318, entry=None,
+    )
+    conflict = coordinator.classify(
+        pr=_pr("dirty", labels=["code-reviewed"]), issue=_issue(),
+        issue_number=228, pr_number=318, entry=None,
+    )
+    assert failed.rework is not None and failed.rework.failed_check
+    assert conflict.rework is not None and not conflict.rework.failed_check
 
 
 def test_pr_without_gate_label_is_not_enqueued() -> None:

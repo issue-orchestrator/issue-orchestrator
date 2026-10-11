@@ -79,14 +79,26 @@ class ActionType(Enum):
     KILL_HUNG_SESSION = "kill_hung_session"
     REQUEST_REWORK = "request_rework"
     RECOVER_VALIDATED_WORK = "recover_validated_work"
+    # Release retained records whose work a merged PR rebuilt with rewritten
+    # history; only ever from an approved proposal (#9092)
+    RELEASE_VALIDATED_WORK = "release_validated_work"
     # Release a review withheld only by the issue's own block (#7399)
     RELEASE_WITHHELD_REVIEW = "release_withheld_review"
+    # Carry out a decision the operator approved: file its follow-ups, post
+    # it on the item, and retry the item as the operator would (#7593)
+    APPLY_OPERATOR_DECISION = "apply_operator_decision"
+    # Decide a needs-human work block in the operator's stead (#7658)
+    RESOLVE_BLOCK = "resolve_block"
 
     # Confirm-and-discard terminal gated-proposal ledger rows (#6779 R7/R10):
     # the single mutating boundary for proposal-op cleanup, applied off the
     # read-only fact path so fact gathering stays side-effect free.
     RECOVER_TECH_LEAD_PROPOSAL = "recover_tech_lead_proposal"
     DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS = "discard_terminal_tech_lead_proposal_ops"
+    # Approval-label transitions of a tech-lead proposal (#7763): admit a
+    # verified approval, reject an approval that does not count, restore the
+    # waiting state. Only the approval owner writes these labels.
+    SETTLE_PROPOSAL_APPROVAL = "settle_proposal_approval"
 
     # Repeat pattern observation: evidence comment + durable count (#6781/#6957)
     APPEND_PATTERN_OBSERVATION = "append_pattern_observation"
@@ -114,6 +126,12 @@ class ActionType(Enum):
 
     # Merge queue (optional GitHub Merge Queue integration)
     ENQUEUE_TO_MERGE_QUEUE = "enqueue_to_merge_queue"
+
+    # Re-run a PR's transient CI failure once per head commit (#8692)
+    RERUN_FAILED_CHECKS = "rerun_failed_checks"
+
+    # Integration-branch mode (#8144): merge/update a PR, keep the branch
+    ADVANCE_INTEGRATION = "advance_integration"
 
     # Cleanup operations
     CLEANUP_SESSION = "cleanup_session"

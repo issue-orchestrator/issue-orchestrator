@@ -17,6 +17,13 @@ from __future__ import annotations
 
 from ..domain.scoped_rework import ReworkReceipt
 from ..domain.tech_lead_proposal_creation import PendingTechLeadProposal
+from .approval_evidence import (
+    InMemoryOperatorApprovalRecords,
+    InMemoryProposalIssueIndex,
+    OperatorApprovalRecords,
+    ProposalIssueIndex,
+)
+from .operator_decision_retries import DecisionRetryState
 from .tech_lead_charter_ledger import (
     InMemoryTechLeadCharterLedger,
     TechLeadCharterLedger,
@@ -166,6 +173,32 @@ class TechLeadAuthorityStore(Protocol):
     def discard_op(self, *, issue_number: int) -> None:
         """Remove a proposal issue's op row. No-op if absent (once-only owner)."""
         ...
+
+    # -- An approved decision's retry, write-ahead (#7593) -----------------
+    # See ports/operator_decision_retries.py; cleared by ``discard_op``.
+
+    def begin_decision_retry(self, *, proposal_issue_number: int) -> None: ...
+
+    def commit_decision_retry(self, *, proposal_issue_number: int) -> None: ...
+
+    def abandon_decision_retry(self, *, proposal_issue_number: int) -> None: ...
+
+    def decision_retry_state(self, *, proposal_issue_number: int) -> DecisionRetryState | None: ...
+
+    # -- A resolution's discharge, write-ahead (#7658) ---------------------
+    # See ports/block_resolution_discharges.py; keyed by the decision.
+
+    def begin_block_resolution(
+        self, *, decision_id: str, issue_number: int, causes: frozenset[str]
+    ) -> None: ...
+
+    def commit_block_resolution(self, *, decision_id: str) -> None: ...
+
+    def abandon_block_resolution(self, *, decision_id: str) -> None: ...
+
+    def block_resolution_state(self, *, decision_id: str) -> DecisionRetryState | None: ...
+
+    def resolved_causes(self, *, issue_number: int) -> dict[str, frozenset[str]]: ...
 
     def list_ops(self) -> tuple[tuple[int, "StoredTechLeadOp"], ...]:
         """All (proposal_issue_number, op) rows — the open-proposal ledger."""
@@ -531,6 +564,16 @@ class TechLeadAuthorityStore(Protocol):
         """The per-action charter decision ledger, beside the op ledger it links to."""
         ...
 
+    @property
+    def operator_approvals(self) -> "OperatorApprovalRecords":
+        """Control Center approvals of gated proposals (#7763)."""
+        ...
+
+    @property
+    def proposal_index(self) -> "ProposalIssueIndex":
+        """Every proposal this engine filed or migrated (#7763)."""
+        ...
+
 
 class InMemoryTechLeadAuthorityStore:
     """In-memory store for tests."""
@@ -538,6 +581,8 @@ class InMemoryTechLeadAuthorityStore:
     def __init__(self) -> None:
         self._rows: dict[tuple[str, str], "TechLeadLaunchAuthority"] = {}
         self._ops: dict[int, "StoredTechLeadOp"] = {}
+        self._decision_retries: dict[int, DecisionRetryState] = {}
+        self._block_resolutions: dict[str, tuple[DecisionRetryState, int, frozenset[str]]] = {}
         self._pending_proposals: dict[str, PendingTechLeadProposal] = {}
         self._rework_receipts: dict[str, ReworkReceipt] = {}
         self._patterns: dict[str, int] = {}
@@ -552,10 +597,20 @@ class InMemoryTechLeadAuthorityStore:
         self._dispositions: dict[int, "TechLeadDisposition"] = {}
         self._disposition_publication_locks: dict[int, Lock] = {}
         self._charter_ledger = InMemoryTechLeadCharterLedger()
+        self._operator_approvals = InMemoryOperatorApprovalRecords()
+        self._proposal_index = InMemoryProposalIssueIndex()
 
     @property
     def charter_ledger(self) -> "InMemoryTechLeadCharterLedger":
         return self._charter_ledger
+
+    @property
+    def operator_approvals(self) -> InMemoryOperatorApprovalRecords:
+        return self._operator_approvals
+
+    @property
+    def proposal_index(self) -> InMemoryProposalIssueIndex:
+        return self._proposal_index
 
     def record(
         self, *, run_id: str, session_name: str, authority: "TechLeadLaunchAuthority"
@@ -629,6 +684,43 @@ class InMemoryTechLeadAuthorityStore:
 
     def discard_op(self, *, issue_number: int) -> None:
         self._ops.pop(issue_number, None)
+        self._decision_retries.pop(issue_number, None)
+
+    def begin_decision_retry(self, *, proposal_issue_number: int) -> None:
+        self._decision_retries[proposal_issue_number] = DecisionRetryState.BEGUN
+
+    def commit_decision_retry(self, *, proposal_issue_number: int) -> None:
+        self._decision_retries[proposal_issue_number] = DecisionRetryState.COMMITTED
+
+    def abandon_decision_retry(self, *, proposal_issue_number: int) -> None:
+        self._decision_retries.pop(proposal_issue_number, None)
+
+    def decision_retry_state(self, *, proposal_issue_number: int) -> DecisionRetryState | None:
+        return self._decision_retries.get(proposal_issue_number)
+
+    def begin_block_resolution(
+        self, *, decision_id: str, issue_number: int, causes: frozenset[str]
+    ) -> None:
+        self._block_resolutions[decision_id] = (DecisionRetryState.BEGUN, issue_number, causes)
+
+    def commit_block_resolution(self, *, decision_id: str) -> None:
+        _state, issue_number, causes = self._block_resolutions[decision_id]
+        self._block_resolutions[decision_id] = (DecisionRetryState.COMMITTED, issue_number, causes)
+
+    def abandon_block_resolution(self, *, decision_id: str) -> None:
+        self._block_resolutions.pop(decision_id, None)
+
+    def block_resolution_state(self, *, decision_id: str) -> DecisionRetryState | None:
+        record = self._block_resolutions.get(decision_id)
+        return None if record is None else record[0]
+
+    def resolved_causes(self, *, issue_number: int) -> dict[str, frozenset[str]]:
+        found: dict[str, set[str]] = {}
+        for decision_id, (_state, number, causes) in self._block_resolutions.items():
+            if number == issue_number:
+                for cause in causes:
+                    found.setdefault(cause, set()).add(decision_id)
+        return {cause: frozenset(ids) for cause, ids in found.items()}
 
     def list_ops(self) -> tuple[tuple[int, "StoredTechLeadOp"], ...]:
         return tuple(sorted(self._ops.items()))

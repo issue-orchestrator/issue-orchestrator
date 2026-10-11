@@ -34,6 +34,24 @@ reviewer-done changes_requested \
 ```
 The `--checks-needed` option is optional.
 
+### Standing rulings
+
+If your prompt carries a "BINDING: standing rulings" section, check the diff
+against each ruling before you decide. A diff that contradicts a ruling is a
+changes-requested review that names the ruling. An approval attests every ruling
+it checked and found upheld, once per ruling, with the upholds-ruling option:
+
+```bash
+reviewer-done approved \
+  --summary "Implements ruling m-0123456789ab" \
+  --risk low \
+  --upholds-ruling m-0123456789ab
+```
+
+The orchestrator refuses an approval that leaves a ruling covering the changed
+files unattested, and sends the PR back with that ruling as
+implementation-required feedback.
+
 ### Additional options
 
 Both statuses support:

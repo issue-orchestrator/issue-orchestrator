@@ -62,6 +62,14 @@ class TechLeadCharterDecisionReader(Protocol):
         """
         ...
 
+    def latest_triage_for_issue(self, issue_number: int) -> TechLeadCharterDecision | None:
+        """The newest decision that TRIAGED *issue_number* (#7593), or None.
+
+        Filtered to triage records aimed at the issue before ordering, so no
+        amount of later, non-triage history about the issue hides it.
+        """
+        ...
+
     def list_remedies_on_issue(
         self, issue_number: int, *, limit: int = 100
     ) -> tuple[TechLeadCharterDecision, ...]:
@@ -303,6 +311,15 @@ class InMemoryTechLeadCharterLedger:
         with self._lock:
             rows = [row for row in self._rows.values() if row.is_about_issue(issue_number)]
         return _newest_first(rows, limit)
+
+    def latest_triage_for_issue(self, issue_number: int) -> TechLeadCharterDecision | None:
+        with self._lock:
+            rows = [
+                row for row in self._rows.values()
+                if row.target_number == issue_number and row.triage_class is not None
+            ]
+        newest = _newest_first(rows, 1)
+        return newest[0] if newest else None
 
     def list_remedies_on_issue(
         self, issue_number: int, *, limit: int = 100

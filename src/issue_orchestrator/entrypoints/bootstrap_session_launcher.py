@@ -14,10 +14,8 @@ from typing import TYPE_CHECKING, Callable, Optional
 from ..control.needs_human_block import SharedNeedsHumanBlock
 from ..control.recovery_review_hold import NO_RECOVERY_HOLDS, RecoveryHolds
 from ..control.session_launcher import SessionLauncher
-from ..ports.coder_prompt import (
-    CoderPromptAddendumProvider,
-    NO_CODER_PROMPT_ADDENDUM,
-)
+from ..control.launch_prompt import NO_LAUNCH_PROMPT
+from ..ports.launch_prompt import LaunchPromptProvider
 from ..ports.provider_credentials import (
     NO_PROVIDER_CREDENTIALS,
     ProviderCredentials,
@@ -32,6 +30,7 @@ if TYPE_CHECKING:
     from ..domain.state_machines.session_machine import SessionStateMachine
     from ..infra.config import Config
     from ..ports.agent_callback_endpoint import AgentCallbackEndpoint
+    from ..ports.blocked_item_triage import BlockedItemTriageAgenda
     from ..ports.board_snapshot_provider import BoardSnapshotProvider
     from ..ports.issue import Issue as IssueProtocol
     from ..ports.session_launcher_factory import (
@@ -63,7 +62,7 @@ def build_session_launcher_factory(
     provider_readiness_probe: ProviderReadinessProbe,
     provider_credentials: ProviderCredentials = NO_PROVIDER_CREDENTIALS,
     needs_human_block: SharedNeedsHumanBlock,
-    coder_prompt_addendum: CoderPromptAddendumProvider = NO_CODER_PROMPT_ADDENDUM,
+    launch_prompt: LaunchPromptProvider = NO_LAUNCH_PROMPT,
     recovery_holds: RecoveryHolds = NO_RECOVERY_HOLDS,
 ) -> "SessionLauncherFactory":
     """Bind the application dependencies; return the facade-facing factory."""
@@ -71,6 +70,7 @@ def build_session_launcher_factory(
     def _factory(
         *,
         board_snapshot_provider: "BoardSnapshotProvider",
+        blocked_item_triage: "BlockedItemTriageAgenda",
         session_exists_fn: Callable[[str], bool],
         create_session_fn: "CreateSessionFn",
         get_issue_machine: Callable[
@@ -98,13 +98,14 @@ def build_session_launcher_factory(
                 session_manager.runner.send_to_session_by_name(name, text)
             ),
             board_snapshot_provider=board_snapshot_provider,
+            blocked_item_triage=blocked_item_triage,
             validated_work_recovery_authority=validated_work_recovery_authority,
             agent_callback_endpoint=agent_callback_endpoint,
             issue_run_allocator=issue_run_allocator,
             provider_readiness_probe=provider_readiness_probe,
             provider_credentials=provider_credentials,
             needs_human_block=needs_human_block,
-            coder_prompt_addendum=coder_prompt_addendum,
+            launch_prompt=launch_prompt,
             recovery_holds=recovery_holds,
         )
 

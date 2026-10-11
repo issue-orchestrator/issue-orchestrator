@@ -12,46 +12,123 @@ import shutil
 import tempfile
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.domain.standing_ruling import (
+    RulingAuthority,
+    RulingScope,
+    StandingRuling,
+    with_rulings_block,
+)
+from issue_orchestrator.domain.tech_lead_approval import (
+    APPROVED_LABEL,
+    AWAITING_APPROVAL_LABEL,
+    TECH_LEAD_PROPOSAL_LABEL,
+    with_proposal_marker,
+)
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.testing.exam import ExamCase, ExamObservation, RunEnd, Scorecard, grade
 from issue_orchestrator.testing.exam.case import REVIEW_STARTED_EVENT
-from issue_orchestrator.testing.exam.observation import TechLeadActionDisposition
+from issue_orchestrator.testing.exam.observation import DeliveryPullRequestFact, PullRequestState, TechLeadActionDisposition
 from issue_orchestrator.testing.exam.tech_lead import actions_resolved
 from issue_orchestrator.testing.exam.cases import (
+    ASKS,
+    ASKS_BESIDE_PR,
+    ANSWERED,
+    BESIDE_PR,
+    PROVISIONING,
+    RULED,
+    ruling_binds_rework_and_review,
+    SPLIT,
+    STALE,
     CODING,
     REVIEW,
     SUBJECT,
     UPGRADE_EARLY_TICKS,
     blocked_issue_green_pr_awaiting_review,
+    blocked_items_triaged,
+    BOT_RACED_ROLES,
+    BOT_REAPPLIED,
+    MAINTAINER_APPROVED,
+    STRIPPED,
     halted_exchange_with_validated_work,
+    positive_approval_executes_once,
+    merge_held_work_proceeds,
+    needs_human_block_resolutions_proposed,
+    needs_human_blocks_resolved,
     stale_claim_paused_for_reconcile,
     upgrade_with_work_in_flight,
+    DECIDED,
+    DECISION_MILESTONE,
+    DELIVERY_PLAN_NOTE,
+    NOTED,
+    PARENT_NOTE,
+    SIBLING,
+    SUPERSEDED,
+    decision_steps_run_on_approval,
+    LANDED_FIRST,
+    LANDED_SECOND,
+    LEFT_BEHIND,
+    integration_branch_lands_approved_work,
 )
 from issue_orchestrator.testing.exam.upgrade import UpgradeFacts
 
-from tests.e2e.exam.agents import CODER_LABEL, HELD_CODER_LABEL
+from tests.e2e.exam.agents import (
+    ANSWERABLE_CODER_LABEL,
+    RULED_CODER_LABEL,
+    ASKING_BESIDE_PR_CODER_LABEL,
+    ASKING_CODER_LABEL,
+    ASKING_PROVISIONING_CODER_LABEL,
+    GIVES_UP_CODER_LABEL,
+    SPEC_QUESTION_BESIDE_PR_CODER_LABEL,
+    SPLIT_UNTIL_RESOLVED_CODER_LABEL,
+    CODER_LABEL,
+    DECIDING_CODER_LABEL,
+    HELD_CODER_LABEL,
+    INTEGRATION_CODER_LABEL,
+)
 from tests.e2e.exam.driving import drive, settle
 from tests.e2e.exam.run_identity import RunIdentity
-from tests.e2e.exam.case_engines import case_a_engine, case_b_engine, case_c_engine, case_u_engine
-from tests.e2e.exam.engine import EngineCheckout, ExamEngine
+from tests.e2e.exam.case_engines import (
+    case_a_engine,
+    case_b_engine,
+    case_c_engine,
+    case_d_engine,
+    case_h_engine,
+    case_e_engine,
+    case_i_engine,
+    case_j_engine,
+    case_k_engine,
+    case_resolution_engine,
+    integration_branch_name,
+    case_u_engine,
+)
+from tests.e2e.exam.engine import EngineCheckout, ExamEngine, RulingAgents
 from tests.e2e.exam.upgrade_window import capture_restart_window, quiesce, upgrade_facts
 from tests.e2e.exam.observe import (
     TrackedItem,
     build_observation,
     item_events,
     linked_pull_requests,
+    observe_decision_proposals,
     observe_item,
     observe_tech_lead_runs,
     owned_numbers,
     parked_screen,
     terminal_tech_lead_runs,
 )
-from tests.e2e.exam.seeding import E2E_DATA_LABEL, seed_pull_request, wait_for_checks
-from tests.e2e.fixtures import fetch_gh_audit_report
+from tests.e2e.exam.seeding import (
+    E2E_DATA_LABEL,
+    seed_conflicting_pull_request,
+    seed_pull_request,
+    wait_for_checks,
+)
+from tests.e2e.fixtures import _github_adapter, fetch_gh_audit_report
+from tests.e2e.fixtures.data_factory import inflight_update
+from tests.e2e.fixtures.github_client import get_issue_labels_fresh
 from tests.e2e.flows import E2EFlow
 
 logger = logging.getLogger(__name__)
@@ -64,6 +141,34 @@ CASE_B_EXTERNAL_ID = "M0-761"
 CASE_C_EXTERNAL_ID = "M0-762"
 CASE_U_CODING_EXTERNAL_ID = "M0-763"
 CASE_U_REVIEW_EXTERNAL_ID = "M0-764"
+CASE_D_ASKS_EXTERNAL_ID = "M0-765"
+CASE_D_ASKS_BESIDE_PR_EXTERNAL_ID = "M0-766"
+CASE_H_MAINTAINER_EXTERNAL_ID = "M0-769"
+CASE_H_STRIPPED_EXTERNAL_ID = "M0-770"
+CASE_H_BOT_EXTERNAL_ID = "M0-771"
+CASE_H_BOT_2_EXTERNAL_ID = "M0-775"
+CASE_H_BOT_3_EXTERNAL_ID = "M0-776"
+CASE_H_BOT_4_EXTERNAL_ID = "M0-777"
+CASE_H_BOT_5_EXTERNAL_ID = "M0-778"
+CASE_H_REAPPLIED_EXTERNAL_ID = "M0-779"
+
+#: Case H keeps watching this long after its goals first hold, so a proposal
+#: the engine wrongly admits LATER still fails the case.
+CASE_H_SETTLE_S = 240.0
+CASE_E_ASKS_EXTERNAL_ID = "M0-767"
+CASE_E_ASKS_BESIDE_PR_EXTERNAL_ID = "M0-768"
+CASE_FG_SPLIT_EXTERNAL_ID = "M0-771"
+CASE_FG_STALE_EXTERNAL_ID = "M0-772"
+CASE_FG_BESIDE_PR_EXTERNAL_ID = "M0-773"
+CASE_FG_PROVISIONING_EXTERNAL_ID = "M0-774"
+CASE_I_RULED_EXTERNAL_ID = "M0-775"
+CASE_I_ANSWERED_EXTERNAL_ID = "M0-776"
+
+#: How long the stale item gets to reach needs-human before its stale
+#: blocked-cross-milestone is planted beside it. Four items share two
+#: session slots, and the give-up coder may run twice (interrupted retry)
+#: before its block lands: 15 minutes ran out on a loaded host.
+CASE_FG_PLANT_S = 40 * 60
 
 
 @dataclass(frozen=True)
@@ -95,7 +200,8 @@ class ExamRun:
 
 
 def goals_met_probe(
-    run: ExamRun, engine: ExamEngine, *items: TrackedItem, every_s: float = 60.0
+    run: ExamRun, engine: ExamEngine, *items: TrackedItem, every_s: float = 60.0,
+    capture_dir: Path | None = None,
 ) -> Callable[[], Awaitable[bool]]:
     """``done`` for :func:`drive`: the case's own goals, on GitHub's state.
 
@@ -120,6 +226,8 @@ def goals_met_probe(
                 watcher=engine.runtime.watcher,
                 parked_screen="",
                 read_checks=False,
+                state_dir=engine.checkout.state_dir,
+                capture_dir=capture_dir,
             )
             if not all(goal.check(fact).passed for goal in run.case.goals if goal.role == item.role):
                 return False
@@ -137,6 +245,8 @@ async def _finish(
     started: float,
     ended_by: RunEnd,
     upgrade: UpgradeFacts | None = None,
+    capture_dir: Path | None = None,
+    delivery: DeliveryPullRequestFact | None = None,
 ) -> ExamResult:
     watcher = engine.runtime.watcher
     alive = engine.is_running()
@@ -160,6 +270,8 @@ async def _finish(
                     issue_number=item.issue_number,
                 ),
                 extra_pr_numbers=extra_prs.get(item.role, ()),
+                state_dir=engine.checkout.state_dir,
+                capture_dir=capture_dir,
             )
             for item in items
         ),
@@ -175,6 +287,7 @@ async def _finish(
         ended_by=ended_by,
         notes=tuple(run.notes),
         upgrade=upgrade,
+        delivery=delivery,
     )
     return ExamResult(observation=observation, scorecard=grade(run.case, observation))
 
@@ -431,6 +544,633 @@ async def run_case_c(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
 
 
 # ---------------------------------------------------------------------------
+# Case H
+# ---------------------------------------------------------------------------
+
+
+def _bot_repository_host(run: ExamRun):
+    """A host that writes as a GitHub App (bot) identity, for Case H's bot
+    "approval". It is the harness repo's own App (its default mode config);
+    without one the case cannot plant its fault and says so."""
+    from issue_orchestrator.execution.providers import create_repository_host
+
+    path = run.harness_root / ".issue-orchestrator" / "config" / "modes" / "default" / "main.yaml"
+    app_config = Config.load(path)
+    if not app_config.github_app_auth_configured():
+        raise RuntimeError(
+            f"Case H plants an `approved` label from a bot identity and needs a GitHub"
+            f" App configured in {path}; none is."
+        )
+    return create_repository_host(repo=run.repo, config=app_config)
+
+
+async def run_case_h(run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_model: str) -> ExamResult:
+    """Gated tech-lead proposals; only the maintainer's approval runs (#7763).
+
+    The labels are planted BEFORE the engine starts, so its first tick (whose
+    approval scan is always due) judges them all at once: the maintainer's
+    `approved` (the harness's own token — a repository admin), a stripped
+    `awaiting-approval` (what an engine retry used to do), and the bot
+    approvals (the harness repo's GitHub App).
+
+    Five bot approvals race their proposal's filing (#8346): the App adds
+    `approved` the moment GitHub answers the create, before GitHub emits the
+    filing's own labeled events — which then name the maintainer who filed it
+    for every label present, the bot's `approved` included. A gate that
+    trusts the newest labeled event admits such a proposal. The race is won
+    about two times in three, so five of them fail such a gate on nearly
+    every run (all five lost: about 1 in 250).
+    The last bot approval follows a maintainer approval that was taken back.
+    """
+    checkout = EngineCheckout.create(
+        harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity, repo=run.repo
+    )
+    try:
+        spec = case_h_engine()
+        config = spec.config(
+            run.base_config, checkout=checkout, run_label=run.run_label, tech_lead_model=tech_lead_model
+        )
+        flow = E2EFlow(repo=run.repo, watcher=None, filter_label=run.run_label)
+        flow_cleanup.append(flow)
+        gated = [CODER_LABEL, E2E_DATA_LABEL, TECH_LEAD_PROPOSAL_LABEL, AWAITING_APPROVAL_LABEL]
+        # Every label once, up front: re-ensuring them per filing made seven
+        # label writes per issue, and a transient GitHub 500 on any of them
+        # aborted the run before the engine started (#8346).
+        flow.ensure_labels([*gated, APPROVED_LABEL, run.run_label])
+        operator = _github_adapter(run.repo)
+        bot_host = _bot_repository_host(run)
+
+        def bot_approves(number: int) -> None:
+            bot_host.add_label(number, APPROVED_LABEL)
+
+        def file(
+            role: str, external_id: str, what: str, on_created: Callable[[int], None] | None = None
+        ) -> TrackedItem:
+            _, number = flow.create_issue(
+                f"[{external_id}] [EXAM-H] Tech-lead proposal {what}",
+                gated,
+                body=(
+                    "Tech-lead exam case H: a gated create_issue proposal the tech lead"
+                    f" filed under propose authority, then {what}."
+                ),
+                on_created=on_created,
+                ensure_labels=False,
+            )
+            return TrackedItem(role, number, external_id=external_id)
+
+        maintainer = file(MAINTAINER_APPROVED, CASE_H_MAINTAINER_EXTERNAL_ID, "approved by a maintainer")
+        stripped = file(STRIPPED, CASE_H_STRIPPED_EXTERNAL_ID, "waiting label stripped")
+        # Mint the App's installation token now: minting it inside the first
+        # race would hand GitHub the seconds it needs to win that race.
+        bot_host.get_issue(maintainer.issue_number)
+        raced = [
+            file(role, external_id, "'approved' by a bot as it was filed", on_created=bot_approves)
+            for role, external_id in zip(
+                BOT_RACED_ROLES,
+                (
+                    CASE_H_BOT_EXTERNAL_ID,
+                    CASE_H_BOT_2_EXTERNAL_ID,
+                    CASE_H_BOT_3_EXTERNAL_ID,
+                    CASE_H_BOT_4_EXTERNAL_ID,
+                    CASE_H_BOT_5_EXTERNAL_ID,
+                ),
+                strict=True,
+            )
+        ]
+        reapplied = file(
+            BOT_REAPPLIED,
+            CASE_H_REAPPLIED_EXTERNAL_ID,
+            "approved by a maintainer, un-approved, and re-'approved' by a bot",
+        )
+        operator.add_label(maintainer.issue_number, APPROVED_LABEL)
+        operator.remove_label(stripped.issue_number, AWAITING_APPROVAL_LABEL)
+        operator.add_label(reapplied.issue_number, APPROVED_LABEL)
+        operator.remove_label(reapplied.issue_number, APPROVED_LABEL)
+        bot_approves(reapplied.issue_number)
+        items = [maintainer, stripped, *raced, reapplied]
+        run.notes.append(
+            f"planted: #{maintainer.issue_number} approved by the harness token,"
+            f" #{stripped.issue_number} waiting label stripped,"
+            f" {', '.join(f'#{item.issue_number}' for item in raced)} approved by the harness App"
+            f" as filed, #{reapplied.issue_number} approved and un-approved by the harness"
+            " token then approved by the harness App"
+        )
+        engine = spec.engine(config, checkout)
+        await engine.start()
+        try:
+            started = time.monotonic()
+            goals_met = goals_met_probe(run, engine, *items)
+
+            async def settled() -> bool:
+                return time.monotonic() - started >= CASE_H_SETTLE_S and await goals_met()
+
+            ended_by = await drive(engine, done=settled, quiet_s=900, timeout_s=25 * 60)
+            return await _finish(
+                run, engine, items=items, extra_prs={}, started=started, ended_by=ended_by
+            )
+        finally:
+            await engine.close()
+    finally:
+        checkout.remove()
+
+
+# ---------------------------------------------------------------------------
+# Case D
+# ---------------------------------------------------------------------------
+
+
+async def run_case_d(
+    run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_model: str
+) -> ExamResult:
+    """Two coding agents end by asking the operator; a health review must
+    triage both, and the PR beside the second question must be reviewed.
+
+    The engine plants the fault itself (each coder's own completion puts the
+    question on its issue, with the cause the engine records for an agent's
+    question), so the case grades exactly what porchpin's engine did with it.
+    """
+    checkout = EngineCheckout.create(
+        harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity, repo=run.repo
+    )
+    try:
+        spec = case_d_engine()
+        config = spec.config(
+            run.base_config,
+            checkout=checkout,
+            run_label=run.run_label,
+            tech_lead_model=tech_lead_model,
+        )
+        engine = spec.engine(config, checkout)
+        runtime = await engine.start()
+        try:
+            flow = E2EFlow(repo=run.repo, watcher=runtime.watcher, filter_label=run.run_label)
+            flow_cleanup.append(flow)
+            flow.ensure_labels([_labels(config).needs_human])
+            started = time.monotonic()
+            _, asks_number = flow.create_issue(
+                f"[{CASE_D_ASKS_EXTERNAL_ID}] [EXAM-D] An agent asks whether to split its issue",
+                [ASKING_CODER_LABEL, E2E_DATA_LABEL],
+                body=(
+                    "Tech-lead exam case D: the coding agent ends by asking the operator"
+                    " whether to split this issue (porchpin#262's question)."
+                ),
+            )
+            asks = TrackedItem(ASKS, asks_number, external_id=CASE_D_ASKS_EXTERNAL_ID)
+            ended_by = await drive(
+                engine,
+                done=goals_met_probe(run, engine, asks),
+                quiet_s=900,
+                timeout_s=80 * 60,
+            )
+            return await _finish(
+                run,
+                engine,
+                items=[asks],
+                extra_prs={},
+                started=started,
+                ended_by=ended_by,
+            )
+        finally:
+            await engine.close()
+    finally:
+        checkout.remove()
+
+
+# ---------------------------------------------------------------------------
+# Case E
+# ---------------------------------------------------------------------------
+
+
+async def run_case_e(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
+    """A pre-work question and a merge decision, typed (#7678); no tech lead.
+
+    The first post-publish review requests changes, so the merge-held PR
+    goes through one rework before it is approved.
+    """
+    checkout = EngineCheckout.create(
+        harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity, repo=run.repo
+    )
+    try:
+        spec = case_e_engine(checkout.root.parent / f"{checkout.root.name}-changes-once")
+        config = spec.config(run.base_config, checkout=checkout, run_label=run.run_label)
+        engine = spec.engine(config, checkout)
+        runtime = await engine.start()
+        try:
+            flow = E2EFlow(repo=run.repo, watcher=runtime.watcher, filter_label=run.run_label)
+            flow_cleanup.append(flow)
+            flow.ensure_labels([_labels(config).needs_human])
+            started = time.monotonic()
+            _, asks_number = flow.create_issue(
+                f"[{CASE_E_ASKS_EXTERNAL_ID}] [EXAM-E] An agent asks whether to split its issue",
+                [ASKING_CODER_LABEL, E2E_DATA_LABEL],
+                body="Tech-lead exam case E: a pre-work question holds the work.",
+            )
+            _, beside_number = flow.create_issue(
+                f"[{CASE_E_ASKS_BESIDE_PR_EXTERNAL_ID}] [EXAM-E] An agent asks before its PR merges",
+                [ASKING_BESIDE_PR_CODER_LABEL, E2E_DATA_LABEL],
+                body=(
+                    "Tech-lead exam case E: the agent publishes its work and asks a person"
+                    " to decide before the PR merges (porchpin#364 / PR #379)."
+                ),
+            )
+            asks = TrackedItem(ASKS, asks_number, external_id=CASE_E_ASKS_EXTERNAL_ID)
+            beside = TrackedItem(
+                ASKS_BESIDE_PR, beside_number, external_id=CASE_E_ASKS_BESIDE_PR_EXTERNAL_ID
+            )
+            ended_by = await drive(
+                engine,
+                done=goals_met_probe(run, engine, asks, beside),
+                quiet_s=600,
+                timeout_s=45 * 60,
+            )
+            return await _finish(
+                run, engine, items=[asks, beside], extra_prs={}, started=started, ended_by=ended_by,
+            )
+        finally:
+            await engine.close()
+    finally:
+        checkout.remove()
+
+
+# ---------------------------------------------------------------------------
+# Cases F and G
+# ---------------------------------------------------------------------------
+
+#: The issue bodies are the items' specs: what a tech lead decides from.
+_SPLIT_BODY = """Tech-lead exam case F/G (porchpin#262's split question).
+
+## Acceptance
+1. The share page renders from the pickup's own view (slice A).
+2. A live seller index lists in-flight pickups (slice B).
+
+Slices A and B are independent: B reads only what A already persists, and
+neither changes the other's surface. Spec rule: an issue whose slices are
+independent is split rather than finished in one oversized session; the
+landed slice keeps the issue and each remaining slice gets its own issue that
+depends on it.
+"""
+
+_STALE_BODY = """Tech-lead exam case F/G (porchpin#326): the engine gave up on this item
+and it also carries a stale blocked-cross-milestone. It has no dependencies at
+all, so no milestone-scope violation can hold it; the work itself is an
+ordinary coding task the next session can finish.
+"""
+
+_BESIDE_PR_BODY = """Tech-lead exam case F/G (porchpin#364/PR #379): the agent publishes its work
+and asks the maintainer whether the batch must hold its Delivery-owner
+provenance.
+
+## Spec
+ADR-0010 rules it: the batch's Delivery-owner provenance is UNHOLDABLE; the
+batch records only the owner reference, and no maintainer decision is needed
+for A1. The published PR implements exactly that.
+"""
+
+_PROVISIONING_BODY = """Tech-lead exam case F/G (porchpin#179).
+
+> **Provisioning checklist (human; each is an account action)**
+> - [ ] Create the Cloudflare account and the cloud-test Worker environment.
+> - [ ] Mint a least-privilege Cloudflare API deploy token and add it to the
+>       GitHub environment as a secret.
+
+Until then the orchestrator must not relaunch this issue.
+"""
+
+
+async def run_case_resolution(
+    run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_model: str, resolve_block: str
+) -> ExamResult:
+    """Four needs-human blocks for a health review to triage (#7658).
+
+    The engine plants each block itself (the coders' own completions, and a
+    coder that gives up), then the harness adds the stale
+    ``blocked-cross-milestone`` beside the given-up item, as porchpin#326
+    carried one. Case F runs with ``resolve_block: execute``, case G with the
+    default ``propose``; nothing else differs.
+    """
+    checkout = EngineCheckout.create(
+        harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity, repo=run.repo
+    )
+    try:
+        spec = case_resolution_engine(resolve_block=resolve_block)
+        config = spec.config(
+            run.base_config, checkout=checkout, run_label=run.run_label, tech_lead_model=tech_lead_model,
+        )
+        engine = spec.engine(config, checkout)
+        runtime = await engine.start()
+        try:
+            labels = _labels(config)
+            flow = E2EFlow(repo=run.repo, watcher=runtime.watcher, filter_label=run.run_label)
+            flow_cleanup.append(flow)
+            flow.ensure_labels([labels.needs_human, labels.blocked_cross_milestone])
+            started = time.monotonic()
+            planted = {}
+            for role, external_id, agent, title, body in (
+                (SPLIT, CASE_FG_SPLIT_EXTERNAL_ID, SPLIT_UNTIL_RESOLVED_CODER_LABEL,
+                 "An agent asks whether to split its issue", _SPLIT_BODY),
+                (STALE, CASE_FG_STALE_EXTERNAL_ID, GIVES_UP_CODER_LABEL,
+                 "The engine gave up on an item beside a stale cross-milestone block", _STALE_BODY),
+                (BESIDE_PR, CASE_FG_BESIDE_PR_EXTERNAL_ID, SPEC_QUESTION_BESIDE_PR_CODER_LABEL,
+                 "An agent asks beside its PR a question its spec answers", _BESIDE_PR_BODY),
+                (PROVISIONING, CASE_FG_PROVISIONING_EXTERNAL_ID, ASKING_PROVISIONING_CODER_LABEL,
+                 "An agent needs account provisioning", _PROVISIONING_BODY),
+            ):
+                key, number = flow.create_issue(
+                    f"[{external_id}] [EXAM-FG] {title}", [agent, E2E_DATA_LABEL], body=body,
+                )
+                planted[role] = (key, TrackedItem(role, number, external_id=external_id))
+            stale_key, stale = planted[STALE]
+            # Read GitHub, not the watcher: the engine's label on a blocked
+            # issue reaches no watcher snapshot (the first runs waited out the
+            # whole window with the label long on the issue).
+            landed = await settle(
+                lambda: labels.needs_human in get_issue_labels_fresh(run.repo, stale.issue_number),
+                timeout_s=CASE_FG_PLANT_S, poll_s=30,
+            )
+            if not landed:
+                raise RuntimeError(
+                    f"case F/G's premise was not planted: #{stale.issue_number} never got"
+                    f" {labels.needs_human} within {CASE_FG_PLANT_S // 60} min"
+                )
+            inflight_update(
+                stale_key, add_labels=[labels.blocked_cross_milestone],
+                port=config.control_api_port, issue_number=stale.issue_number,
+            )
+            items = [item for _key, item in planted.values()]
+            ended_by = await drive(
+                engine,
+                done=goals_met_probe(run, engine, *items),
+                quiet_s=900,
+                timeout_s=55 * 60,  # within the test's 100-minute budget, after planting
+            )
+            return await _finish(
+                run, engine, items=items, extra_prs={}, started=started, ended_by=ended_by,
+            )
+        finally:
+            await engine.close()
+    finally:
+        checkout.remove()
+
+
+# ---------------------------------------------------------------------------
+# Case I
+# ---------------------------------------------------------------------------
+
+_RULED_BODY = """Tech-lead exam case I (porchpin#364 / PR #379): a maintainer rules on this
+issue after its PR was approved, and the PR then conflicts with its base.
+
+## Outcome
+Provenance is checked by a static symbol-walk checker, whose findings are
+recorded in `exam-output.txt`.
+"""
+
+#: The maintainer's ruling (#364's): it retires exactly what the scripted
+#: conflict rework then extends (it writes ``exam-output.txt``).
+_RULING: dict[str, Any] = {
+    "text": (
+        "Runtime stamping replaces the static symbol-walk checker. The walk checker's"
+        " findings file `exam-output.txt` is retired: no change may add to or extend it."
+    ),
+    "files": ["exam-output.txt"],
+    "claims": ["The static symbol-walk checker is retired"],
+}
+
+_ANSWERED_BODY = """Tech-lead exam case I (porchpin#327 / proposal #501): the coder asks a
+question before any work, and this issue's spec answers it.
+
+## Spec
+ADR-0009 rules the buyer contact index: it is its own D1 table
+(`buyer_contact_index`), written only by the Pickup DO, behind a deletion fence
+(deleting a buyer's rows is a precondition of every wipe of that pickup). The
+seller index is never widened to carry buyers. A session that asks which of the
+two to build is answered by this paragraph.
+"""
+
+
+def _paste_ruling(repo: str, issue_number: int) -> None:
+    """Put the ruling in the issue body by hand, as porchpin's operator did: the
+    only way an engine with no ruling route can be told one."""
+    adapter = _github_adapter(repo)
+    issue = adapter.get_issue(issue_number)
+    if issue is None:
+        raise RuntimeError(f"issue #{issue_number} vanished before its ruling was pasted")
+    ruling = StandingRuling(
+        ruling_id="m-0000feedc0de", text=_RULING["text"], authority=RulingAuthority.MAINTAINER,
+        source="maintainer, pasted into the body by hand",
+        scope=RulingScope(files=tuple(_RULING["files"]), claims=tuple(_RULING["claims"])),
+        recorded_at=datetime.now(timezone.utc).isoformat(),
+    )
+    adapter.update_issue_body(issue_number, with_rulings_block(issue.body, (ruling,)))
+
+
+async def run_case_i(run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_model: str) -> ExamResult:
+    """A standing ruling must bind a conflict rework and its review (#8141).
+
+    ``ruled``: an engine-shaped PR that conflicts with main is seeded before
+    the engine starts, and the maintainer's ruling is recorded once it runs
+    (through the engine's ruling route, or pasted into the body by hand on an
+    engine that has none). The reviewer approves whatever it sees; the
+    approval sends the PR to awaiting-merge, GitHub says it is ``dirty``, and
+    the conflict rework fires. The ruling governs ``exam-output.txt``, which the
+    seeded PR does not touch and the rework then writes. ``answered``: a coder asks a question its
+    spec answers; the tech lead (``resolve_block: execute``) answers it.
+    """
+    checkout = EngineCheckout.create(
+        harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity, repo=run.repo
+    )
+    hold_dir = Path(tempfile.mkdtemp(prefix="exam-i-"))
+    agents = RulingAgents(capture_dir=hold_dir / "prompts")
+    try:
+        spec = case_i_engine(agents)
+        config = spec.config(
+            run.base_config, checkout=checkout, run_label=run.run_label, tech_lead_model=tech_lead_model,
+        )
+        labels = _labels(config)
+        flow = E2EFlow(repo=run.repo, watcher=None, filter_label=run.run_label)
+        flow_cleanup.append(flow)
+        flow.ensure_labels([labels.needs_human, labels.pr_pending, labels.code_review])
+        _, ruled_number = flow.create_issue(
+            f"[{CASE_I_RULED_EXTERNAL_ID}] [EXAM-I] A maintainer rules on a PR that conflicts with its base",
+            [RULED_CODER_LABEL, E2E_DATA_LABEL, labels.pr_pending],
+            body=_RULED_BODY,
+        )
+        seeded = seed_conflicting_pull_request(
+            repo=run.repo,
+            repo_root=run.harness_root,
+            issue_number=ruled_number,
+            slug="exam-i-ruled-pr",
+            labels=[labels.code_review, run.run_label, E2E_DATA_LABEL],
+            draft=True,
+            register_branch=run.branches.append,
+        )
+        engine = spec.engine(config, checkout)
+        runtime = await engine.start()
+        try:
+            flow.watcher = runtime.watcher
+            started = time.monotonic()
+            _, answered_number = flow.create_issue(
+                f"[{CASE_I_ANSWERED_EXTERNAL_ID}] [EXAM-I] An agent asks a question its spec answers",
+                [ANSWERABLE_CODER_LABEL, E2E_DATA_LABEL],
+                body=_ANSWERED_BODY,
+            )
+            if engine.record_ruling(ruled_number, _RULING) is None:
+                run.notes.append(
+                    f"this engine has no ruling route: the ruling was pasted into #{ruled_number}'s"
+                    " body by hand, as porchpin's operator did"
+                )
+                _paste_ruling(run.repo, ruled_number)
+            items = [
+                TrackedItem(RULED, ruled_number, external_id=CASE_I_RULED_EXTERNAL_ID),
+                TrackedItem(ANSWERED, answered_number, external_id=CASE_I_ANSWERED_EXTERNAL_ID),
+            ]
+            ended_by = await drive(
+                engine,
+                done=goals_met_probe(run, engine, *items, capture_dir=agents.capture_dir),
+                quiet_s=900,
+                timeout_s=55 * 60,
+            )
+            return await _finish(
+                run, engine, items=items, extra_prs={RULED: [seeded.number]}, started=started,
+                ended_by=ended_by, capture_dir=agents.capture_dir,
+            )
+        finally:
+            await engine.close()
+    finally:
+        checkout.remove()
+        shutil.rmtree(hold_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Case J
+# ---------------------------------------------------------------------------
+
+CASE_J_DECIDED_EXTERNAL_ID = "M0-780"
+CASE_J_SIBLING_EXTERNAL_ID = "M0-781"
+CASE_J_NOTED_EXTERNAL_ID = "M0-782"
+CASE_J_SUPERSEDED_EXTERNAL_ID = "M0-783"
+#: A health review must triage the question and file the decision.
+CASE_J_PROPOSAL_S = 50 * 60
+#: Approval to every step applied and the coder resumed.
+CASE_J_APPLY_S = 25 * 60
+
+
+
+def _j_decided_body(*, sibling: int, noted: int, superseded: int) -> str:
+    return f"""Tech-lead exam case J (porchpin#326 / proposal #459): the coder asks how to
+deliver this issue. The maintainer's spec below decides it, and every consequence
+of the decision beyond this issue.
+
+## Spec
+Build slice A (the per-pickup deletion command) now. Slice B (the account route)
+waits on the parent's live index.
+
+## Decision consequences (all part of the decision)
+1. #{sibling} must move to milestone `{DECISION_MILESTONE}` with this work, or its
+   dependency edge crosses milestones.
+2. This issue's body must carry the delivery plan, word for word:
+   "{DELIVERY_PLAN_NOTE}"
+3. #{noted}'s body must carry this note under its acceptance list, word for word:
+   "{PARENT_NOTE}"
+4. Proposal #{superseded} is an older plan for this question: this decision
+   supersedes it, so it must be closed.
+5. The CI ceiling in `.github/workflows/ci.yml` rises from 10 to 15 minutes. The
+   bot may not push workflow files, so only a person can make this edit.
+"""
+
+
+def _ensure_open_milestone(repo: str, title: str) -> None:
+    """Case J's target milestone, shared across runs (never deleted)."""
+    adapter = _github_adapter(repo)
+    if any(m.get("title") == title for m in adapter.list_milestones(state="open")):
+        return
+    if any(m.get("title") == title for m in adapter.list_milestones(state="all")):
+        raise RuntimeError(f"milestone {title!r} exists but is closed in {repo}: reopen it to run case J")
+    if adapter.create_milestone(title, description="tech-lead exam case J (#8691)") is None:
+        raise RuntimeError(f"milestone {title!r} could not be created in {repo}")
+
+
+async def run_case_j(run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_model: str) -> ExamResult:
+    """An approved decision must carry out its own consequences (#8691).
+
+    porchpin#459's shape: a coder asks how to deliver its issue, and the
+    issue's spec names consequences beyond it (a sibling's milestone, notes in
+    two bodies, a superseded proposal) plus a workflow edit only a person can
+    make. A health review files the decision; the harness approves it as a
+    maintainer (the harness token) and does nothing else by hand.
+    """
+    checkout = EngineCheckout.create(
+        harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity, repo=run.repo
+    )
+    try:
+        spec = case_j_engine()
+        config = spec.config(
+            run.base_config, checkout=checkout, run_label=run.run_label, tech_lead_model=tech_lead_model,
+        )
+        labels = _labels(config)
+        flow = E2EFlow(repo=run.repo, watcher=None, filter_label=run.run_label)
+        flow_cleanup.append(flow)
+        flow.ensure_labels([labels.needs_human, TECH_LEAD_PROPOSAL_LABEL, AWAITING_APPROVAL_LABEL, APPROVED_LABEL])
+        _ensure_open_milestone(run.repo, DECISION_MILESTONE)
+        _, sibling = flow.create_issue(
+            f"[{CASE_J_SIBLING_EXTERNAL_ID}] [EXAM-J] A sibling the decision moves to another milestone",
+            [E2E_DATA_LABEL], body="Tech-lead exam case J (porchpin#327): buyer deletion. Not worked here.",
+        )
+        _, noted = flow.create_issue(
+            f"[{CASE_J_NOTED_EXTERNAL_ID}] [EXAM-J] The parent whose body the decision notes",
+            [E2E_DATA_LABEL],
+            body="Tech-lead exam case J (porchpin#262).\n\n## Acceptance\n- Verified deletion stops delayed writes.",
+        )
+        _, superseded = flow.create_issue(
+            f"[{CASE_J_SUPERSEDED_EXTERNAL_ID}] [EXAM-J] Tech Lead proposal: an older plan for the delivery question",
+            [TECH_LEAD_PROPOSAL_LABEL, AWAITING_APPROVAL_LABEL, E2E_DATA_LABEL],
+            body=with_proposal_marker(
+                "Tech-lead exam case J (porchpin#445): an older proposal the decision supersedes."
+            ),
+        )
+        engine = spec.engine(config, checkout)
+        runtime = await engine.start()
+        try:
+            flow.watcher = runtime.watcher
+            started = time.monotonic()
+            _, decided = flow.create_issue(
+                f"[{CASE_J_DECIDED_EXTERNAL_ID}] [EXAM-J] An agent asks how to deliver its issue",
+                [DECIDING_CODER_LABEL, E2E_DATA_LABEL],
+                body=_j_decided_body(sibling=sibling, noted=noted, superseded=superseded),
+            )
+            items = [
+                TrackedItem(DECIDED, decided, external_id=CASE_J_DECIDED_EXTERNAL_ID),
+                TrackedItem(SIBLING, sibling, external_id=CASE_J_SIBLING_EXTERNAL_ID),
+                TrackedItem(NOTED, noted, external_id=CASE_J_NOTED_EXTERNAL_ID),
+                TrackedItem(SUPERSEDED, superseded, external_id=CASE_J_SUPERSEDED_EXTERNAL_ID),
+            ]
+            adapter = _github_adapter(run.repo)
+            filed: list[int] = []
+
+            async def decision_filed() -> bool:
+                if filed:
+                    return True
+                proposals = observe_decision_proposals(adapter, engine.checkout.state_dir, decided)
+                filed.extend(p.number for p in proposals if p.state == "open")
+                return bool(filed)
+
+            ended_by = await drive(engine, done=decision_filed, quiet_s=900, timeout_s=CASE_J_PROPOSAL_S)
+            if filed:
+                # The maintainer's one act: approve. Everything else is the engine's.
+                _github_adapter(run.repo).add_label(filed[0], APPROVED_LABEL)
+                run.notes.append(f"the harness token approved proposal #{filed[0]}; nothing else was done by hand")
+                ended_by = await drive(
+                    engine, done=goals_met_probe(run, engine, *items), quiet_s=900, timeout_s=CASE_J_APPLY_S,
+                )
+            else:
+                run.notes.append(f"no decision proposal about #{decided} was filed ({ended_by.value})")
+            return await _finish(run, engine, items=items, extra_prs={}, started=started, ended_by=ended_by)
+        finally:
+            await engine.close()
+    finally:
+        checkout.remove()
+
+
+# ---------------------------------------------------------------------------
 # Case U
 # ---------------------------------------------------------------------------
 
@@ -613,3 +1353,167 @@ def case_b(config: Config) -> ExamCase:
     return blocked_issue_green_pr_awaiting_review(
         blocked_failed_label=_labels(config).blocked_failed
     )
+
+
+def case_d(config: Config) -> ExamCase:
+    return blocked_items_triaged(needs_human_label=_labels(config).needs_human)
+
+
+def case_h(config: Config) -> ExamCase:
+    del config  # the approval labels are raw: the same in every engine config
+    return positive_approval_executes_once(
+        proposal_label=TECH_LEAD_PROPOSAL_LABEL,
+        awaiting_label=AWAITING_APPROVAL_LABEL,
+        approved_label=APPROVED_LABEL,
+    )
+
+
+
+def case_e(config: Config) -> ExamCase:
+    return merge_held_work_proceeds(
+        needs_human_label=_labels(config).needs_human, rework_label=_labels(config).rework_cycle(1)
+    )
+
+
+def case_f_resolved(config: Config) -> ExamCase:
+    return needs_human_blocks_resolved(needs_human_label=_labels(config).needs_human)
+
+
+def case_g_proposed(config: Config) -> ExamCase:
+    return needs_human_block_resolutions_proposed(needs_human_label=_labels(config).needs_human)
+
+
+def case_i(config: Config) -> ExamCase:
+    del config  # the case grades rulings and prompts, not label names
+    return ruling_binds_rework_and_review()
+
+
+def case_j(config: Config) -> ExamCase:
+    return decision_steps_run_on_approval(needs_human_label=_labels(config).needs_human)
+
+
+
+# ---------------------------------------------------------------------------
+# Case K (#8144)
+# ---------------------------------------------------------------------------
+
+CASE_K_FIRST_EXTERNAL_ID = "M0-790"
+CASE_K_SECOND_EXTERNAL_ID = "M0-791"
+CASE_K_LEFT_BEHIND_EXTERNAL_ID = "M0-792"
+
+
+def case_k(config: Config) -> ExamCase:
+    labels = _labels(config)
+    return integration_branch_lands_approved_work(
+        needs_human_label=labels.needs_human,
+        rework_labels=(labels.needs_rework, labels.rework_cycle(1)),
+    )
+
+
+def _approved_open_prs(repo: str, labels: LabelManager, items: list[TrackedItem]) -> dict[int, int] | None:
+    """Each item's one open PR, once every item has one carrying code-reviewed.
+
+    The complete open-PR walk carries no labels, so each PR's labels are read
+    fresh (the first live Case K run waited forever on the walk's empty set).
+    """
+    adapter = _github_adapter(repo)
+    found: dict[int, int] = {}
+    for tracked in items:
+        prs = linked_pull_requests(repo, tracked.issue_number, state="open")
+        if len(prs) != 1:
+            return None
+        fresh = adapter.get_pr(prs[0].number)
+        if fresh is None or labels.code_reviewed not in fresh.labels:
+            return None
+        found[tracked.issue_number] = prs[0].number
+    return found
+
+
+def _observe_delivery(repo: str, branch: str) -> DeliveryPullRequestFact | None:
+    """The open delivery PR from the run's integration branch, as GitHub holds it."""
+    adapter = _github_adapter(repo)
+    base = adapter.get_default_branch()
+    ref = adapter.find_open_pull_request(head=branch, base=base)
+    if ref is None:
+        return None
+    fresh = adapter.get_pr(ref.number)
+    if fresh is None:
+        raise RuntimeError(f"delivery PR #{ref.number} vanished while observing")
+    return DeliveryPullRequestFact(
+        number=ref.number, head=branch, base=base,
+        state=PullRequestState.from_github(state=fresh.state, draft=fresh.draft, merged=fresh.state == "merged"),
+        listed_pr_numbers=DeliveryPullRequestFact.listed_in(ref.body),
+    )
+
+
+async def run_case_k(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
+    """Integration mode lands three approved PRs (#8144); no tech lead.
+
+    io creates the run's integration branch itself. The harness waits until
+    the scripted reviewer has approved all three PRs, then releases them at
+    once (``tech-lead-reviewed``, the case's ``merge_after``), so io's
+    one-merge-per-pass, oldest-first rule leaves the last-created item's PR
+    behind the first merge: it must be updated mechanically, never reworked.
+    """
+    branch = integration_branch_name(run.identity.run_id)
+    run.branches.append(branch)  # deleting it also closes the delivery PR
+    checkout = EngineCheckout.create(
+        harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity, repo=run.repo
+    )
+    try:
+        spec = case_k_engine(branch)
+        config = spec.config(run.base_config, checkout=checkout, run_label=run.run_label)
+        engine = spec.engine(config, checkout)
+        runtime = await engine.start()
+        try:
+            labels = _labels(config)
+            flow = E2EFlow(repo=run.repo, watcher=runtime.watcher, filter_label=run.run_label)
+            flow_cleanup.append(flow)
+            flow.ensure_labels([labels.tech_lead_reviewed, labels.needs_human])
+            started = time.monotonic()
+            items: list[TrackedItem] = []
+            for role, external_id in (
+                (LANDED_FIRST, CASE_K_FIRST_EXTERNAL_ID),
+                (LANDED_SECOND, CASE_K_SECOND_EXTERNAL_ID),
+                (LEFT_BEHIND, CASE_K_LEFT_BEHIND_EXTERNAL_ID),
+            ):
+                _, number = flow.create_issue(
+                    f"[{external_id}] [EXAM-K] Integration mode lands {role.replace('_', ' ')} work",
+                    [INTEGRATION_CODER_LABEL, E2E_DATA_LABEL],
+                    body="Tech-lead exam case K (#8144): an approved PR into the integration branch.",
+                )
+                items.append(TrackedItem(role, number, external_id=external_id))
+
+            approved: dict[int, int] = {}
+
+            async def all_approved() -> bool:
+                found = _approved_open_prs(run.repo, labels, items)
+                if found is not None:
+                    approved.update(found)
+                return found is not None
+
+            ended_by = await drive(engine, done=all_approved, quiet_s=600, timeout_s=30 * 60)
+            if ended_by is RunEnd.GOAL_REACHED:
+                operator = _github_adapter(run.repo)
+                for pr_number in approved.values():
+                    operator.add_label(pr_number, labels.tech_lead_reviewed)
+                run.notes.append(f"released PRs {sorted(approved.values())} with {labels.tech_lead_reviewed}")
+                goals = goals_met_probe(run, engine, *items)
+
+                async def landed_and_delivered() -> bool:
+                    if not await goals():
+                        return False
+                    delivery = _observe_delivery(run.repo, branch)
+                    return delivery is not None and set(approved.values()) <= set(delivery.listed_pr_numbers)
+
+                ended_by = await drive(engine, done=landed_and_delivered, quiet_s=600, timeout_s=30 * 60)
+            else:
+                run.notes.append(f"the three PRs were never all approved ({ended_by.value})")
+            return await _finish(
+                run, engine, items=items, extra_prs={}, started=started, ended_by=ended_by,
+                delivery=_observe_delivery(run.repo, branch),
+            )
+        finally:
+            await engine.close()
+    finally:
+        checkout.remove()

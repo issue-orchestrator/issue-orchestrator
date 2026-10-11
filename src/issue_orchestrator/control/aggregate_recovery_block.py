@@ -21,12 +21,15 @@ from ..domain.recovery_block import (
     RecoveryAdmissionDeferred,
     RecoveryMutationBusy,
 )
+from ..domain.validated_work import ValidatedWorkKey
 from ..domain.validated_work_commands import ValidatedWorkDispositionBatch
+from ..domain.validated_work_remote_authority import CarriedByIssuePullRequest, PullRequestPublication
 from ..domain.validated_work_store import (
     AdmissionOutcome,
     EvidenceAdmission,
     EvidenceLookup,
     EvidenceRow,
+    PrPublicationStatus,
 )
 from ..domain.validated_work_execution import (
     ValidatedWorkClaimLost,
@@ -87,7 +90,9 @@ class AggregateRecoveryBlocks:
         self._cleanup = CapturedRecoveryCleanup(records, self._label_writer)
         self._human = human_block
 
-    def admit(self, admission: EvidenceAdmission) -> AdmissionOutcome:
+    def admit(
+        self, admission: EvidenceAdmission, *, carried: CarriedByIssuePullRequest | None = None,
+    ) -> AdmissionOutcome:
         """Rank/store through the injected owner, then observe the aggregate block.
 
         A busy gate makes no admission write. A failed projection leaves durable
@@ -98,7 +103,7 @@ class AggregateRecoveryBlocks:
         if key.repo_slug != self._repo:
             raise ValueError("admission names another repository")
         with self._hold_issue(key.issue_number):
-            outcome = self._admission.admit(admission)
+            outcome = self._admission.admit(admission, carried=carried)
             try:
                 snapshot = self._records.recovery_block_snapshot(
                     self._repo, key.issue_number
@@ -109,6 +114,29 @@ class AggregateRecoveryBlocks:
                     f"durable admission awaits block reconciliation: {error}"
                 ) from error
             return outcome
+
+    def record_pr_publication(
+        self, key: ValidatedWorkKey, *, published: PullRequestPublication, observed_at: str,
+    ) -> PrPublicationStatus:
+        """Record the open PR's published head, then re-project the issue's block.
+
+        Reclassifying the lineage against that head can resolve every record
+        it contains, so the block is projected under the same issue hold as
+        an admission. A failed projection is healed by the drain's block sweep.
+        """
+        if key.repo_slug != self._repo:
+            raise ValueError("publication names another repository")
+        with self._hold_issue(key.issue_number):
+            # Only records that were unresolved can change: a local read spares
+            # the fresh GitHub label read when nothing could have.
+            held = self._admission.has_unresolved_work(key.issue_number)
+            recorded = self._admission.record_pr_publication(
+                key, published=published, observed_at=observed_at,
+            )
+            if held and recorded.reclassified_lineage:
+                snapshot = self._records.recovery_block_snapshot(self._repo, key.issue_number)
+                self._project(snapshot.plan(), IssueGateProjectionEffects())
+            return recorded
 
     def for_issue(self, issue_number: int) -> ValidatedWorkDispositionBatch:
         return self._admission.for_issue(issue_number)

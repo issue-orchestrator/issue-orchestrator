@@ -96,7 +96,7 @@ class MockWorktreeManager:
             "reuse_options": reuse_options,
             "worktree_name": worktree_name,
         })
-        return WorktreeInfo(path=self.worktree_path, branch_name=self.branch_name)
+        return WorktreeInfo(path=self.worktree_path, branch_name=self.branch_name, base_branch=base_branch or "main")
 
     def remove_checkout(self, worktree_path: Path, *, force: bool = False) -> None:
         """Track remove calls."""
@@ -719,6 +719,37 @@ async def run_loop_one_tick(orchestrator: Orchestrator) -> None:
         await orchestrator.run_loop()
 
 
+def test_shutdown_is_flagged_at_once_but_sessions_are_chosen_after_the_tick(
+    sample_config, mock_repository_host
+):
+    """#8222 r3: the shutdown flag lands immediately, but which sessions a
+    (forced) shutdown stops is decided under state custody, after the running
+    tick — a session the tick launches meanwhile is not missed."""
+    orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+    holding = threading.Event()
+    finish = threading.Event()
+
+    def tick() -> None:
+        with orchestrator.state_lock:
+            holding.set()
+            finish.wait(timeout=30)
+
+    ticker = threading.Thread(target=tick, daemon=True)
+    ticker.start()
+    assert holding.wait(timeout=5)
+    requester = threading.Thread(target=orchestrator.request_shutdown, daemon=True)
+    try:
+        requester.start()
+        requester.join(timeout=0.5)
+        assert orchestrator.shutdown_requested is True
+        assert requester.is_alive(), "sessions must be chosen after the tick, under the lock"
+    finally:
+        finish.set()
+        ticker.join(timeout=5)
+        requester.join(timeout=5)
+    assert not requester.is_alive()
+
+
 # Helper functions
 def create_issue(number, title="Test Issue", labels=None, milestone=None):
     """Helper to create Issue objects for testing."""
@@ -1091,6 +1122,7 @@ class TestLaunchSession:
         mock_worktree_manager = MockWorktreeManager()
 
         issue = create_issue(1, labels=["agent:web"])
+        mock_repository_host.issues.append(issue)  # the launch boundary reads it fresh (#7763)
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager, runner=runner)
 
         session = orchestrator.launch_session(issue)
@@ -1110,6 +1142,7 @@ class TestLaunchSession:
 
         issue = create_issue(1, labels=["agent:web"])
         # Proper DI: inject mock adapter instead of patching functions
+        mock_repository_host.issues.append(issue)  # the launch boundary reads it fresh (#7763)
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager, runner=runner)
 
         session = orchestrator.launch_session(issue)
@@ -1129,6 +1162,7 @@ class TestLaunchSession:
 
         issue = create_issue(1, title="Test Issue", labels=["agent:web"])
         sample_config.ui_mode = "tmux"  # Explicitly test tmux mode
+        mock_repository_host.issues.append(issue)  # the launch boundary reads it fresh (#7763)
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager, runner=runner)
 
         session = orchestrator.launch_session(issue)
@@ -1151,6 +1185,7 @@ class TestLaunchSession:
         mock_worktree_manager = MockWorktreeManager()
 
         issue = create_issue(1, labels=["agent:web"])
+        mock_repository_host.issues.append(issue)  # the launch boundary reads it fresh (#7763)
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager, runner=runner)
 
         assert len(orchestrator.state.active_sessions) == 0
@@ -1171,6 +1206,7 @@ class TestLaunchSession:
         mock_worktree_manager = MockWorktreeManager()
 
         issue = create_issue(1, labels=["agent:web"])
+        mock_repository_host.issues.append(issue)  # the launch boundary reads it fresh (#7763)
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager, runner=runner)
 
         session = orchestrator.launch_session(issue)

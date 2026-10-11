@@ -49,9 +49,9 @@ from ..domain.models import (
     SessionKind,
     get_completion_path,
 )
-from ..domain.coder_prompt import (
-    CoderPromptAddendumUnavailable,
-    PreparedCoderPromptAddendum,
+from ..domain.launch_prompt import (
+    LaunchPromptUnavailable,
+    PreparedLaunchPrompt,
 )
 from ..domain.session_run import SessionRunAssets
 from ..ports.issue_run_allocator import IssueRunAllocator
@@ -61,12 +61,13 @@ from .published_review_launch_gate import refuse_launch_over_published_review
 from ..infra.validation_retry_prompt import render_validation_retry_prompt
 from ..domain.tech_lead_session import TechLeadLaunchScope
 from .tech_lead_session_policy import (
-    carry_launch_authority_forward,
     resumable_retry_identity,
     failure_investigation_scratch_identity,
+    TechLeadLaunchInputs,
     prepare_tech_lead_session_data,
     tech_lead_prep_failure,
 )
+from .tech_lead_retry_carry import carry_retry
 from .host_rate_limit_launch_gate import LaunchMutations, apply_launch_mutations, converge_claim
 from ..ports import (
     ManifestDownloader,
@@ -81,10 +82,8 @@ from ..ports.provider_readiness import (
     NO_PROVIDER_READINESS_PROBE,
     ProviderReadinessProbe,
 )
-from ..ports.coder_prompt import (
-    CoderPromptAddendumProvider,
-    NO_CODER_PROMPT_ADDENDUM,
-)
+from ..ports.launch_prompt import LaunchPromptProvider
+from .launch_prompt import NO_LAUNCH_PROMPT
 from ..ports.session_output import SessionOutput
 from ..ports.event_sink import SessionStartedEventPayload, make_session_started_event
 from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions
@@ -97,6 +96,8 @@ from .needs_human_block import (
     NO_OTHER_NEEDS_HUMAN_CAUSES,
     SharedNeedsHumanBlock,
 )
+from .human_gates import HumanGates
+from ..ports.blocked_item_triage import NO_BLOCKED_ITEM_TRIAGE, BlockedItemTriageAgenda
 from .tech_lead_needs_human_reconcile import TechLeadNeedsHumanLifecycle, discover_tech_lead_needs_human_issue_numbers
 from .session_manager import SessionManager
 from .tech_lead_run_inputs import preserved_source_run, transfer_launch_authority
@@ -107,6 +108,7 @@ from .launch_transaction import (
     abandon_claim_unless_spawned,
 )
 from .recovery_review_hold import NO_RECOVERY_HOLDS, RecoveryHolds
+from .tech_lead_approval import unapproved_proposal_launch
 from .session_launch_types import (
     ClaimAcquisitionResult,
     LaunchDisposition,
@@ -138,6 +140,7 @@ from .launch_guards import (
 from .session_env import completion_capability_export, build_session_env_exports
 from .provider_command_wrapper import ProviderCommandWrapper
 from .session_worktree_briefing import (
+    rebase_conflict_warning,
     describe_worktree_state,
     detect_existing_work as detect_existing_work,
 )
@@ -207,12 +210,16 @@ class SessionLauncher:
         provider_credentials: ProviderCredentials = NO_PROVIDER_CREDENTIALS,
         # Every OTHER durable cause of the shared needs-human label (#6999 F4).
         needs_human_block: SharedNeedsHumanBlock = NO_OTHER_NEEDS_HUMAN_CAUSES,
-        coder_prompt_addendum: CoderPromptAddendumProvider = NO_CODER_PROMPT_ADDENDUM,
+        # The coder addendum and the issue's standing rulings (#8141).
+        launch_prompt: LaunchPromptProvider = NO_LAUNCH_PROMPT,
         # The validated-work recovery owner's holds (#7455): a review waits only
         # for a hold that owner confirms, never for a lingering label alone.
         recovery_holds: RecoveryHolds = NO_RECOVERY_HOLDS,
+        # The blocked items a health review must triage (#7593).
+        blocked_item_triage: BlockedItemTriageAgenda = NO_BLOCKED_ITEM_TRIAGE,
     ):
         self.config = config
+        self._blocked_item_triage = blocked_item_triage
         self._recovery_holds = recovery_holds
         self.events = events
         self.repository_host = repository_host
@@ -239,7 +246,7 @@ class SessionLauncher:
         self._dependency_evaluator = dependency_evaluator
         self._claim_manager = claim_manager
         self._provider_resilience = provider_resilience
-        self._coder_prompt_addendum = coder_prompt_addendum
+        self._launch_prompt = launch_prompt
         self._provider_credentials = provider_credentials
         self._provider_gate = (
             ProviderLaunchGate(
@@ -263,6 +270,7 @@ class SessionLauncher:
             from .label_manager import LabelManager
             label_manager = LabelManager(config)
         self._lm = label_manager
+        self._human_gates = HumanGates.over(needs_human_block, label_manager)
         self._tech_lead_needs_human = TechLeadNeedsHumanLifecycle(
             labels=label_manager,
             events=events,
@@ -427,6 +435,12 @@ class SessionLauncher:
     # These represent distinct phases a human would describe when explaining
     # the launch process. See .claude/skills/refactoring/SKILL.md
     # ─────────────────────────────────────────────────────────────────────────
+
+    def _refuse_unapproved(self, issue_number: int) -> LaunchResult | None:
+        refused = unapproved_proposal_launch(
+            issue_number, self.repository_host, self._action_applier.tech_lead_approvals
+        )
+        return LaunchResult(None, False, refused, disposition=LaunchDisposition.WITHDRAWN) if refused else None
 
     def _check_launch_preconditions(
         self,
@@ -595,7 +609,7 @@ class SessionLauncher:
         issue: "IssueProtocol",
         ctx: WorktreeContext,
         tech_lead_scope: "TechLeadLaunchScope | None",
-    ) -> tuple[Path, ...]:
+    ) -> TechLeadLaunchInputs:
         """Delegate per-flavor tech_lead launch preparation to the ADR-0031 owner.
 
         Returns the evidence map's sandbox read-roots (empty for non-focus
@@ -611,6 +625,8 @@ class SessionLauncher:
                 self._validated_work_recovery_authority
             ),
             board_snapshot_provider=self._board_snapshot_provider,
+            blocked_item_triage=self._blocked_item_triage,
+            launch_prompt=self._launch_prompt,
             issue=issue,
             ctx=ctx,
             tech_lead_scope=tech_lead_scope,
@@ -720,19 +736,18 @@ class SessionLauncher:
 
         # Phase 2: Resolve required prompt input before any gate that may park
         # the issue by writing a shared label or durable provider record.
-        prepared_coder_prompt = self._coder_prompt_addendum.prepare(kind=kind)
-        if isinstance(prepared_coder_prompt, CoderPromptAddendumUnavailable):
-            return LaunchResult.required_input_unavailable(
-                prepared_coder_prompt.reason
-            )
+        prepared_coder_prompt = self._launch_prompt_for(kind, issue.number)
+        if isinstance(prepared_coder_prompt, LaunchResult):
+            return prepared_coder_prompt
 
         # Phase 3: Verify dependencies and provider readiness.
         freshness = self._dependency_gate.verify_fresh(issue)
         if freshness.failure:
             return freshness.failure
 
-        # Provider circuit breaker check
-        if result := self._check_provider_ready(agent_config, issue.number):
+        # Provider circuit breaker check; a tech-lead proposal launches only on a
+        # STANDING maintainer approval (#7763).
+        if result := self._check_provider_ready(agent_config, issue.number) or self._refuse_unapproved(issue.number):
             return result
         # An open PR carrying published validated work owns the issue (#7293).
         if result := refuse_launch_over_published_review(self._action_applier, self._lm, issue.number,
@@ -874,8 +889,11 @@ class SessionLauncher:
             })
 
         # Durable before anything irreversible: no terminal, no label
-        # transitions, no queue removal (#6999 A2).
-        if failure := work_claim.hold_before_spawn(run, issue_number=issue.number):
+        # transitions, no queue removal (#6999 A2). A proposal's consent is
+        # re-read here too, after the slow worktree preparation (#7763 r11 F1).
+        if failure := self._refuse_unapproved(issue.number) or work_claim.hold_before_spawn(
+            run, issue_number=issue.number
+        ):
             self._cleanup_pre_active_launch_worktree(
                 issue.number,
                 worktree_path,
@@ -897,9 +915,9 @@ class SessionLauncher:
             # the prompt calls board-snapshot.json authoritative — so prep
             # failure fails the launch loudly (setup-command seam). The returned
             # evidence read-roots grant a sandboxed tech lead its god-view (#6824 R5).
-            evidence_read_roots: tuple[Path, ...] = ()
+            tech_lead_inputs = TechLeadLaunchInputs()
             try:
-                evidence_read_roots = self._prepare_tech_lead_session_data(
+                tech_lead_inputs = self._prepare_tech_lead_session_data(
                     kind, issue, ctx, tech_lead_scope
                 )
             except Exception as e:
@@ -987,6 +1005,7 @@ class SessionLauncher:
                 self._working_copy,
                 seed_ref=self.config.worktree_seed_ref,
                 rebase_failed=worktree_info.rebase_failed,
+                base_branch=worktree_info.base_branch,
             )
 
             # Build command
@@ -998,6 +1017,8 @@ class SessionLauncher:
                 task_kind=kind.value,
             )
             rendered_prompt = prepared_coder_prompt.compose(rendered_prompt)
+            if tech_lead_inputs.prompt_addendum:
+                rendered_prompt = f"{rendered_prompt}\n\n{tech_lead_inputs.prompt_addendum}"
             prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
             base_command = agent_config.get_command_for_prompt(
                 rendered_prompt,
@@ -1005,7 +1026,7 @@ class SessionLauncher:
                 issue_title=issue.title,
                 worktree=worktree_path,
                 task_kind=kind.value,
-                evidence_read_roots=evidence_read_roots,
+                evidence_read_roots=tech_lead_inputs.read_roots,
                 extra_provider_args=extra_args,
             )
             base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir, extra_provider_args=extra_args)
@@ -1040,7 +1061,8 @@ class SessionLauncher:
 
             # Create terminal session
             step_start = time.time()
-            session_created = self._spawn(session_name, command, worktree_path, issue.title, agent_config)
+            # Consent once more at the terminal boundary (#7763 r26 F1); a refusal takes the spawn-failure cleanup.
+            session_created = not self._refuse_unapproved(issue.number) and self._spawn(session_name, command, worktree_path, issue.title, agent_config)
             logger.info(
                 "[launch] Issue session create result: issue=%s session=%s created=%s",
                 issue.number,
@@ -1133,7 +1155,7 @@ class SessionLauncher:
 
     def _admit_validation_retry(
         self, retry: PendingValidationRetry, active_sessions: list[Session]
-    ) -> "LaunchResult | tuple[Issue, AgentConfig, str, PreparedCoderPromptAddendum]":
+    ) -> "LaunchResult | tuple[Issue, AgentConfig, str, PreparedLaunchPrompt]":
         """Resolve who a validation retry runs as, and whether it may run now.
 
         The retry's whole admission phase in one place: which issue and agent it
@@ -1154,11 +1176,9 @@ class SessionLauncher:
             issue, active_sessions, retry.source_kind, busy=LaunchDisposition.SUBJECT_BUSY
         ):
             return result
-        prepared_coder_prompt = self._coder_prompt_addendum.prepare(kind=retry.source_kind)
-        if isinstance(prepared_coder_prompt, CoderPromptAddendumUnavailable):
-            return LaunchResult.required_input_unavailable(
-                prepared_coder_prompt.reason
-            )
+        prepared_coder_prompt = self._launch_prompt_for(retry.source_kind, issue.number)
+        if isinstance(prepared_coder_prompt, LaunchResult):
+            return prepared_coder_prompt
         if result := self._check_provider_ready(agent_config, issue.number):
             return result
         # A retry of work already published under an open PR must not start a
@@ -1286,23 +1306,24 @@ class SessionLauncher:
         # BEFORE the durable hold: this can refuse, and a refusal after the
         # hold returns with the claim still marked actively held -- a phantom
         # in-flight row that settlement can only refresh, never clear, and that
-        # every retry attempt adds another of (round 1 finding 5).
-        carried = carry_launch_authority_forward(
-            self._tech_lead_authority, retry, run
+        # every retry attempt adds another of (round 1 finding 5). With the
+        # authority come the covered work's rulings, read fresh (#8347).
+        carried = carry_retry(
+            tech_lead_authority=self._tech_lead_authority, launch_prompt=self._launch_prompt, retry=retry, run=run,
         )
-        if isinstance(carried, str):
+        if isinstance(carried, LaunchResult):
             self._release_claim_if_held(issue.number, claim)
-            return LaunchResult(None, False, carried)
+            return carried
 
-        # Durable before anything irreversible (#6999 A2).
-        if failure := work_claim.hold_before_spawn(run, issue_number=issue.number):
+        # Durable before anything irreversible (#6999 A2); a proposal's consent too (#7763 r22).
+        if failure := self._refuse_unapproved(issue.number) or work_claim.hold_before_spawn(run, issue_number=issue.number):
             self._release_claim_if_held(issue.number, claim)
             return failure
 
         # The transfer settles on the same spawn decision the claim guard uses,
         # so a new early return cannot split them (#7273 round 2 finding 4).
         with abandon_claim_unless_spawned(work_claim, run) as spawn, (
-            transfer_launch_authority(carried, spawn, work=work_claim, run=run, retry=retry)
+            transfer_launch_authority(carried.transfer, spawn, work=work_claim, run=run, retry=retry)
         ):
             extra_args = self._extra_provider_args_from_labels(issue.labels)
             retry_prompt = render_validation_retry_prompt(
@@ -1313,7 +1334,7 @@ class SessionLauncher:
                 config=self.config,
                 retry_count=retry_count,
             )
-            retry_prompt = prepared_coder_prompt.compose(retry_prompt)
+            retry_prompt = prepared_coder_prompt.compose("\n\n".join(part for part in (carried.covered_rulings, retry_prompt) if part))
 
             ctx.write_worktree_note()
             ctx.write_session_identity({
@@ -1389,7 +1410,7 @@ class SessionLauncher:
                 command,
             )
 
-            session_created = self._spawn(session_name, command, worktree_path, issue.title, agent_config)
+            session_created = not self._refuse_unapproved(issue.number) and self._spawn(session_name, command, worktree_path, issue.title, agent_config)
             if not session_created:
                 log_transition("issue", issue.number, "LAUNCHING", "FAILED", "session creation failed")
                 self._retry_in_progress(
@@ -1420,7 +1441,7 @@ class SessionLauncher:
                 scratch_worktree=scratch_identity is not None,
                 # A tech lead's retry is the same logical run: it keeps the grant
                 # its carried launch record holds (#7347 review r8, r9).
-                tech_lead_scope=None if carried is None else carried.authority.launch_scope(),
+                tech_lead_scope=None if carried.transfer is None else carried.transfer.authority.launch_scope(),
             )
             log_transition(
                 "issue",
@@ -1519,6 +1540,7 @@ class SessionLauncher:
                 repository_host=self.repository_host,
                 label_manager=self._lm,
                 recovery_holds=self._recovery_holds,
+                gates=self._human_gates,
             ),
             review,
             self.events,
@@ -1558,8 +1580,9 @@ class SessionLauncher:
         if not agent_config:
             return LaunchResult(None, False, f"No agent config for {agent_label}")
 
-        if result := self._check_provider_ready(agent_config, review.issue_number):
-            return result
+        prepared_prompt = self._reviewer_launch_inputs(agent_config, SessionKind.REVIEW, review.issue_number)
+        if isinstance(prepared_prompt, LaunchResult):
+            return prepared_prompt
 
         session_name = SessionKind.REVIEW.terminal_name(review.pr_number)
         if result := self._check_review_preconditions(
@@ -1700,21 +1723,21 @@ class SessionLauncher:
             )
 
             # Build command
-            rendered_prompt = agent_config.render_initial_prompt(
+            rendered_prompt = prepared_prompt.compose(agent_config.render_initial_prompt(
                 issue_number=review.issue_number,
                 issue_title=f"Review PR #{review.pr_number}",
                 worktree=worktree_path,
                 pr_number=review.pr_number,
                 existing_work=existing_work,
                 task_kind=SessionKind.REVIEW.value,
-            )
+            ))
             prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
-            base_command = agent_config.get_command(
+            base_command = agent_config.get_command_for_prompt(
+                rendered_prompt,
                 issue_number=review.issue_number,
                 issue_title=f"Review PR #{review.pr_number}",
                 worktree=worktree_path,
                 pr_number=review.pr_number,
-                existing_work=existing_work,
                 task_kind=SessionKind.REVIEW.value,
                 extra_provider_args=extra_args,
             )
@@ -1867,8 +1890,9 @@ class SessionLauncher:
         if not agent_config:
             return LaunchResult(None, False, f"No agent config for {agent_label}")
 
-        if result := self._check_provider_ready(agent_config, review.issue_number):
-            return result
+        prepared_prompt = self._reviewer_launch_inputs(agent_config, SessionKind.RETROSPECTIVE_REVIEW, review.issue_number)
+        if isinstance(prepared_prompt, LaunchResult):
+            return prepared_prompt
 
         session_name = SessionKind.RETROSPECTIVE_REVIEW.terminal_name(review.issue_number)
         if result := self._check_retrospective_preconditions(
@@ -1990,23 +2014,23 @@ class SessionLauncher:
             existing_work = build_retrospective_review_existing_work(review)
             if worktree_info.rebase_failed:
                 existing_work = (
-                    f"{existing_work}\n\nWARNING: This review worktree could not be "
-                    "rebased onto main due to merge conflicts. Include that risk in "
-                    "your verdict."
+                    f"{existing_work}\n\n"
+                    f"{rebase_conflict_warning(worktree_info.base_branch, subject='This review worktree')}"
+                    " Include that risk in your verdict."
                 )
             prompt_pr_number = review.prior_pr_number or review.issue_number
             issue_title = (
                 f"Review Existing Implementation #{review.issue_number}: "
                 f"{review.issue_title}"
             )
-            rendered_prompt = agent_config.render_initial_prompt(
+            rendered_prompt = prepared_prompt.compose(agent_config.render_initial_prompt(
                 issue_number=review.issue_number,
                 issue_title=issue_title,
                 worktree=worktree_path,
                 pr_number=prompt_pr_number,
                 existing_work=existing_work,
                 task_kind=SessionKind.RETROSPECTIVE_REVIEW.value,
-            )
+            ))
             prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
             base_command = agent_config.get_command_for_prompt(
                 rendered_prompt,
@@ -2146,33 +2170,33 @@ class SessionLauncher:
             check_provider_ready=self._check_provider_ready,
             session_secret_env=self._rework_secret_env,
             resolve_stack_decision=self._dependency_gate.stack_base_decision_for_issue,
-            coder_prompt_addendum=self._coder_prompt_addendum,
+            launch_prompt=self._launch_prompt,
             scoped_rework=ScopedReworkLaunch(self._tech_lead_authority, self.repository_host, self._action_applier.apply),
+            refuse_unapproved=self._refuse_unapproved,
         )
         return launch_rework_flow(
             rework, active_sessions, deps, work_claim=work_claim
         )
 
+    def _reviewer_launch_inputs(
+        self, agent_config: "AgentConfig", kind: SessionKind, issue_number: int,
+    ) -> "PreparedLaunchPrompt | LaunchResult":
+        """A reviewer launch's provider readiness, then its launch prompt (#8141)."""
+        if result := self._check_provider_ready(agent_config, issue_number):
+            return result
+        return self._launch_prompt_for(kind, issue_number)
+
+    def _launch_prompt_for(self, kind: SessionKind, issue_number: int) -> "PreparedLaunchPrompt | LaunchResult":
+        """Resolve the launch-prompt additions (#8141), or the launch's refusal."""
+        prepared = self._launch_prompt.prepare(kind=kind, issue_number=issue_number)
+        if isinstance(prepared, LaunchPromptUnavailable):
+            return LaunchResult.required_input_unavailable(prepared.reason)
+        return prepared
+
     def _persist_session_prompt(self, run_dir: Path, prompt_text: str) -> str:
         """Persist rendered launch prompt into run-scoped artifacts."""
         prompt_path = self._session_output.write_session_prompt(run_dir, prompt_text)
         return str(prompt_path)
-
-    def _send_initial_prompt(self, session_name: str, prompt_path: Path, agent_config: "AgentConfig") -> None:
-        """Send the initial prompt to an interactive session via PTY stdin.
-
-        Instead of typing the full prompt text (which garbles in the TUI),
-        we send a short file-reference instruction. The agent reads the file
-        to get the full prompt content.
-        """
-        if not self._send_to_session:
-            logger.warning("[launch] No send_to_session_fn configured; cannot deliver prompt to %s", session_name)
-            return
-        # Give the TUI time to initialize before sending the prompt.
-        time.sleep(3)
-        msg = f"Read and follow your instructions in {prompt_path}"
-        sent = self._send_to_session(session_name, msg)
-        logger.info("[launch] Sent initial prompt to interactive session %s: success=%s", session_name, sent)
 
     def _wrap_provider_command(
         self,
@@ -2239,16 +2263,10 @@ class SessionLauncher:
         timeout_minutes: int,
     ) -> None:
         """Trigger state machine transitions for issue session launch."""
-        from ..domain.state_machines.issue_machine import IssueState
         from ..domain.state_machines.session_machine import SessionState
 
         logger.debug(f"[STATE_MACHINE] Triggering transitions for issue #{issue.number}")
-        issue_machine = self._get_issue_machine(issue)
-        if issue_machine.state == IssueState.AVAILABLE.value:
-            logger.debug(f"[STATE_MACHINE] Issue #{issue.number}: AVAILABLE -> CLAIMED")
-            issue_machine.claim()
-            logger.debug(f"[STATE_MACHINE] Issue #{issue.number}: CLAIMED -> IN_PROGRESS")
-            issue_machine.start()
+        self._get_issue_machine(issue).custody_work_started()
 
         session_machine = self._get_session_machine(session_name, issue.number, timeout_minutes)
         if session_machine.state != SessionState.PENDING.value:

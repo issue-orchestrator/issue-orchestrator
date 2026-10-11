@@ -745,9 +745,12 @@ def _fetch_issue_list(
     those are downstream of the guarded boundary in ``_fetch_and_update_queue``.
     """
     if full_scan:
+        # The watermark is when the listing STARTED: an issue created while it
+        # ran may be missing from it, and a watermark taken after would put
+        # that issue behind every later delta until the next full scan (#7593).
+        next_watermark: str | None = _iso_now_utc()
         all_issues = github_workflow.fetch_all_issues(config.filtering.milestone, required_stable_ids)
         refreshed_numbers = {issue.number for issue in all_issues}
-        next_watermark: str | None = _iso_now_utc()
     else:
         all_issues, refreshed_numbers, next_watermark = _fetch_incremental_issues(
             config,
@@ -1033,11 +1036,11 @@ def _fetch_incremental_issues(
                     issue_map.pop(issue.number, None)
                 refreshed_numbers.add(issue.number)
         else:
+            next_watermark = _iso_now_utc()  # taken before the listing, as above
             discovered = github_workflow.fetch_discovery_issues(
                 config.filtering.milestone,
                 config.fetch_layer_discovery_limit,
             )
-            next_watermark = _iso_now_utc()
             for issue in discovered:
                 issue_map[issue.number] = issue
                 refreshed_numbers.add(issue.number)

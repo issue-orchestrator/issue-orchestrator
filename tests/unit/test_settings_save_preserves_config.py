@@ -234,7 +234,7 @@ execution:
     session_timeout_minutes: 120
 
 filtering:
-  exclude_labels: [ "proposed-tech-lead",  "deferred" ] # keep custom flow spacing
+  exclude_labels: [ "awaiting-approval",  "deferred" ] # keep custom flow spacing
 """.rstrip("\n")
     cfg_path.write_text(original)
     config = Config.load(cfg_path)

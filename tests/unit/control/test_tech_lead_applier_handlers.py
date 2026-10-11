@@ -16,6 +16,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from issue_orchestrator.domain.tech_lead_approval import with_proposal_marker
+from issue_orchestrator.domain.tech_lead_approval import AWAITING_APPROVAL_LABEL
+from issue_orchestrator.domain.tech_lead_session import OperatorDecision
+from issue_orchestrator.domain.block_resolution import BlockResolution, ResolutionKind
+from issue_orchestrator.domain.human_block import NeedsHumanCause
+from issue_orchestrator.domain.tech_lead_approval import ApprovalTransition
 from issue_orchestrator.control.actions import (
     Action,
     ActionResult,
@@ -29,11 +35,15 @@ from issue_orchestrator.control.actions import (
     PromoteTechLeadFindingAction,
     RecordTechLeadDispositionAction,
     RecoverValidatedWorkAction,
+    ReleaseValidatedWorkAction,
     ReleaseWithheldReviewAction,
+    ApplyOperatorDecisionAction,
+    ResolveBlockAction,
     EscalateTechLeadDispositionAction,
     ReportPromotedFindingEvidenceAction,
     ResetRetryIssueAction,
     RequestReworkAction,
+    SettleProposalApprovalAction,
     SettleTechLeadPromotionAction,
     SurfaceTechLeadProposalAction,
 )
@@ -45,8 +55,8 @@ from issue_orchestrator.control.tech_lead_applier_handlers import (
 )
 from issue_orchestrator.domain.tech_lead_findings import PatternObservation
 from issue_orchestrator.domain.scoped_rework import ReworkRequest, ReworkTarget
+from issue_orchestrator.domain.validated_work_release import ValidatedWorkRelease
 from issue_orchestrator.domain.tech_lead_session import (
-    PROPOSED_TECH_LEAD_LABEL,
     StoredTechLeadOp,
     TECH_LEAD_OBSERVATION_LABEL,
     TechLeadCreationOrigin,
@@ -63,6 +73,7 @@ from issue_orchestrator.domain.validated_work_commands import (
 ANCHOR = 77
 CASE_FILE = 65
 TARGET = 12
+PROPOSAL_ISSUE = 512
 UPSTREAM = "owner/upstream"
 PROMOTION_MARKER = "<!-- issue-orchestrator:tech-lead-promotion:v1:abc -->"
 CASE_FILE_MARKER = "<!-- issue-orchestrator:tech-lead-case-file:v1:abc -->"
@@ -113,8 +124,8 @@ def _mutating_actions() -> dict[ActionType, tuple[Action, int]]:
         ActionType.CREATE_TECH_LEAD_PROPOSAL_ISSUE: (
             CreateTechLeadProposalIssueAction(
                 title="Tech Lead proposal",
-                body="b",
-                labels=("agent:tech-lead", PROPOSED_TECH_LEAD_LABEL),
+                body=with_proposal_marker("b"),
+                labels=("agent:tech-lead", "tech-lead-proposal", AWAITING_APPROVAL_LABEL),
                 origin=TechLeadCreationOrigin.derived_from_anchor(ANCHOR),
                 op=_op(),
                 expected=expected,
@@ -163,6 +174,16 @@ def _mutating_actions() -> dict[ActionType, tuple[Action, int]]:
             ),
             TARGET,
         ),
+        ActionType.RELEASE_VALIDATED_WORK: (
+            ReleaseValidatedWorkAction(
+                release=ValidatedWorkRelease(479, (_validated_work_authority(),), "rebuilt in PR 479"),
+                proposal_id="A1",
+                anchor_issue_number=ANCHOR,
+                proposal_issue_number=800,
+                expected=expected,
+            ),
+            TARGET,
+        ),
         ActionType.RELEASE_WITHHELD_REVIEW: (
             ReleaseWithheldReviewAction(
                 issue_number=TARGET,
@@ -170,6 +191,35 @@ def _mutating_actions() -> dict[ActionType, tuple[Action, int]]:
                 anchor_issue_number=ANCHOR,
                 observed_at="2026-09-27T14:12:09+00:00",
                 source_session_name="tech-lead-12",
+                expected=expected,
+            ),
+            TARGET,
+        ),
+        ActionType.APPLY_OPERATOR_DECISION: (
+            ApplyOperatorDecisionAction(
+                issue_number=TARGET,
+                decision=OperatorDecision(title="Split it", body="Land the slice."),
+                proposal_id="A1",
+                anchor_issue_number=ANCHOR,
+                proposal_issue_number=800,
+                expected=expected,
+            ),
+            TARGET,
+        ),
+        ActionType.RESOLVE_BLOCK: (
+            ResolveBlockAction(
+                issue_number=TARGET,
+                resolution=BlockResolution(
+                    kind=ResolutionKind.LIFT,
+                    causes=frozenset({NeedsHumanCause.SESSION_LIFECYCLE}),
+                    title="Stale", body="The engine gave up on a label that is gone.",
+                    evidence=("board-snapshot.json",),
+                ),
+                proposal_id="A1",
+                anchor_issue_number=ANCHOR,
+                observed_at="2026-09-27T14:12:09+00:00",
+                source_session_name="tech-lead-12",
+                source_run_id="run-12",
                 expected=expected,
             ),
             TARGET,
@@ -249,6 +299,15 @@ def _mutating_actions() -> dict[ActionType, tuple[Action, int]]:
                 expected=expected,
             ),
             CASE_FILE,
+        ),
+        # The proposal issue whose approval labels it writes (#7763).
+        ActionType.SETTLE_PROPOSAL_APPROVAL: (
+            SettleProposalApprovalAction(
+                issue_number=PROPOSAL_ISSUE,
+                transition=ApprovalTransition.ADMIT,
+                expected=expected,
+            ),
+            PROPOSAL_ISSUE,
         ),
         # No managed-repo subject: this writes only orchestrator-owned ledger
         # rows, and its candidates are issues that are already gone or closed.
@@ -346,7 +405,10 @@ class _Registry:
             kill_hung_session=inert,
             request_rework=inert,
             recover_validated_work=inert,
+            release_validated_work=inert,
             release_withheld_review=inert,
+            apply_operator_decision=inert,
+            resolve_block=inert,
             events=MagicMock(), label_manager=MagicMock(), needs_human_block=MagicMock(),
             apply_action=inert,
             verify_claim=lambda action, number: None,
@@ -355,6 +417,7 @@ class _Registry:
             authority=self.authority,
             pattern_registry=self.pattern_registry,
             promotion_target=self.promotion_target,
+            approvals=MagicMock(),
         )
 
     def _inert(self, action: Action) -> ActionResult:

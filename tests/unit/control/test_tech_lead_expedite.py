@@ -15,6 +15,8 @@ from unittest.mock import Mock
 
 import pytest
 
+from issue_orchestrator.domain.tech_lead_approval import with_proposal_marker
+from issue_orchestrator.domain.tech_lead_approval import AWAITING_APPROVAL_LABEL
 from issue_orchestrator.domain.tech_lead_session import TechLeadCreationOrigin
 from issue_orchestrator.control.actions import CreateTechLeadIssueAction
 from issue_orchestrator.control.session_launch_types import LaunchStep
@@ -28,7 +30,6 @@ from issue_orchestrator.control.tech_lead_issue_creation import (
     apply_create_tech_lead_issue,
 )
 from issue_orchestrator.domain.models import OrchestratorState
-from issue_orchestrator.domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
 
 
 def _lane(state, *, max_expedited=3, eligible=(), in_scope=()):
@@ -47,7 +48,7 @@ def _apply_create(state, *, labels, expedite, issue_number=100, lane=None,
     repo.create_issue.return_value = {"number": issue_number}
     action = CreateTechLeadIssueAction(
         title="Fix it",
-        body="Body",
+        body=with_proposal_marker("Body"),
         labels=tuple(labels),
         expedite=expedite,
         # Expedite intent only ever rides a DECISION-driven create_issue, so
@@ -243,10 +244,10 @@ class TestExpediteApplierGate:
 
     def test_propose_authority_defers_at_creation_then_promotes_on_ungate(self):
         state = OrchestratorState()
-        # Gated (propose) create_issue carries proposed-tech-lead.
+        # Gated (propose) create_issue carries awaiting-approval.
         _apply_create(
             state,
-            labels=(PROPOSED_TECH_LEAD_LABEL, "agent:web"),
+            labels=(AWAITING_APPROVAL_LABEL, "agent:web"),
             expedite=True,
         )
         # Does NOT enqueue at creation: the issue is still gated (decision #2).

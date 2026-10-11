@@ -9,10 +9,13 @@ from issue_orchestrator.control.completion_record_validation import (
     _MAX_COMPLETION_FILE_BYTES,
 )
 from issue_orchestrator.control.completion_result_artifacts import build_pr_body
+from issue_orchestrator.domain.issue_delivery import DeliveryBasis, IssueDelivery
 from issue_orchestrator.domain.models import CompletionOutcome, CompletionRecord, RequestedAction
 from issue_orchestrator.domain.runtime_identity import RuntimeIdentity
 from issue_orchestrator.infra.config import Config
 
+WHOLE = IssueDelivery(DeliveryBasis.WHOLE)
+CLAIMED = IssueDelivery(DeliveryBasis.CLAIMED_PARTIAL)
 
 def _record(
     *,
@@ -55,7 +58,7 @@ class FakeGitAdapter:
 
 
 def test_build_pr_body_includes_issue_summary_and_footer() -> None:
-    body = build_pr_body(_record(), issue_number=123)
+    body = build_pr_body(_record(), issue_number=123, delivery=WHOLE)
 
     assert body == (
         "Closes #123\n"
@@ -75,6 +78,7 @@ def test_build_pr_body_omits_empty_optional_sections() -> None:
     body = build_pr_body(
         _record(implementation=None, problems=None),
         issue_number=123,
+        delivery=WHOLE,
     )
 
     assert "## Implementation" not in body
@@ -88,7 +92,7 @@ def test_build_pr_body_includes_runtime_identity_audit_when_supplied() -> None:
         source_commit_sha="abcdef1234567890abcdef1234567890abcdef12",
     )
 
-    body = build_pr_body(_record(), issue_number=123, runtime_identity=identity)
+    body = build_pr_body(_record(), issue_number=123, delivery=WHOLE, runtime_identity=identity)
 
     assert "## Orchestration Audit" in body
     assert "| Orchestrator version | `1.2.3` |" in body
@@ -98,7 +102,7 @@ def test_build_pr_body_includes_runtime_identity_audit_when_supplied() -> None:
 def test_build_pr_body_runtime_identity_audit_handles_unknown_commit() -> None:
     identity = RuntimeIdentity(package_version="1.2.3")
 
-    body = build_pr_body(_record(), issue_number=123, runtime_identity=identity)
+    body = build_pr_body(_record(), issue_number=123, delivery=WHOLE, runtime_identity=identity)
 
     assert "| Orchestrator version | `1.2.3` |" in body
     assert "| Orchestrator commit | `unknown` |" in body
@@ -247,8 +251,8 @@ def test_a_partial_completion_refs_its_issue_instead_of_closing_it() -> None:
 
     from issue_orchestrator.domain.pr_issue_reference import declares_partial_delivery
 
-    whole = build_pr_body(_record(), issue_number=123)
-    partial = build_pr_body(replace(_record(), partial_pr=True), issue_number=123)
+    whole = build_pr_body(_record(), issue_number=123, delivery=WHOLE)
+    partial = build_pr_body(replace(_record(), partial_pr=True), issue_number=123, delivery=CLAIMED)
 
     assert whole.splitlines()[0] == "Closes #123"
     assert not declares_partial_delivery(whole, 123, repo_slug="owner/repo")
@@ -272,8 +276,8 @@ def test_every_pr_body_links_the_issue_that_scoped_rework_resolves_it_by() -> No
         pr_fields_reference_issue,
     )
 
-    for record in (_record(), replace(_record(), partial_pr=True)):
-        body = build_pr_body(record, issue_number=123)
+    for record, delivery in ((_record(), WHOLE), (replace(_record(), partial_pr=True), CLAIMED)):
+        body = build_pr_body(record, issue_number=123, delivery=delivery)
 
         assert extract_issue_number(body, fallback=0, repo_slug="owner/repo") == 123
         assert pr_fields_reference_issue(

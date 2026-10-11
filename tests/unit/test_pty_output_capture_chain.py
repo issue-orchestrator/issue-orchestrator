@@ -35,6 +35,12 @@ import pytest
 from issue_orchestrator.infra.terminal_cleaning import CleaningLogWriter
 
 
+#: poll(), not select(): select() cannot take a descriptor at or above
+#: FD_SETSIZE (1024), and an xdist worker can hold more than that by the time
+#: this file runs (#8065).
+_USE_POLL = True
+
+
 def _wait_for_exit(child: pexpect.spawn, timeout: float = 10.0) -> None:
     """Wait for pexpect child to exit, draining output through EOF."""
     try:
@@ -81,6 +87,7 @@ class TestPtyOutputCaptureWithSetpgrp:
             ["-c", f'{sys.executable} -c {_shell_quote(agent_script)}'],
             logfile=log_writer,
             timeout=10,
+            use_poll=_USE_POLL,
         )
 
         _wait_for_exit(child)
@@ -113,6 +120,7 @@ class TestPtyOutputCaptureWithSetpgrp:
             ["-c", f'{sys.executable} -c {_shell_quote(agent_script)}'],
             logfile=log_writer,
             timeout=10,
+            use_poll=_USE_POLL,
         )
 
         _wait_for_exit(child)
@@ -158,6 +166,7 @@ class TestPtyOutputCaptureWithSetpgrp:
             ["-c", f'{sys.executable} -c {_shell_quote(agent_script)}'],
             logfile=log_writer,
             timeout=10,
+            use_poll=_USE_POLL,
         )
 
         _wait_for_exit(child)
@@ -221,6 +230,7 @@ class TestPipePlusTeeReachesPty:
             ["-c", f'{sys.executable} -c {_shell_quote(agent_script)}'],
             logfile=log_writer,
             timeout=10,
+            use_poll=_USE_POLL,
         )
 
         _wait_for_exit(child)
@@ -270,6 +280,7 @@ class TestPipeCaptureBreaksPtyPath:
             ["-c", f'{sys.executable} -c {_shell_quote(agent_script)}'],
             logfile=log_writer,
             timeout=10,
+            use_poll=_USE_POLL,
         )
 
         _wait_for_exit(child)
@@ -306,6 +317,7 @@ class TestPipeCaptureBreaksPtyPath:
             ["-c", f'{sys.executable} -c {_shell_quote(inherited_script)}'],
             logfile=inherited_writer,
             timeout=10,
+            use_poll=_USE_POLL,
         )
         _wait_for_exit(child)
         inherited_writer.close()
@@ -329,6 +341,7 @@ class TestPipeCaptureBreaksPtyPath:
             ["-c", f'{sys.executable} -c {_shell_quote(pipe_script)}'],
             logfile=pipe_writer,
             timeout=10,
+            use_poll=_USE_POLL,
         )
         _wait_for_exit(child)
         pipe_writer.close()
@@ -369,6 +382,7 @@ class TestAnsiCleaningThroughPty:
             ["-c", f'{sys.executable} -c {_shell_quote(agent_script)}'],
             logfile=log_writer,
             timeout=10,
+            use_poll=_USE_POLL,
         )
 
         _wait_for_exit(child)
@@ -419,6 +433,7 @@ class TestSigttinPreventionWithDevnullStdin:
             ["-c", f'{sys.executable} -c {_shell_quote(agent_script)}'],
             logfile=log_writer,
             timeout=10,
+            use_poll=_USE_POLL,
         )
 
         _wait_for_exit(child)
@@ -470,6 +485,7 @@ class TestSigttinPreventionWithDevnullStdin:
             ["-c", f'{sys.executable} -c {_shell_quote(agent_script)}'],
             logfile=log_writer,
             timeout=10,
+            use_poll=_USE_POLL,
         )
 
         _wait_for_exit(child)

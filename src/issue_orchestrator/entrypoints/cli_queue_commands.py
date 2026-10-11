@@ -43,7 +43,17 @@ def cmd_audit(args: argparse.Namespace) -> int:
         state=None,
         issue_tracker=issue_tracker,
         issue_branches=issue_branches,
+        known_proposals=_stored_known_proposals(config),
     )
     print_audit(entries)
 
     return 0
+
+
+def _stored_known_proposals(config) -> frozenset[int]:
+    """The authority store's proposal identity, for an audit run without a
+    live engine (#7763 review r27 F1)."""
+    from ..control.tech_lead_approval import stored_known_proposals
+    from ..infra.tech_lead_authority_store import SqliteTechLeadAuthorityStore
+
+    return stored_known_proposals(SqliteTechLeadAuthorityStore.for_repo(config.repo_root), config.repo)

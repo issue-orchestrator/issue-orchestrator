@@ -1,10 +1,10 @@
 """Tech Lead workflow label + promotion-route checks for doctor.
 
-When tech_lead is configured, act-level proposals are filed as GitHub issues
-carrying the ``proposed-tech-lead`` gate (#6779 R3). A fresh install that never
-provisioned that label would create ungated (schedulable) proposal issues, so
-surface the missing gate here in addition to the applier's fail-before-create
-guard.
+When tech_lead is configured, proposals are filed as GitHub issues carrying
+the approval model's labels (#7763: ``tech-lead-proposal``,
+``awaiting-approval``; approval is ``approved``). Proposal creation provisions
+any missing label before the issue exists; doctor surfaces the ones a fresh
+install has not created yet.
 
 The finding-promotion lane (#6957) adds a second precondition: every configured
 ``tech_lead.findings.route`` target must be a repo this token can actually file
@@ -32,7 +32,7 @@ def check_tech_lead_labels(config: "Config | None" = None) -> list[Check]:
     if config is None or not config.tech_lead_enabled or not config.repo:
         return []  # tech_lead/repo not configured -> nothing to verify
 
-    from ....domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
+    from ....domain.tech_lead_approval import APPROVAL_MODEL_LABELS
 
     try:
         from ....execution.providers import create_repository_host
@@ -50,26 +50,29 @@ def check_tech_lead_labels(config: "Config | None" = None) -> list[Check]:
             Check(
                 name="Tech Lead Labels",
                 status="warning",
-                detail=f"Could not verify the '{PROPOSED_TECH_LEAD_LABEL}' gate label: {exc}",
+                detail=f"Could not verify the approval labels {', '.join(APPROVAL_MODEL_LABELS)}: {exc}",
             )
         ]
 
-    gate_present = PROPOSED_TECH_LEAD_LABEL.casefold() in existing
-    if gate_present:
+    missing = [label for label in APPROVAL_MODEL_LABELS if label.casefold() not in existing]
+    if not missing:
         return [
             Check(
                 name="Tech Lead Labels",
                 status="ok",
-                detail=f"Gate label '{PROPOSED_TECH_LEAD_LABEL}' provisioned",
+                detail=f"Approval labels provisioned: {', '.join(APPROVAL_MODEL_LABELS)}",
             )
         ]
+    # A warning, not an error: proposal creation provisions every label it
+    # carries before the issue exists, so a missing one is created on demand.
     return [
         Check(
             name="Tech Lead Labels",
-            status="error",
+            status="warning",
             detail=(
-                f"Gate label '{PROPOSED_TECH_LEAD_LABEL}' is missing — tech_lead"
-                " proposals would be ungated. Run `issue-orchestrator init`."
+                f"Approval labels not yet provisioned: {', '.join(missing)}."
+                " The engine creates them with the first proposal; run"
+                " `issue-orchestrator init` to create them now."
             ),
         )
     ]

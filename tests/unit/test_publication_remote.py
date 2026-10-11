@@ -37,7 +37,7 @@ COMMAND = PublishValidatedHeadCommand(
     Path("/repo"),
     None,
     "main",
-    PublicationContent("#1: Feature", "Closes #1\n\nImplementation details", True, False),
+    PublicationContent("#1: Feature", "Closes #1\n\nImplementation details", True, False, False),
 )
 
 
@@ -354,3 +354,124 @@ def test_rate_limited_create_is_never_a_definite_refusal():
         response_text=_unprocessable("No commits between main and feature").text,
     )
     assert _create_rejection(exc) is None
+
+
+def test_capture_observer_lists_only_the_branchs_merged_prs_uncached(remote_factory):
+    """Merged PRs of the branch, read from GitHub's closed set: a PR closed
+    without merging is not a landing (porchpin #26/#320)."""
+    requests = []
+    merged = dict(pr_payload(), number=3, state="closed", merged_at="2026-09-28T23:39:31Z")
+    abandoned = dict(pr_payload(), number=4, state="closed", merged_at=None)
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json=[merged, abandoned])
+
+    observer = remote_factory(handler, capture=True)
+    prs = observer.merged_pull_requests(ValidatedWorkRemoteRequest("owner/repo", 1, "feature"))
+
+    assert [(pr.number, pr.state, pr.head_sha) for pr in prs] == [(3, PublicationPrState.MERGED, SHA)]
+    (request,) = requests
+    assert request.url.params["state"] == "closed"
+    assert request.url.params["head"] == "owner:feature"
+    assert "if-none-match" not in request.headers
+
+
+def test_an_unreadable_merged_pr_scan_is_a_remote_error(remote_factory):
+    observer = remote_factory(lambda _request: httpx.Response(401, json={"message": "bad"}), capture=True)
+    with pytest.raises(PublicationRemoteError):
+        observer.merged_pull_requests(ValidatedWorkRemoteRequest("owner/repo", 1, "feature"))
+
+
+def _timeline(*states: tuple[int, str, str]) -> dict:
+    return {"data": {"repository": {"i1": {"timelineItems": {
+        "pageInfo": {"hasNextPage": False, "endCursor": None},
+        "nodes": [{"isCrossRepository": False, "source": {
+            "__typename": "PullRequest", "number": number, "state": state, "headRefName": branch}}
+            for number, state, branch in states],
+    }}}}}
+
+
+def test_capture_observer_reads_the_issues_prs_on_every_branch_uncached(remote_factory):
+    """#8137: the issue's referencing PRs on its other branches, each read by
+    number without the cache; review r1 F3: a PR on the record's own branch or
+    on a branch that is not the issue's (a batch PR naming it) costs no read."""
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if request.url.path == "/graphql":
+            return httpx.Response(200, json=_timeline(
+                (2, "OPEN", "1-feature-r2"), (3, "MERGED", "1-feature-r3"), (4, "CLOSED", "1-feature-r4"),
+                (5, "OPEN", "integration"), (6, "MERGED", "1-feature"), (7, "OPEN", "17-other")))
+        number = int(request.url.path.rsplit("/", 1)[1])
+        payload = {**pr_payload(), "number": number, "head": {
+            "repo": {"full_name": "owner/repo"}, "ref": f"1-feature-r{number}", "sha": SHA}}
+        if number == 3:
+            payload["merged_at"] = "2026-10-04T21:32:11Z"
+        return httpx.Response(200, json=payload, headers={"ETag": '"same"'})
+
+    observer = remote_factory(handler, capture=True)
+    pulls = observer.issue_pull_requests(ValidatedWorkRemoteRequest("owner/repo", 1, "1-feature"))
+
+    assert [(pr.number, pr.branch, pr.state) for pr in pulls] == [
+        (2, "1-feature-r2", PublicationPrState.OPEN), (3, "1-feature-r3", PublicationPrState.MERGED)]
+    assert [request.url.path for request in requests[1:]] == [
+        "/repos/owner/repo/pulls/2", "/repos/owner/repo/pulls/3"]
+    assert all("if-none-match" not in request.headers for request in requests)
+
+
+@pytest.mark.parametrize("failure", ["timeline-incomplete", "pr-missing", "pr-unreadable"])
+def test_capture_observer_never_answers_the_issues_prs_in_part(remote_factory, failure):
+    def handler(request):
+        if request.url.path == "/graphql":
+            if failure == "timeline-incomplete":
+                return httpx.Response(200, json={"data": {"repository": {}}})
+            return httpx.Response(200, json=_timeline((2, "OPEN", "1-feature-r1")))
+        if failure == "pr-missing":
+            return httpx.Response(404, json={"message": "Not Found"})
+        return httpx.Response(500, json={"message": "boom"})
+
+    observer = remote_factory(handler, capture=True)
+    with pytest.raises(PublicationRemoteError):
+        observer.issue_pull_requests(ValidatedWorkRemoteRequest("owner/repo", 1, "1-feature"))
+
+
+def test_capture_observer_reads_one_issue_pr_on_any_of_its_branches_uncached(remote_factory):
+    """#9092 review r5 F1: a release's superseding PR must reference the issue
+    (its timeline) from an issue branch, the records' own one included; a PR
+    not listed, or listed from a branch that is not the issue's, costs no read."""
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if request.url.path == "/graphql":
+            return httpx.Response(200, json=_timeline((5, "OPEN", "integration"), (6, "MERGED", "1-feature")))
+        payload = {**pr_payload(), "number": 6, "merged_at": "2026-10-04T21:32:11Z", "head": {
+            "repo": {"full_name": "owner/repo"}, "ref": "1-feature", "sha": SHA}}
+        return httpx.Response(200, json=payload, headers={"ETag": '"same"'})
+
+    observer = remote_factory(handler, capture=True)
+
+    pr = observer.issue_pull_request("owner/repo", 1, 6)
+    assert pr is not None and (pr.number, pr.branch, pr.state) == (6, "1-feature", PublicationPrState.MERGED)
+    assert [request.url.path for request in requests] == ["/graphql", "/repos/owner/repo/pulls/6"]
+    assert all("if-none-match" not in request.headers for request in requests)
+    requests.clear()
+    assert observer.issue_pull_request("owner/repo", 1, 5) is None  # not an issue branch
+    assert observer.issue_pull_request("owner/repo", 1, 7) is None  # does not reference the issue
+    assert [request.url.path for request in requests] == ["/graphql", "/graphql"]
+
+
+@pytest.mark.parametrize("failure", ["timeline-incomplete", "pr-missing"])
+def test_capture_observer_never_guesses_the_issues_pr(remote_factory, failure):
+    def handler(request):
+        if request.url.path == "/graphql":
+            if failure == "timeline-incomplete":
+                return httpx.Response(200, json={"data": {"repository": {}}})
+            return httpx.Response(200, json=_timeline((2, "MERGED", "1-feature-r1")))
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    observer = remote_factory(handler, capture=True)
+    with pytest.raises(PublicationRemoteError):
+        observer.issue_pull_request("owner/repo", 1, 2)

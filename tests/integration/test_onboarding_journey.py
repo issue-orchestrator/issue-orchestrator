@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -180,6 +181,7 @@ def _verify_setup_authorization(repo_name, authorization):
 
 @pytest.mark.integration
 @pytest.mark.heavy_e2e
+@pytest.mark.usefixtures("durable_orchestrator_python")
 def test_local_onboarding_smoke_journey(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Exercise the real local onboarding flow in a temp git repo."""
     repo = tmp_path / "target-repo"
@@ -216,6 +218,11 @@ def test_local_onboarding_smoke_journey(tmp_path: Path, monkeypatch: pytest.Monk
         "issue_orchestrator.entrypoints.cli_tools.setup_wizard.offer_readiness_assessment",
     ):
         run_wizard(target_path=repo, prompter=prompter)
+
+    # The wizard baked the stable base interpreter (durable_orchestrator_python),
+    # which lacks this suite's dependencies. Pushes honour the operator override
+    # first, exactly as an operator running io from a worktree venv would set it.
+    monkeypatch.setenv("ISSUE_ORCHESTRATOR_PYTHON", sys.executable)
 
     config_path = (
         repo

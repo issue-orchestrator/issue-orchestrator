@@ -666,6 +666,7 @@ class PublicationProvenance(StrEnum):
 |---|---|---|
 | `RECOVERED(PUBLISHED)` — §4.4 drain | the pushed `validated_head_sha` | the recorded pre-push expectation |
 | `RECOVERED(CONTAINED_IN_PUBLISHED_HEAD)` — §3.5 merged PR | the observed merged head, verified to contain the validated head | `''` — we did not push, so we have no baseline to prove |
+| `OBSERVED_OPEN_PR`, from §2.7: the completion's own push, seen on the issue's open PR | the PR head, verified to contain a validated head of the lineage | `''`, because we did not push it. This is the one route that follows the branch wherever the PR head moved, including a rebased rework's force-push |
 
 Both are written in the same transaction as their record's resolution, and only when
 the new head is a descendant of (or equal to) the recorded one, so the fact moves
@@ -1386,6 +1387,341 @@ records, one stranded in `PUBLISHING`). Review runs publish nothing.
   and claims only an out-of-scope record, so it never contends with an in-scope
   record's publication or operator abandonment; a record proven in scope is
   remembered by its immutable current evidence id.
+
+**Issue-wide captures decide each completion once (porchpin, 2026-10-01).** An
+issue-wide capture re-prepares *every* completion the issue ever had. That
+includes a post-publish escalation's exchange cancel, startup worktree
+reconciliation, and a reset. A completion whose evidence is already retained
+was decided at its first capture, and that row is the durable decision. So it
+is skipped before any base fetch or GitHub read.
+
+Before this, the ahead-of-base check fetched `main` inside each such run's
+worktree, which cleanup had long since removed. That produced one
+`Could not fetch origin/main in .../porchpin-N` per retained record per
+capture.
+
+**Base and PR refs are read in the base repository.** It always exists and
+shares every run's objects, unlike a run's worktree.
+
+**A never-captured run whose worktree is gone is preserved once.** This is a
+run whose base contained its head at capture, after which the base moved back.
+There is no workspace left to observe, so the validated commit is preserved
+unbound as `PARKED(WORKSPACE_INTEGRITY)`, and it is retained from then on.
+Previously the capture raised "worktree HEAD cannot be established" on every
+issue-wide capture. If the validated commit has since been garbage-collected,
+there is nothing left to preserve. The capture logs a warning saying so and
+completes, instead of failing every later capture.
+
+Pinning such pre-escrow heads durably, before branch cleanup, would be an
+intake/cleanup custody change. It is out of scope here.
+
+### 2.7 The completion's own push is a publication route (porchpin #186)
+
+A coding or rework completion that pushes its branch and reuses or opens the
+issue's PR has published its validated head. Nothing recorded that. The
+lineage fact (§2.1.4) moved only when recovery pushed or a merge was
+observed. Capture then admitted the run's validated heads and classified them
+against the lineage's older published head:
+
+- A rework that rebased onto a moved base force-pushes a head that diverges
+  from that fact. Every capture of it parked `DIVERGENT_VALIDATED_HEADS` and
+  put `recovery-pending` back on an issue whose PR was already published and
+  under review. On porchpin (2026-09-28) this parked 7 records on #186, #293,
+  #320 and #353.
+- A first coding run's capture was `QUEUED` behind `recovery-pending` until the
+  drain found its PR already at the target (#7340).
+
+So the open PR is the third verified publication route:
+
+| Route | `published_head_sha` | `published_pre_push_expected` |
+|---|---|---|
+| `OBSERVED_OPEN_PR`: the completion's push, observed on its open PR | the PR's branch head, which the store verified contains a validated head of the lineage | `''`, because we did not push it and so have no baseline |
+
+**The proof** is `carried_by_open_pull_request`
+(`domain/validated_work_remote_authority.py`), and every fact must agree:
+
+- exactly one open PR of this repository on the run's branch
+  (`classify_remote_pr`);
+- the PR head equals the branch head the remote reported and the head just
+  fetched (`PullRequestCarriage` fetches fresh and never trusts a cached
+  tracking ref);
+- the validated head equals that head or is an ancestor of it.
+
+No PR, several PRs, a closed PR, a moved branch, an unreadable remote or an
+unanswerable ancestry each prove nothing, and admission proceeds as before.
+
+**The record** is `record_pr_publication`
+(`infra/validated_work_pr_publication.py`), one write transaction owned by the store:
+
+- The store re-verifies the containment with its own ancestry. It never takes
+  the caller's word for it.
+- If a record in the lineage is `PUBLISHING`, the store refuses. That
+  publication owns the remote expectation (§4.4e).
+- The fact follows the PR. It moves to the PR head wherever that head is
+  relative to the recorded one: a descendant, a divergent head after a
+  rebased rework's force-push, or even an ancestor after a force-push back.
+  This is the one exception to "forward only", and it is deliberate. The PR
+  head is what the branch publishes now, and the store has just proven that
+  it carries validated work of this lineage. Keeping a stale head would park
+  every later capture as divergent. Two cases write nothing: the head recovery
+  itself pushed, and this PR's already recorded publication of the same head.
+- After the write, the store reclassifies the lineage (§2.1.4 table). Records
+  the PR head contains resolve `RECOVERED(CONTAINED_IN_PUBLISHED_HEAD)` and keep
+  their escrow and pins for the window. Each one this write resolved also gets
+  the PR stored in `published_pr_number`. The classifier copies it from the
+  lineage fact to every record it resolves inside that head, whether the record
+  was resolved now or is admitted later. A record captured before its PR
+  existed then still names the PR that carries it, and published-review
+  custody keeps guarding that PR after later pushes. The disposition exposes
+  the stamp as `published_by_its_pr`. Divergent unresolved
+  records stay parked, because the PR genuinely does not carry them. A later
+  unpublished descendant, captured with the PR head as its expectation, is
+  sequenced from that head exactly as §2.1.4 prescribes for
+  `OBSERVED_MERGE`.
+
+**Who records it:**
+
+- **Capture** (`ValidatedWorkPreservationService._capture`) records the
+  publication before it admits the run's head. It reuses the one remote
+  observation per branch that the capture itself makes. The admission then
+  resolves as contained, so `recovery-pending` is never asserted, and the
+  RECOVERED record keeps the PR under published-review custody (#7293).
+  `recovery_holds_captured_work` does not count records that are
+  `published_by_its_pr`, because recovery routed nothing for them. A halted
+  exchange therefore keeps its own block rather than deferring to a recovery
+  that will never act (#7295). The answer is read from the durable record, so
+  a replayed capture gives it again. Evidence that fails re-verification stays
+  `FAILED`, and recovery holds it.
+- **Records captured before this rule** are reached by
+  `OutOfScopeRetirementSweep`. For every in-scope record that is not
+  `PUBLISHING`, it asks `PullRequestPublicationRecorder`. That records the
+  publication through `AggregateRecoveryBlocks`, which re-projects the issue's
+  block. The porchpin records resolve on the first drain pass after the
+  upgrade. A record's scope, once proven, is remembered for the process. Its
+  publication is asked again only every `PUBLICATION_RECHECK_SECONDS` (15
+  minutes), because it is an uncached GitHub read. A later push can still
+  release a parked record without any new capture. Cold readers require the
+  new column, so an unmigrated store reads as `UNSUPPORTED_SCHEMA` instead of
+  failing in the mapper.
+
+### 2.8 A merged PR is a publication route too, even a squash merge (porchpin #26, #320)
+
+After §2.7 shipped, three records stayed `DIVERGENT_VALIDATED_HEADS`. Their PRs
+(#376, #386) had been squash-merged. §2.7 proves containment only against an
+*open* PR head, and after a squash merge none is left: the branch may be
+deleted, and the squash commit on the base contains none of the branch's
+commits. Those records would stay parked forever.
+
+The §3.5 design already asked for this outcome: a merged PR whose head
+contains the validated head should resolve the record. But `resolve_observed_merge`
+had no production caller, so nothing delivered it.
+
+**The proof** is `landed_via_merged_pull_request`
+(`domain/validated_work_remote_authority.py`), and every fact must agree:
+
+- the PR is merged, of this repository (head and base), and from this branch;
+- its head at merge, as GitHub reports it (`head.sha`), equals the head just
+  fetched from `refs/pull/N/head`. GitHub keeps that ref after the branch is
+  deleted, and `WorkingCopy.fetch_pull_request_head` fetches it;
+- the validated head equals that head or is an ancestor of it.
+
+**Who proves and records it.** The proof needs no PR number on the record. The
+candidates are the branch's merged PRs
+(`ValidatedWorkCaptureObserver.merged_pull_requests`, one uncached read of the
+branch's closed PRs). `PullRequestCarriage.proof` is the one owner of both
+routes. It asks the open PR first, and only a head no open PR carries costs the
+merged-PR read. Capture and the scope sweep both ask through it, so a capture
+made after the merge is resolved the same way.
+
+**The store records a landing beside the fact, never in it.**
+`record_pr_publication` writes a merged proof to
+`validated_work_lineage_landings` as `(lineage, PR, head at merge)`. That table
+is append-only, and a merged PR's head cannot move, so the store refuses a
+second proof of the same PR with a different head.
+
+**Each landing pins its head before its row commits.** The ref is
+`refs/issue-orchestrator/landed/<lineage>/<PR>`, written through
+`ValidatedWorkAncestry.retain` (an immutable pin, never moved). Nothing else
+keeps the commit reachable once `git fetch --prune` drops the fetched
+`refs/remotes/origin/pull/N/head` and a squash merge has put none of the
+branch's commits on the base. Classification compares against that pin, so a
+landing whose pin is gone proves nothing and leaves records unresolved. These
+pins are not escrow: escrow reconciliation enumerates only
+`validated/` and `observed/`, so it never sees them, and
+`delete_pinned_ref` refuses every ref outside escrow, so nothing can release a
+landing's pin.
+
+The lineage fact is left alone. It is what the branch publishes now, and it is
+what recovery sequences from. A reused branch can carry an older landing next
+to a newer open PR that has diverged from it. Replacing the fact with the old
+merged head would strand work that is sequenced from the open PR. Landing an
+open PR at the same head after its merge is a new landing, so the records it
+contains resolve as landed.
+
+**Classification checks landings before the fact.** A record that any landing
+contains resolves as `RECOVERED(LANDED_VIA_MERGED_PR)`. It is named for that
+PR, keeps its escrow and pins, and is `published_by_its_pr`, so recovery does
+not claim to hold it. Shipping is final, whatever the branch publishes now. A
+record that no landing contains falls through to the fact's §2.1.4 rules,
+which are unchanged. Once a landed record is resolved, its divergent peers
+stop forcing one another to park.
+
+**What stays unresolved:**
+- A closed PR that was never merged.
+- A merged head that does not carry the record.
+- A `refs/pull/N/head` that cannot be fetched or no longer matches GitHub's
+  head at merge.
+- An unreadable remote.
+
+### 2.9 Work republished on another branch's PR is published (porchpin #262, #8137)
+
+§2.7 and §2.8 look for a PR only on the record's own branch. Work does not
+always stay there. In porchpin #262 a review exchange validated slice 2 on the
+issue's branch after that branch's first PR (#457) had merged. The completion's
+PR collided, so the completion moved to `<branch>-r1` and opened PR #479 there.
+Every validated head was captured under the original branch. Both the proof
+route and published-review custody matched a PR only on that branch, so three
+records stayed parked `DIVERGENT_VALIDATED_HEADS` for days. `recovery-pending`
+kept coming back, the stuck sweep read the issue as abandoned, and the tech
+lead filed a do-not-approve proposal (porchpin #485) just to keep the sweep off.
+
+**Content is the proof, not the branch name.** `carried_by_issue_pull_request`
+(`domain/validated_work_remote_authority.py`) proves a record's work is
+published when every fact agrees:
+
+- the PR is one of the issue's PRs. It references the issue (`Closes #N` or
+  `Refs #N`), as every PR the orchestrator opens does;
+- it is open or merged, and of this repository (head and base);
+- it is on a branch OTHER than the record's own. That branch is judged by the
+  stricter §2.7 and §2.8 routes only, and a PR elsewhere never bypasses them;
+- that branch is the issue's own (`<issue>-...`, like every branch the
+  orchestrator cuts for it, including a collision's `-rN`). A batch or
+  integration PR that only names the issue is not the issue's PR, so custody
+  never routes the issue's review to it;
+- its head equals the head just fetched from `refs/pull/N/head`;
+- the validated head equals that head or is an ancestor of it.
+
+**Who proves it.** `PullRequestCarriage.proof` stays the one owner of every
+route. Only a head that no PR of its own branch carries costs the read of the
+issue's PRs (`ValidatedWorkCaptureObserver.issue_pull_requests`). That read is
+one walk of the issue's cross-reference timeline, plus one uncached read per
+open or merged referencing PR on another of the issue's own branches. No
+other PR costs a detail read. Capture and the scope sweep both ask through
+it. A completion whose PR collided is therefore published at capture and never
+parks. A record parked before this is released on the sweep's next recheck.
+
+**The store records a carrier beside the fact, never in it.**
+`record_pr_publication` writes the proof to `validated_work_lineage_carriers`
+as `(lineage, PR, branch, head, merged, observed_at)`. The lineage fact still
+says what THIS branch publishes, and recovery still sequences from it. A
+merged PR's row is final: a second proof with a different head is refused, and
+the row resolves every record it contains from then on. An open PR can be
+force-pushed or closed after any proof. Its row follows its latest proven head
+and is re-stamped by every proof, but no stored row or timestamp alone
+resolves anything. An open carrier counts only when the caller hands the
+classifier that very proof (`carried`): the proof's own reclassification, and
+the admission of the capture whose own remote observation just made it.
+Capture passes it explicitly through `capture_automatic(..., carried=)` to
+`admit(..., carried=)`. A replayed or later admission is resolved only by a
+proof of its own. Proofs can reach the store out of order, so each one carries
+the instant taken before its PR head was read. An open proof counts only if
+it was observed strictly after the proof already recorded for that PR,
+whatever its head's ancestry, because a PR can be forced back to an ancestor.
+An older proof of the recorded head neither re-stamps nor reclassifies. An
+older proof of any other head proves nothing. Each proven head is pinned before its row
+commits, at `refs/issue-orchestrator/carried/<lineage>/<PR>/<head>`. Like a
+landing's pin it is create-only, it is not escrow, and nothing can release it.
+
+**Classification checks carriers after landings and before the fact.** A
+record that a carrier's pinned head contains resolves as
+`RECOVERED(CONTAINED_IN_PUBLISHED_HEAD)` for an open PR, or
+`RECOVERED(LANDED_VIA_MERGED_PR)` for a merged one. It is named for that PR,
+and `published_branch` records the PR's branch.
+
+**Custody follows the work.** `PublishedReviewCustody` reads open PRs on each
+published record's `publication_branch`: the record's own branch, or the
+branch its carrier named. While PR #479 is open it holds the issue. So
+`reset_retry` refuses to close it, and the stuck sweep hands the issue to
+review instead of investigating it as abandoned.
+
+**What stays unresolved:**
+- A PR closed unmerged, a PR from another repository, or a PR on a branch
+  that is not the issue's.
+- A PR whose head does not contain the record. This includes a PR that was
+  later rebased with conflicts resolved, so that none of the record's commits
+  remain. That is porchpin #262 as it stands today. PR #479's head no longer
+  contains the three parked heads, and no ancestry or patch-identity proof
+  connects them. Releasing such records is an operator's explicit decision,
+  never an inference (§2.10).
+- An unreadable remote, or an incomplete timeline walk.
+
+### 2.10 Releasing work rebuilt with rewritten history (porchpin #262, #9092)
+
+When no proof can connect parked records to the PR that rebuilt their work,
+only the operator can release them. The tech-lead action
+`release_validated_work` carries that decision, and nothing else can.
+
+- **Who sees what.** Every tech-lead launch with act-level scope writes
+  `tech-lead-data/validated-work-release-targets.json`: the current authority
+  snapshot of every PARKED or FAILED record of each in-scope issue, in any
+  lineage role (a rewrite typically strands DIVERGENT heads, which recovery
+  never picks between). The same tuple is recorded in launch authority
+  (`observed_validated_work_releases`).
+- **What the tech lead proposes.** `target_number` (the issue), `body` (the
+  evidence that the PR rebuilt the work) and
+  `release: {record_ids, superseding_pr_number}`
+  (`ValidatedWorkReleaseIntent`, untrusted). The target-scope check refuses a
+  record id that the launch did not grant for that issue.
+- **What the operator approves.** The planner binds each named record to its
+  launch snapshot. `ValidatedWorkRelease`, stored with the op, carries those
+  snapshots, the PR and the rationale, which is written into every record's
+  resolution. The proposal issue lists every record, its head, branch,
+  evidence and observation revision, and the PR. The ledger key and the reuse
+  check compare that whole value, so a different release of the same issue,
+  even one that only revises the rationale, is a different proposal.
+- **It never runs unattended.** The charter row is `destructive`, there is no
+  `tech_lead.authority` key for it, and `ReleaseValidatedWorkAction` cannot
+  be built without a proposal issue.
+- **What approval runs.** `TechLeadValidatedWorkReleaseExecutor` re-verifies,
+  before any fresh write:
+  1. the approval verified for this proposal names its maintainer (or the
+     Control Center operator);
+  2. the PR is a MERGED PR of the issue in this repository. It must reference
+     the issue, as the issue's reference timeline lists it, from one of the
+     issue's own branches, the records' own branch included. That costs one
+     timeline walk and one uncached PR read
+     (`ValidatedWorkCaptureObserver.issue_pull_request`). A merged PR that only
+     shares a branch, or a batch PR, is not the issue's. This check is skipped
+     for a replay (below), which needs no remote answer.
+
+  A PR that fails the check closes the proposal stale with no write. An
+  unreadable remote keeps the approved op and retries. Then
+  `OperatorValidatedWorkAbandonment.abandon_all` takes every record's
+  execution lease and the issue gate, and the store's `abandon_all_if_current`
+  compares every snapshot in ONE write transaction. Either every record
+  becomes `ABANDONED(operator_abandoned)` or none does. `resolved_by` names
+  the approver and the proposal, and `resolution_reason` names the PR. Lineage
+  is classified once per lineage after all records resolve, so releasing
+  divergent siblings never re-promotes one of them mid-batch. A record busy
+  in another owner refuses as `BUSY` (retry). A record that moved since launch
+  refuses the whole release, and the proposal closes stale. Each record emits
+  `VALIDATED_WORK_ABANDONED`, and the issue's aggregate block reprojects once,
+  dropping `recovery-pending` when nothing unresolved remains.
+- **A retry completes, never contradicts.** The approved snapshot and the
+  reason are written in the transaction that resolves each record. The
+  reason names the approved proposal, the PR and the rationale, so it
+  identifies the operation. A batch whose every record was resolved by
+  exactly those commands is a replay:
+  committed, `replayed`, with no write. The executor asks the owner
+  (`committed`) before any remote read. So when reprojection or the
+  proposal's outcome comment fails after the commit, the retried op
+  reprojects again and closes the proposal as executed, whatever GitHub
+  answers by then. It does not read its own write as stale. A replay audits
+  nothing twice, and it reports the actor the store recorded, not whoever
+  re-approved the retry. Another proposal over the same records (a subset, the
+  same PR and rationale) is never taken for that replay. Proposal reuse,
+  which writes nothing, checks the bound snapshots against the current
+  release grants instead.
 
 ## 3. Composition and control flow
 
@@ -5432,7 +5768,7 @@ Required admission and multi-record regressions (in addition to the tables below
   operator actions offered (§2.2's `no_work()`; there is no `NONE` member to
   render).
 - The tech-lead board renders a `recover_validated_work` gated op; removing
-  `proposed-tech-lead` and the Control Center command reach the same owner and
+  a maintainer's `approved` label and the Control Center command reach the same owner and
   produce the same typed result.
 - `session_controller`/`session_completion` classification: an issue whose batch
   `found_work` is never recorded as generic `timed_out`.

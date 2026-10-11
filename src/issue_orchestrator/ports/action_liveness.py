@@ -63,6 +63,18 @@ class ActionLivenessStore(Protocol):
         """
         ...
 
+    def claim_engine_reprobe(self, key: LivenessKey, engine: str) -> bool:
+        """Take the one re-try a park gets under ``engine`` (#7592).
+
+        Atomically records ``engine`` on the key's park, but only while it is
+        still parked under some OTHER (or an unrecorded) engine. True for the
+        one caller that wins; False when the key is not parked, or is already
+        parked under ``engine``. Whether a park may be re-tried at all is the
+        owner's question (:func:`~..domain.action_liveness.engine_reprobe_due`),
+        asked before this.
+        """
+        ...
+
     def update_escalation(self, row: LivenessRow) -> bool:
         """Write ``row``'s escalation state onto the SAME park it was read from.
 

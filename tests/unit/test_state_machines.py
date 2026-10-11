@@ -41,6 +41,51 @@ class TestIssueStateMachine:
 
         assert machine.get_state() == IssueState.IN_PROGRESS
 
+    @pytest.mark.parametrize("hold", ["needs_human", "block"])
+    def test_hold_on_a_pending_pr_keeps_the_issue_pr_pending(self, hold):
+        """A hold while the issue's PR is pending is a defined, internal transition (#8693).
+
+        The PR exists and its work is published, so the issue stays PR_PENDING
+        and its merge still completes it. It used to raise ``Can't trigger
+        event needs_human from state pr_pending!`` and abort the engine tick.
+        """
+        machine = IssueStateMachine(
+            issue=Issue(number=450, title="Test", labels=[]),
+            initial_state=IssueState.PR_PENDING,
+        )
+
+        assert machine.can_transition(hold)
+        getattr(machine, hold)(data={"session": "rework-450"})
+
+        assert machine.get_state() == IssueState.PR_PENDING
+        assert machine.last_transition is not None
+        assert machine.last_transition.from_state == IssueState.PR_PENDING.value
+        assert machine.last_transition.to_state == IssueState.PR_PENDING.value
+        assert machine.last_transition.event_name == f"issue.published_work.{hold}"
+        assert machine.last_transition.data == {"session": "rework-450"}
+        machine.pr_merged()
+        assert machine.get_state() == IssueState.COMPLETED
+
+    @pytest.mark.parametrize(
+        ("state", "expected"),
+        [
+            (IssueState.AVAILABLE, IssueState.IN_PROGRESS),
+            (IssueState.CLAIMED, IssueState.IN_PROGRESS),
+            (IssueState.IN_PROGRESS, IssueState.IN_PROGRESS),
+            (IssueState.BLOCKED, IssueState.IN_PROGRESS),
+            (IssueState.NEEDS_HUMAN, IssueState.IN_PROGRESS),
+            (IssueState.PR_PENDING, IssueState.PR_PENDING),
+        ],
+    )
+    def test_custody_work_started_brings_the_cache_up_to_the_session(self, state, expected):
+        """#8693: a custody session working the issue makes its hold a defined transition."""
+        machine = IssueStateMachine(issue=Issue(number=7, title="T", labels=[]), initial_state=state)
+
+        machine.custody_work_started()
+
+        assert machine.get_state() == expected
+        assert machine.can_transition("needs_human") and machine.can_transition("block")
+
     def test_happy_path_complete_flow(self):
         """Test the complete happy path: available -> claimed -> in_progress -> pr_pending -> completed."""
         machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))

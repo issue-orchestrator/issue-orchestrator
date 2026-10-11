@@ -263,6 +263,9 @@ class _RecordingPRAdapter:
     def get_prs_for_branch(self, branch: str, state: str = "open") -> list[object]:
         return []
 
+    def merged_pr_history(self, issue_number: int) -> tuple:
+        return ()
+
     def create_pr(
         self,
         title: str,
@@ -936,11 +939,13 @@ def _repo_with_real_hook(tmp_path: Path) -> Path:
     hooks_dir = repo / ".git" / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
     hook = hooks_dir / "pre-push"
-    hook.write_text(
-        source.read_text().replace(
-            "@@ORCHESTRATOR_PYTHON@@", shlex.quote(sys.executable)
-        )
+    # The production renderer, so every install-time placeholder is filled in
+    # exactly as a worktree install would.
+    from issue_orchestrator.adapters.worktree._worktree_hooks import (
+        _render_orchestrator_pre_push,
     )
+
+    hook.write_text(_render_orchestrator_pre_push(source))
     hook.chmod(0o755)
     return repo
 
@@ -1128,6 +1133,7 @@ class TestEscalationReachesTheHumanThroughTheProductionGate:
 
             label_adapter = Mock()
             pr_adapter = Mock()
+            pr_adapter.merged_pr_history.return_value = ()
 
             config = Config()
             config.validation.publish.dirty_check = "tracked"

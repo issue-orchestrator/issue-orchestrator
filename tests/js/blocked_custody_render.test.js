@@ -153,7 +153,10 @@ test('the charter decision that put it there is spelled out', () => {
     assert.match(html, /<dt>Charter role<\/dt><dd>flow<\/dd>/);
     assert.match(html, /<dt>Outcome<\/dt><dd>Proposed, awaiting approval \(awaiting approval\)<\/dd>/);
     assert.match(html, /depth restructure, authority execute; ceiling propose from <code>tech_lead\.authority\.kill_hung_session<\/code>/);
-    assert.match(html, /<dt>Proposal<\/dt><dd>#700<\/dd>/);
+    // The proposal links into the Control Center's Tech lead page; the drawer
+    // never carries its own approve control (#7763).
+    assert.match(html, /<dt>Proposal<\/dt><dd>#700 <button type="button" class="custody-open-tech-lead" data-tech-lead-proposal="700">Open in the Tech lead page<\/button><\/dd>/);
+    assert.doesNotMatch(html, /Approve/);
 
     const disabled = renderCustodyHtml(card({ custody: custody({ charter: charter({ role_enabled: false, proposal_issue_number: 0 }) }) }));
     assert.match(disabled, /, role disabled;/);

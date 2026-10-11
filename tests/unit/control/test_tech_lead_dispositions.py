@@ -31,6 +31,7 @@ from issue_orchestrator.domain.tech_lead_session import (
     TechLeadSessionFlavor,
 )
 from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+from tests.label_application_helpers import standing_while_present
 
 BLOCKED, TRACKER = 6410, 6914
 NOW = datetime(2026, 8, 9, 1, tzinfo=timezone.utc)
@@ -409,6 +410,7 @@ def test_human_disposition_owns_sweep_and_preserves_existing_requests(
         tech_lead_marker=labels.tech_lead_needs_human,
         labels=host,
         read_labels=host.get_issue_labels_fresh,
+        label_application=standing_while_present(host.get_issue_labels_fresh),
         quarantined_issue_numbers=frozenset,
         causes=causes,
     )
@@ -948,4 +950,9 @@ def test_only_exact_executed_source_diagnosis_can_complete_investigation(authori
     assert effective_terminal_status(SessionStatus.COMPLETED, outcome) is (
         SessionStatus.COMPLETED if permitted else SessionStatus.FAILED)
     assert ("success-only" in harness.host.comments) is permitted
-    assert any("ROOT CAUSE:" in comment for comment in harness.host.comments) is permitted
+    # A diagnosis aimed at a PR is not the required ISSUE diagnosis, so it never
+    # satisfies the obligation (above); as an executed post_comment it is the
+    # tech lead's own observation, which lands whatever the obligation did
+    # (porchpin #410) instead of being withheld with the success-only effects.
+    observed = authority_mode == "execute" and substitute == "target-is-pr"
+    assert any("ROOT CAUSE:" in comment for comment in harness.host.comments) is (permitted or observed)

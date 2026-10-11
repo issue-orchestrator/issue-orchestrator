@@ -40,6 +40,9 @@ EXAMPLES:
   Review approved:
     reviewer-done approved --summary "Code is clean" --risk low --checks tests_added
 
+  Review approved, attesting the issue's standing rulings (#8141):
+    reviewer-done approved --summary "Implements ruling m-1a2b3c4d" --risk low --upholds-ruling m-1a2b3c4d
+
   Review requests changes:
     reviewer-done changes_requested --issues "Missing error handling" --risk medium
 
@@ -61,6 +64,17 @@ STATUSES:
     parser.add_argument("--risk", choices=["low", "medium", "high"], help="Risk level")
     parser.add_argument("--checks", nargs="+", help="Checks that passed")
     parser.add_argument("--checks-needed", nargs="+", help="Checks that need to be done")
+    parser.add_argument(
+        "--upholds-ruling",
+        dest="upholds_ruling",
+        action="append",
+        metavar="RULING_ID",
+        help=(
+            "Attest that the diff upholds this standing ruling on the issue (repeat once per"
+            " ruling; approved only). The orchestrator refuses an approval that leaves a ruling"
+            " covering the changed files unattested."
+        ),
+    )
 
     # PR options
     parser.add_argument("--pr-labels", nargs="+", help="Extra labels to add to the PR")

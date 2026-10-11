@@ -1,0 +1,240 @@
+{
+  "schema_version": 6,
+  "engine_commit": "7404be40d0488815b4eaa1567f739052747460bc",
+  "engine_started_at": "2026-10-07T23:08:37.783320Z",
+  "findings": [
+    {
+      "id": "flaky-check-rerun-has-no-action-450",
+      "engine": {"id": "repo-89afeb99eff0542e787f28211c93f58cd90aa3e0fe9d2bf3acd6fcdc63e2fb73", "repo": "porchpin/porchpin"},
+      "anomaly_keys": [{"kind": "attention_label", "subject": "#450", "signature": "needs-human"}],
+      "present_after_start": "true",
+      "recurs_after_start": "unknown",
+      "origin": "before_start",
+      "observed": [
+        {"at": "2026-10-08T06:19:46.381977+00:00", "kind": "snapshot", "source": "audit.json#/anomalies/11", "supports": "present_after_start"},
+        {"at": "2026-10-04T11:55:04.038248Z", "kind": "occurrence", "source": "blocked-items.json#/items/3/blocking_labels/0/since_at", "supports": "origin"}
+      ],
+      "grading_window": {"from": "2026-10-04T11:55:04.038248Z", "to": "2026-10-08T06:19:46.381977+00:00"},
+      "classification": "new_defect",
+      "stall_point": "not_in_charter",
+      "missing_action_kind": "rerun_failed_check",
+      "stall_evidence": ["engine-source:src/issue_orchestrator/domain/tech_lead_artifacts.py", "engine-source:src/issue_orchestrator/control/awaiting_merge_post_publish_policy.py"],
+      "output": "capability_issue",
+      "root_cause": {
+        "owner": "issue_orchestrator.domain.tech_lead_artifacts:VALID_TECH_LEAD_ACTION_TYPES",
+        "why": "#450's rework agent asked a human for one thing at 2026-10-08T00:54Z: re-run the failed 'workspace watch · windows process tree' job on PR #521 (run 37709091572). The agent judged it a runner timing flake. Agents cannot read Actions logs, and the engine App holds only checks:read. On GitHub the run is still at run_attempt 1 with conclusion failure five hours later. The tech lead saw the class: case file post-publish-rework-fires-before-required-checks-settle names PR #521/#450 and suggests re-running a failed check once. It has no action that re-runs a check or fetches a job log, though: VALID_TECH_LEAD_ACTION_TYPES has none, and charter.json's actions list none. The post-publish policy (classify_post_approval_state) has only one answer to a red check, a rework cycle. So a green, approved PR waits on a person for a one-click re-run, and every flaky required check turns into needs-human or into a wasted rework cycle.",
+        "same_shape_sites": ["issue_orchestrator.control.awaiting_merge_post_publish_policy:classify_post_approval_state"]
+      },
+      "reproduction": {
+        "kind": "unit_test",
+        "harness": "tests/unit/control/test_tech_lead_rerun_failed_check.py",
+        "planted_state": "An open issue N carries needs-human (needs_human_cause agent_completion; question asks to re-run one failed job). Its open, approved PR M has one failed check-run job J; every other required check succeeded. A fake RepositoryHost records Actions calls. A tech-lead decision artifact (tech-lead-decision.json) for N has the action {type: 'rerun_failed_check', target_number: N, pr_number: M, job_id: J}, under the effective charter staged here (flow role enabled, execute).",
+        "assertions": [
+          "the decision artifact is accepted: no unknown-action-type rejection for 'rerun_failed_check'",
+          "applying the decision issues exactly one re-run request for job J of PR M's head on the fake host",
+          "the charter ledger records the action for target N with effect 'applied'"
+        ],
+        "fails_on": "7404be40d0488815b4eaa1567f739052747460bc"
+      },
+      "proposal": "Add an approvable flow action 'rerun_failed_check' (target issue, PR, failed job id). Its executor re-validates that the job belongs to the PR's current head and has not been re-run yet, then calls the Actions re-run-job endpoint once. It also attaches the job's log tail to the item, so a later rework or the tech lead can read why it failed. Document that the App needs actions:write (actions:read for logs). Let classify_post_approval_state spend one such re-run before routing a failed check to rework.",
+      "missing_evidence": []
+    },
+    {
+      "id": "decision-approval-cannot-route-the-pr-327",
+      "engine": {"id": "repo-89afeb99eff0542e787f28211c93f58cd90aa3e0fe9d2bf3acd6fcdc63e2fb73", "repo": "porchpin/porchpin"},
+      "anomaly_keys": [
+        {"kind": "attention_label", "subject": "#327", "signature": "needs-human"},
+        {"kind": "attention_label", "subject": "#530", "signature": "awaiting-approval"},
+        {"kind": "draft_pr", "subject": "PR #525", "signature": "draft"}
+      ],
+      "present_after_start": "true",
+      "recurs_after_start": "unknown",
+      "origin": "unknown",
+      "observed": [
+        {"at": "2026-10-08T06:19:46.381977+00:00", "kind": "snapshot", "source": "audit.json#/anomalies/10", "supports": "present_after_start"},
+        {"at": "2026-10-08T06:19:46.381977+00:00", "kind": "snapshot", "source": "audit.json#/anomalies/15", "supports": "present_after_start"},
+        {"at": "2026-10-08T06:19:46.381977+00:00", "kind": "snapshot", "source": "audit.json#/anomalies/16", "supports": "present_after_start"}
+      ],
+      "grading_window": {"from": "unknown", "to": "2026-10-08T06:19:46.381977+00:00"},
+      "classification": "new_defect",
+      "stall_point": "acted_not_effective",
+      "stall_evidence": [
+        "decision:20261007-132728Z-9fcd39986967493e8628d96fe0ab650e:A2",
+        "decision:20261008-021147Z-c54f225608284440a49301a47d4e586a:A2",
+        "engine-source:src/issue_orchestrator/control/tech_lead_operator_decision.py",
+        "engine-source:src/issue_orchestrator/control/tech_lead_proposals.py"
+      ],
+      "output": "capability_issue",
+      "root_cause": {
+        "owner": "issue_orchestrator.control.tech_lead_operator_decision:OperatorDecisionExecutor",
+        "why": "#327 is blocked again. At 2026-10-08T01:36Z its rework agent asked for an amendment to ruling m-55cb838d2f51, because review-525 refused PR #525 on the word 'exactly'. The agent also asked the operator to change PR #525's first body line from 'Closes #327' to 'Refs #327' and to remove needs-human from the PR. The tech lead had earlier applied release_withheld_review on #327 (2026-10-07T13:41Z), and the block came back. It then proposed the ruling as propose_decision #530. That is a good decision, but approving it cannot unblock the work. An approved operator decision does three things only (tech_lead_proposals.py 'What approving does'): file issues, post the decision, retry the item. #530 itself says 'Approval clears needs-human on #327 only. It does not route PR #525. The maintainer edits PR #525's first body line ... removes needs-human from the PR and adds needs-rework.' So even after approval, the PR that carries the work (draft PR #525, last moved at 01:32Z) stays parked on manual GitHub edits. The decision has no way to express its PR-side follow-through.",
+        "same_shape_sites": ["issue_orchestrator.control.block_resolution_proposal (resolve_block approval also acts on the item only)"]
+      },
+      "reproduction": {
+        "kind": "unit_test",
+        "harness": "tests/unit/control/test_tech_lead_operator_decision_pr_followthrough.py",
+        "planted_state": "Open issue N carries needs-human (cause agent_completion). Open draft PR M's body starts 'Closes #N', and M carries needs-human as a merge hold, as written by a forced completion with pr_labels needs-human. A propose_decision for N has an approved label from a maintainer, and its decision says M is to be reworked under 'Refs #N'. A fake RepositoryHost holds both items.",
+        "assertions": [
+          "after OperatorDecisionExecutor applies the approved decision, PR M's body no longer contains 'Closes #N'",
+          "after it applies, PR M no longer carries needs-human, and a rework of M is queued (or M carries needs-rework)",
+          "issue N no longer carries needs-human"
+        ],
+        "fails_on": "7404be40d0488815b4eaa1567f739052747460bc"
+      },
+      "proposal": "Let propose_decision carry typed PR follow-through effects, checked when the proposal is filed: retarget the PR's closing keyword to Refs, release the PR's needs-human merge hold, queue rework for the PR. OperatorDecisionExecutor applies them, once, after the ruling is recorded and before the item retry. The operator's approval is then the only step, and the proposal body lists the effects under 'What approving does' instead of as maintainer chores.",
+      "missing_evidence": []
+    },
+    {
+      "id": "provisioning-handover-179-undated-marker",
+      "engine": {"id": "repo-89afeb99eff0542e787f28211c93f58cd90aa3e0fe9d2bf3acd6fcdc63e2fb73", "repo": "porchpin/porchpin"},
+      "anomaly_keys": [
+        {"kind": "attention_label", "subject": "#179", "signature": "needs-human"},
+        {"kind": "attention_label", "subject": "#179", "signature": "tech-lead-needs-human"}
+      ],
+      "present_after_start": "true",
+      "recurs_after_start": "unknown",
+      "origin": "before_start",
+      "observed": [
+        {"at": "2026-10-08T06:19:46.381977+00:00", "kind": "snapshot", "source": "audit.json#/anomalies/9", "supports": "present_after_start"},
+        {"at": "2026-10-08T06:19:46.381977+00:00", "kind": "snapshot", "source": "audit.json#/anomalies/12", "supports": "present_after_start"},
+        {"at": "2026-09-02T22:55:06.181348Z", "kind": "occurrence", "source": "blocked-items.json#/items/0/blocking_labels/0/since_at", "supports": "origin"}
+      ],
+      "grading_window": {"from": "2026-09-02T22:55:06.181348Z", "to": "2026-10-08T06:19:46.381977+00:00"},
+      "classification": "unknown",
+      "stall_point": "noticed_not_acted",
+      "stall_evidence": [
+        "decision:20261003-035343Z-85978f3ff5f24e08b2621dd43bc29ad8:A2",
+        "decision:20261004-062429Z-b2d59117e8664c73b0b65085784b1c14:A2"
+      ],
+      "output": "needs_investigation",
+      "missing_evidence": [
+        "When tech-lead-needs-human was last put on #179. The engine timeline holds no labels_changed for it, so blocked-items.json has since_at null. GitHub shows the engine App last labeled it 2026-09-06T17:14:06Z, which would put the 2026-10-03T04:13Z escalate_to_human after both blocks and make #179 awaiting_operator. The staged ledger cannot show this.",
+        "Why the timeline missed that engine-applied label add while its writer is otherwise retained from 2026-08-16. The same gap shows on #450 (see design finding blocked-label-since-at-reads-an-incomplete-timeline)."
+      ]
+    },
+    {
+      "id": "parked-records-262-keyed-on-original-branch",
+      "engine": {"id": "repo-89afeb99eff0542e787f28211c93f58cd90aa3e0fe9d2bf3acd6fcdc63e2fb73", "repo": "porchpin/porchpin"},
+      "anomaly_keys": [
+        {"kind": "stale_unresolved_work", "subject": "#262", "signature": "r1:3c1eafd0a637434434a3ce3a8d0f5ae000c6e9b98c13d478cfd822af4e98eb75"},
+        {"kind": "stale_unresolved_work", "subject": "#262", "signature": "r1:3a66e487dc0f4706d45fd2435843346b0bb973c8fa6c95e94065dd69d499a650"},
+        {"kind": "stale_unresolved_work", "subject": "#262", "signature": "r1:d92d6b8397bb4987453896bf1fcabfad2a83dbdd2affa32b09905faf368517a3"}
+      ],
+      "present_after_start": "true",
+      "recurs_after_start": "unknown",
+      "origin": "before_start",
+      "observed": [
+        {"at": "2026-10-08T06:19:46.381977+00:00", "kind": "snapshot", "source": "audit.json#/anomalies/5", "supports": "present_after_start"},
+        {"at": "2026-10-08T06:19:46.381977+00:00", "kind": "snapshot", "source": "audit.json#/anomalies/6", "supports": "present_after_start"},
+        {"at": "2026-10-08T06:19:46.381977+00:00", "kind": "snapshot", "source": "audit.json#/anomalies/7", "supports": "present_after_start"},
+        {"at": "2026-10-04T09:03:25.917461+00:00", "kind": "occurrence", "source": "audit.json#/validated_work/unresolved/5/created_at", "supports": "origin"}
+      ],
+      "grading_window": {"from": "2026-10-04T09:03:25.917461+00:00", "to": "2026-10-08T06:19:46.381977+00:00"},
+      "classification": "tracked",
+      "tracked_issue": 8137,
+      "stall_point": "noticed_not_acted",
+      "stall_evidence": [
+        "decision:20261004-115532Z-dae5639181c044b9b9913e18d0a48579:A2",
+        "decision:20261004-115532Z-dae5639181c044b9b9913e18d0a48579:A1",
+        "case-file:tech-lead-reset-retry-supersedes-published-validated-work"
+      ],
+      "output": "capability_issue",
+      "root_cause": {
+        "owner": "issue_orchestrator.control.validated_work_published_head:_open",
+        "why": "#262's three validated-work records have been parked for 93h. Their work was republished on PR #479, but the proof route and the custody check both match a PR only on the record's original branch (validated_work_published_head.py:78/:93, published_review_custody.py:140 'if pr.branch != record.key.branch_name'). So recovery keeps re-adding recovery-pending. The tech lead diagnosed this correctly. Having no remedy, it filed propose_decision #485 as a 'do not approve' hold: an open proposal is the only thing that stops the stuck sweep from re-investigating #262. Four days on, #262 is still blocked and #485 is still open. Adds evidence to #8137: it is still live on engine 7404be4, and the workaround costs one standing proposal per affected item.",
+        "same_shape_sites": ["issue_orchestrator.control.published_review_custody:_carries", "issue_orchestrator.control.validated_work_published_head:_merged"]
+      },
+      "reproduction": {
+        "kind": "unit_test",
+        "harness": "tests/unit/control/test_validated_work_published_head.py",
+        "planted_state": "A published ValidatedWorkRecord for issue N is keyed to branch B1. Its head commit is contained in the head of an open PR P on branch B2 for the same issue N in the same repository, and B1 has no open PR.",
+        "assertions": [
+          "the published-head proof for the record finds PR P as carrying the work",
+          "published_review_holds for issue N reports PR P as holding the record's work"
+        ],
+        "fails_on": "7404be40d0488815b4eaa1567f739052747460bc"
+      },
+      "proposal": "Key the proof route and the custody check on content (the record's head contained in an open or merged PR of the same issue), not on the record's original branch name, as #8137 proposes. Then #262's records resolve and proposal #485 can be closed.",
+      "missing_evidence": []
+    }
+  ],
+  "blocked_items": [
+    {
+      "number": 179,
+      "disposition": "finding",
+      "finding_id": "provisioning-handover-179-undated-marker",
+      "why": "Genuine human work: Cloudflare account provisioning (D1 database, Access, tokens, the cloud-test GitHub environment). The code half merged as PR #271. The underlying needs-human (cause session_lifecycle, stuck-sweep budget exhausted) dates from 2026-09-02. The tech lead escalated it to the operator with a full checklist (escalate_to_human applied 2026-10-03T04:13Z), then re-posted the same status four times. Nothing has moved in five days. It needs a finding rather than awaiting_operator only because the tech-lead-needs-human marker's start date was not retained, so the hand-over cannot be proven to cover it.",
+      "downstream": []
+    },
+    {
+      "number": 262,
+      "disposition": "awaiting_operator",
+      "evidence": ["decision:20261004-115532Z-dae5639181c044b9b9913e18d0a48579:A2"],
+      "why": "recovery-pending since 2026-10-04T09:03Z. The cause is an io defect, not human work: three validated-work records stay parked because custody and proof key on the original branch (tracked #8137, finding parked-records-262-keyed-on-original-branch). The tech lead filed propose_decision #485 after the block began. It is awaiting approval, but it is really a 'leave open, do not approve' hold that keeps the stuck sweep away until io is fixed.",
+      "downstream": []
+    },
+    {
+      "number": 327,
+      "disposition": "finding",
+      "finding_id": "decision-approval-cannot-route-the-pr-327",
+      "why": "A decision the operator owes: the rework agent needs an amendment to ruling m-55cb838d2f51 after review-525 refused PR #525. The tech lead proposed option A as #530, which is awaiting approval. Approval alone won't free the work: the operator must also edit PR #525's body (Closes to Refs) and move its needs-human to needs-rework by hand, because an approved decision acts only on the issue. The tech lead's earlier remedy, release_withheld_review on 2026-10-07, did not prevent this re-block.",
+      "downstream": []
+    },
+    {
+      "number": 450,
+      "disposition": "finding",
+      "finding_id": "flaky-check-rerun-has-no-action-450",
+      "why": "Blocked only on a CI re-run. The agent asked at 2026-10-08T00:54Z for the failed Windows job of approved PR #521 to be re-run (a probable runner flake). Agents cannot read Actions logs and nothing in io can re-run a job, so it is a human step only because a tool is missing. The tech lead diagnosed the flaky-check class in a case file but took no action on #450 after the new block. The completion that applied this block also crashed the engine tick ('Can't trigger event needs_human from state pr_pending!'). blocked-items.json's since_at (2026-10-04) is stale: GitHub shows needs-human removed at 2026-10-04T14:37:43Z and re-added at 2026-10-08T00:54:00Z.",
+      "downstream": []
+    }
+  ],
+  "design_findings": [
+    {
+      "id": "rework-needs-human-on-pr-pending-aborts-tick",
+      "engine": {"id": "repo-89afeb99eff0542e787f28211c93f58cd90aa3e0fe9d2bf3acd6fcdc63e2fb73", "repo": "porchpin/porchpin"},
+      "kind": "silent_assumption",
+      "summary": "The completion handler assumes an issue whose session ends needs_human or blocked is IN_PROGRESS, and triggers the issue machine's needs_human/block without checking. A rework session runs while its issue is PR_PENDING. The machine allows needs_human only from in_progress, so a rework that asks a human raises InvalidStateTransition. That aborts the whole engine iteration midway through finalization. pr_created right above it is guarded by can_transition; block and needs_human are not.",
+      "evidence": [
+        {"kind": "file", "path": "toolbox/logs/orchestrator.log", "line": 2285397, "quote": "SESSION COMPLETE: status=needs_human outcome=needs_human pr=none recovered=False session=rework-450"},
+        {"kind": "file", "path": "toolbox/logs/orchestrator.log", "line": 2285434, "quote": "Can't trigger event needs_human from state pr_pending!"},
+        {"kind": "file", "path": "toolbox/logs/orchestrator.log.2026-09-05", "line": 847650, "quote": "Can't trigger event needs_human from state pr_pending!"},
+        {"kind": "file", "path": "improver-data/engine-source/src/issue_orchestrator/control/completion_handler.py", "line": 819, "quote": "issue_machine.needs_human()  # type: ignore[attr-defined]"},
+        {"kind": "file", "path": "improver-data/engine-source/src/issue_orchestrator/domain/state_machines/issue_machine.py", "line": 114, "quote": "'source': IssueState.IN_PROGRESS.value,"}
+      ],
+      "impact": "Each time it happens, the iteration errors and finalize_terminal_outcome stops after the state machines. The scoped-rework note, tech-lead run activity, authority discard, observer cleanup and claim release for that session are skipped, and so is every other completion drained in the same tick. It recurs: twice on 2026-08-08 and again on 2026-10-08 for rework-450, the session that applied #450's current block.",
+      "proposed_change": "Make the issue machine's needs_human/block transitions accept PR_PENDING (an issue with an open PR can still need a human), or guard both calls with can_transition as pr_created already is, logging the skip. Add a unit test: a rework session completing needs_human on a PR_PENDING issue finalizes fully without raising."
+    },
+    {
+      "id": "blocked-label-since-at-reads-an-incomplete-timeline",
+      "engine": {"id": "repo-89afeb99eff0542e787f28211c93f58cd90aa3e0fe9d2bf3acd6fcdc63e2fb73", "repo": "porchpin/porchpin"},
+      "kind": "silent_assumption",
+      "summary": "When a block began is read from the last retained issue.labels_changed event, as if every label write reached the timeline. They don't all get there. #450's needs-human was removed on approval at 2026-10-04T14:37:43Z and re-added by the engine at 2026-10-08T00:54:00Z, and neither write is in the timeline, so the block is dated 2026-10-04. #179's tech-lead-needs-human (labeled by the engine App on 2026-09-06) has no recorded start at all.",
+      "evidence": [
+        {"kind": "tool", "call": 2, "quote": "2026-10-04T14:37:43Z"},
+        {"kind": "tool", "call": 2, "quote": "2026-10-08T00:54:00Z"},
+        {"kind": "file", "path": "improver-data/blocked-items.json", "line": 702, "quote": "\"since_at\": \"2026-10-04T11:55:04.038248Z\","}
+      ],
+      "impact": "Block ages and 'hand-over after the block began' checks come out wrong: a five-day-old date for a six-hour-old block, or none at all. A valid tech-lead hand-over (#179) cannot be credited, and anything that ranks or re-triages blocks by age works from false dates.",
+      "proposed_change": "Date blocking labels from the owner that writes them: record the block's start when needs-human is acquired or released (the needs_human_cause row, or a dedicated event), and reconcile against GitHub's label events when the timeline has no matching write, instead of trusting the best-effort timeline."
+    },
+    {
+      "id": "frozen-proposal-bodies-keep-retired-approval-instructions",
+      "engine": {"id": "repo-89afeb99eff0542e787f28211c93f58cd90aa3e0fe9d2bf3acd6fcdc63e2fb73", "repo": "porchpin/porchpin"},
+      "kind": "operator_friction",
+      "summary": "A proposal's body is frozen when filed, approval instructions included. The approval migration moved open proposals to the new labels and wrote a body marker but left the old text. Open proposal #485 still tells the operator to approve by removing proposed-tech-lead, which no longer approves anything. The tech lead has to correct this in side comments on the target issue.",
+      "evidence": [
+        {"kind": "tool", "call": 13, "quote": "Remove the `proposed-tech-lead` label."},
+        {"kind": "tool", "call": 1, "quote": "since io `c2aa776`, only `approved` approves"},
+        {"kind": "file", "path": "improver-data/engine-source/src/issue_orchestrator/control/tech_lead_approval_migration.py", "line": 3, "quote": "The approval model replaced \"remove ``proposed-tech-lead`` to approve\" with a"}
+      ],
+      "impact": "The operator decides from the proposal page, and there the instructions are wrong. Following them silently does nothing (the proposal stays open and the item stays blocked), and only a comment on another issue says so.",
+      "proposed_change": "Render the 'How to approve' section from the current approval model rather than freezing it: have the approval migration (and any later change to the approval model) rewrite that section of open proposals, or move the instructions into one sticky engine comment that is kept current."
+    }
+  ],
+  "trend": {
+    "exam_scores": "up",
+    "operator_interventions": "unobserved",
+    "notes": "All ten latest exam scorecards pass. Previously H-positive-approval-executes-once failed (engine a0b61b2) and the other nine passed, so exam scores are up. Live, the blocked set is unchanged since the previous audit (4 items, no new or resolved anomalies), and three of the four now wait on the operator: #179 provisioning since 10-03, #262's hold proposal #485 since 10-04, #327's ruling #530 since 10-08. The tech lead triages every blocked item. What it lacks is the means to finish: no action re-runs a flaky check (#450), an approved decision cannot touch the PR it is about (#327), and an io custody defect makes it hold #262 with a proposal not meant to be approved. Operator interventions stay unobserved because interventions.json is a floor."
+  },
+  "improver_change": null
+}

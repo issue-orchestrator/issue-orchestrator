@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from ..domain.exact_git import RefPinOutcome
 from ..domain.validated_work_store import AncestryRelation, CommitReference
 from ..ports.exact_git import ExactGit
 
@@ -28,6 +29,14 @@ class GitValidatedWorkAncestry:
             ref=reference.pinned_ref,
             sha=reference.key.validated_head_sha,
         )
+
+    def retain(self, reference: CommitReference) -> bool:
+        if reference.key.repo_slug != self._repo_slug or not reference.pinned_ref:
+            return False
+        outcome = self._git.pin_ref(
+            self._repository, ref=reference.pinned_ref, sha=reference.key.validated_head_sha
+        )
+        return outcome in {RefPinOutcome.PINNED, RefPinOutcome.ALREADY_PINNED}
 
     def compare(
         self, left: CommitReference, right: CommitReference

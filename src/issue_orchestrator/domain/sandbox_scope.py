@@ -163,6 +163,12 @@ class SandboxScope:
             these to its native deny mechanism; Claude mirrors them across its OS
             and native-tool layers, while Codex uses filesystem permission-profile
             carve-outs.
+        reads_confined: Make ``read_roots`` a read BOUNDARY: every other path
+            is denied except the platform's own runtime files (what any process
+            needs to start). For an untrusted agent with a shell (the
+            improver, #8001): a denylist cannot bound what a shell reads. A
+            provider that cannot enforce it raises
+            :class:`SandboxUnsupportedError`.
     """
 
     working_directory: Path
@@ -171,6 +177,7 @@ class SandboxScope:
     egress: SandboxEgress
     deny_env: tuple[str, ...]
     deny_read_files: tuple[str, ...]
+    reads_confined: bool = False
 
     def __post_init__(self) -> None:
         if not self.read_roots:

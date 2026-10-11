@@ -4,6 +4,7 @@ import json
 from typing import Any
 from urllib.parse import urlsplit
 
+from ...domain.branch_naming import extract_issue_number_from_branch
 from ...domain.exact_git import ExactPushDestination
 
 from ...domain.publication_remote import (
@@ -126,6 +127,69 @@ class GitHubValidatedWorkCaptureObserver:
                 _branch_head(self._client, request.branch_name),
                 _branch_pull_requests(self._client, request.branch_name),
             )
+        except (RepositoryHostError, KeyError, TypeError, ValueError) as exc:
+            raise PublicationRemoteError(str(exc)) from exc
+
+    def merged_pull_requests(
+        self, request: ValidatedWorkRemoteRequest
+    ) -> tuple[PublicationPullRequest, ...]:
+        if request.repo_slug != self._repo_slug:
+            raise PublicationRemoteError("Capture repository does not match configured remote")
+        try:
+            closed = self._client.read_publication_prs(request.branch_name, state="closed")
+            return tuple(
+                pr for pr in (_pull_request(raw) for raw in closed)
+                if pr.state is PublicationPrState.MERGED
+            )
+        except (RepositoryHostError, KeyError, TypeError, ValueError) as exc:
+            raise PublicationRemoteError(str(exc)) from exc
+
+    def issue_pull_requests(
+        self, request: ValidatedWorkRemoteRequest
+    ) -> tuple[PublicationPullRequest, ...]:
+        """The issue's open and merged PRs on its OTHER branches, each read uncached (#8137).
+
+        Only a PR on another of the issue's own branches can prove anything, so
+        no other referencing PR costs a detail read (review r1).
+        """
+        if request.repo_slug != self._repo_slug:
+            raise PublicationRemoteError("Capture repository does not match configured remote")
+        try:
+            pulls: list[PublicationPullRequest] = []
+            for number, branch in self._client.pull_requests_referencing_issue(request.issue_number):
+                if branch == request.branch_name or extract_issue_number_from_branch(branch) != request.issue_number:
+                    continue
+                raw = self._client.read_publication_pr(number)
+                if raw is None:
+                    # The timeline just named it: a PR that cannot be read is
+                    # an incomplete answer, never an absent one.
+                    raise PublicationRemoteError(f"Referencing PR #{number} is unreadable")
+                pr = _pull_request(raw)
+                if pr.number != number:
+                    raise PublicationRemoteError("PR response number does not match request")
+                pulls.append(pr)
+            return tuple(pulls)
+        except (RepositoryHostError, KeyError, TypeError, ValueError) as exc:
+            raise PublicationRemoteError(str(exc)) from exc
+
+
+    def issue_pull_request(
+        self, repo_slug: str, issue_number: int, number: int
+    ) -> PublicationPullRequest | None:
+        """The issue's own PR ``number`` from its reference timeline, read uncached (#9092)."""
+        if repo_slug != self._repo_slug:
+            raise PublicationRemoteError("Capture repository does not match configured remote")
+        try:
+            branch = dict(self._client.pull_requests_referencing_issue(issue_number)).get(number)
+            if branch is None or extract_issue_number_from_branch(branch) != issue_number:
+                return None
+            raw = self._client.read_publication_pr(number)
+            if raw is None:
+                raise PublicationRemoteError(f"Referencing PR #{number} is unreadable")
+            pr = _pull_request(raw)
+            if pr.number != number:
+                raise PublicationRemoteError("PR response number does not match request")
+            return pr
         except (RepositoryHostError, KeyError, TypeError, ValueError) as exc:
             raise PublicationRemoteError(str(exc)) from exc
 

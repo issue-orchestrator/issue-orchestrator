@@ -9,8 +9,8 @@ emits the orchestrator's action vocabulary:
   ``post_comment``/``escalate_to_human``/``flag_pattern`` (the
   immediate/report tier).
 - ``create_issue`` with ``propose`` authority -> the issue is CREATED, gated
-  with ``proposed-tech-lead`` (#6778): removing the label flows it into normal
-  scheduling. The gate label is orchestrator-attached by the
+  with the approval model's labels (#6778, #7763): a verified maintainer
+  approval admits it to normal scheduling. The labels are orchestrator-attached by the
   ``tech_lead_issue_policy`` owner and rejected by the agent-label allowlist.
 - ``create_issue`` that the agent itself CITED as a duplicate, where the dedup
   gate cannot route the observation onto the candidate as a comment -> the
@@ -35,8 +35,8 @@ emits the orchestrator's action vocabulary:
   GATED PROPOSAL ISSUES (#6778): a
   :class:`~.actions.CreateTechLeadProposalIssueAction` whose applier creates
   the issue AND records the executable :class:`StoredTechLeadOp` create-once.
-  Removing the gate label is per-instance approval; the fact gatherer's
-  label scan then triggers execution of the STORED op. Dedup is
+  A maintainer's verified ``approved`` is per-instance approval; the fact
+  gatherer's scan then triggers execution of the STORED op. Dedup is
   ledger-based: one open proposal per (op, target) — a re-proposal plans an
   ``AddCommentAction`` on the existing proposal issue instead.
 
@@ -80,6 +80,7 @@ from ..domain.scoped_rework import ReworkRequest, ReworkTarget
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Mapping
 
+from ..domain.validated_work_release import ReleaseBinder, bound_release, no_release_grants
 from ..domain.tech_lead_artifacts import (
     ProposedTechLeadAction,
     TechLeadDecision,
@@ -95,11 +96,13 @@ from .actions import (
     KillHungSessionAction,
     RecoverValidatedWorkAction,
     ReleaseWithheldReviewAction,
+    ResolveBlockAction,
     RequestReworkAction,
     ResetRetryIssueAction,
     SurfaceTechLeadProposalAction,
 )
 from .label_manager import LabelManager
+from .tech_lead_decision_steps import bind_follow_through
 from .tech_lead_concrete_actions import concrete_tech_lead_actions
 from ..domain.tech_lead_comment import provenance_footer
 from .proposal_dedup import similarity
@@ -125,6 +128,8 @@ from .tech_lead_observation_routing import accrual_for, case_file_sighting
 from .tech_lead_proposals import (
     build_duplicate_proposal_comment,
     build_tech_lead_proposal_issue_action,
+    operator_decision_of as _operator_decision,
+    proposal_ledger_key,
 )
 
 if TYPE_CHECKING:
@@ -203,6 +208,7 @@ def plan_tech_lead_decision_actions(
     observed_validated_work_authority: Callable[
         [int], "ValidatedWorkAuthoritySnapshot | None"
     ] = _no_validated_work_authority,
+    bind_validated_work_release: ReleaseBinder = no_release_grants,
     rework_targets: tuple[ReworkTarget, ...] = (),
     report_text: str = "",
     charter_log: CharterDecisionLog | None = None,
@@ -242,6 +248,7 @@ def plan_tech_lead_decision_actions(
         observed_at=observed_at,
         observed_session_generation=observed_session_generation,
         observed_validated_work_authority=observed_validated_work_authority,
+        bind_validated_work_release=bind_validated_work_release,
         dedup_corpus=dedup_corpus,
         dedup_grant=dedup_grant,
         rework_targets=rework_targets,
@@ -303,6 +310,9 @@ class _DecisionActionPlanner:
     observed_validated_work_authority: Callable[
         [int], "ValidatedWorkAuthoritySnapshot | None"
     ]
+    # Binds a release's named records to their launch-observed snapshots
+    # (#9092); None when any record was not granted for that issue.
+    bind_validated_work_release: ReleaseBinder
     # Trusted dedup facts (#6878), REQUIRED — never a silent empty default, which
     # would disable the safety mechanism invisibly. The corpus carries an explicit
     # Ready/Unavailable state; the grant is the launch-authority-derived set a
@@ -350,7 +360,7 @@ class _DecisionActionPlanner:
     def plan(self, proposed: ProposedTechLeadAction) -> None:
         # The role and depth come from the action TYPE, never from anything the
         # agent wrote, so no proposal can pick a more permissive role (#7329).
-        verdict = self.policy.decide(proposed.action_type)
+        verdict = self.policy.decide_for(proposed)
         self.charter_log.note(proposed, verdict)
         before = list(self.actions)
         if verdict.advice_only and proposed.action_type != "create_issue":
@@ -414,10 +424,19 @@ class _DecisionActionPlanner:
         )
         if proposed.action_type == "recover_validated_work" and validated_work_authority is None:
             raise ValueError("recover_validated_work has no immutable launch authority")
-        key = (proposed.action_type, request.key if request else proposed.target_number)
+        validated_work_release = bound_release(proposed, self.bind_validated_work_release)
+        follow_through = bind_follow_through(
+            proposed, rework_targets=self.rework_targets, report_text=self.report_text,
+        ) if proposed.follow_through else None
+        key = proposal_ledger_key(
+            proposed.action_type, proposed.target_number, rework_request=request,
+            decision=_operator_decision(proposed),
+            resolution=proposed.resolution if proposed.action_type == "resolve_block" else None,
+            follow_through=follow_through,
+            release=validated_work_release,
+        )
         existing = self.op_ledger.get(key)
         if existing is not None:
-            self.charter_log.note_reused_proposal(proposed.id, existing)
             from .required_issue_comment import ReuseTechLeadProposalAction
             from .tech_lead_proposals import build_stored_tech_lead_op
             self.actions.append(
@@ -428,7 +447,8 @@ class _DecisionActionPlanner:
                             if proposed.action_type == "kill_hung_session" else None,
                         rework_request=request,
                         validated_work_authority=validated_work_authority,
-                        observed_at=self.observed_at),
+                        validated_work_release=validated_work_release,
+                        observed_at=self.observed_at, follow_through=follow_through),
                     number=existing,
                     comment=build_duplicate_proposal_comment(
                         proposed, anchor_issue_number=self._anchor_number
@@ -470,7 +490,9 @@ class _DecisionActionPlanner:
                 target_session=target_session,
                 rework_request=request,
                 validated_work_authority=validated_work_authority,
+                validated_work_release=validated_work_release,
                 observed_at=self.observed_at,
+                follow_through=follow_through,
             )
         )
 
@@ -483,6 +505,10 @@ class _DecisionActionPlanner:
             return
 
         assert proposed.target_number is not None  # enforced by validate()
+        if proposed.action_type == "release_validated_work":
+            # Destructive (#9092): the charter never executes it, so reaching
+            # here means the policy and the planner disagree. Fail loudly.
+            raise ValueError("release_validated_work never executes without approval")
         if proposed.action_type == "reset_retry":
             self.actions.append(
                 ResetRetryIssueAction(
@@ -528,6 +554,21 @@ class _DecisionActionPlanner:
                     expected=self.expected,
                 )
             )
+            return
+        if proposed.action_type == "resolve_block":
+            assert proposed.resolution is not None  # enforced by validate()
+            self.actions.append(ResolveBlockAction(
+                issue_number=proposed.target_number, resolution=proposed.resolution,
+                rationale=proposed.body or "", proposal_id=proposed.id,
+                finding_ids=proposed.finding_ids, anchor_issue_number=self._anchor_number,
+                observed_at=self.observed_at, source_session_name=self.source_session_name,
+                source_run_id=self.source_run_id,
+                # Filing is create_issue's call, as for any tech-lead issue.
+                children_gated=not self._executes("create_issue"),
+                reason=(f"tech_lead decision action {proposed.id}: resolve the needs-human"
+                        f" block of issue #{proposed.target_number}"),
+                expected=self.expected,
+            ))
             return
         if proposed.action_type == "release_withheld_review":
             self.actions.append(ReleaseWithheldReviewAction(
@@ -731,9 +772,9 @@ class _DecisionActionPlanner:
 
     def _plan_decision_tier(self, proposed: ProposedTechLeadAction) -> None:
         # Execute authority -> the concrete action(s). Propose-authority
-        # create_issue -> the issue is CREATED, gated with proposed-tech-lead
-        # (#6778): per-instance approval is removing the label, after which the
-        # issue flows into normal scheduling. Everything else propose -> shadow
+        # create_issue -> the issue is CREATED, gated by the approval model
+        # (#6778, #7763): a verified maintainer approval admits the issue to
+        # normal scheduling. Everything else propose -> shadow
         # record. create_issue additionally routes through the dedup gate.
         execute = self.charter_log.verdict_for(proposed.id).executes
         if proposed.action_type == "create_issue":

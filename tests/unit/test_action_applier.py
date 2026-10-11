@@ -7,6 +7,7 @@ import pytest
 from unittest.mock import MagicMock, Mock, patch
 from pathlib import Path
 
+from issue_orchestrator.domain.tech_lead_approval import AWAITING_APPROVAL_LABEL, with_proposal_marker
 from issue_orchestrator.domain.tech_lead_session import (
     TechLeadCreationKind,
     TechLeadCreationOrigin,
@@ -52,7 +53,6 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.tech_lead_session import (
     HEALTH_REVIEW_MARKER_LABEL,
-    PROPOSED_TECH_LEAD_LABEL,
     TechLeadSessionFlavor,
 )
 from issue_orchestrator.events import EventName
@@ -180,6 +180,26 @@ class TestAddLabelAction:
 
         assert not result.success
         assert "API error" in result.error
+
+    @pytest.mark.parametrize(("presence", "flagged"), [(Exception("read failed"), True), (False, False)])
+    def test_an_add_records_whether_it_read_the_label_absent(
+        self, applier, mock_labels, mock_events, presence, flagged
+    ):
+        """#7490 r1 F4: the improver dates a block by its recorded add; an add
+        whose presence read failed may have found the label already on."""
+        if isinstance(presence, Exception):
+            mock_labels.has_label.side_effect = presence
+        else:
+            mock_labels.has_label.return_value = presence
+
+        assert applier.apply(AddLabelAction(issue_number=123, label="needs-human-x")).success
+
+        [changed] = [
+            call.args[0] for call in mock_events.publish.call_args_list
+            if call.args[0].name == EventName.ISSUE_LABELS_CHANGED.value
+        ]
+        assert changed.data["added"] == ["needs-human-x"]
+        assert changed.data.get("presence_unknown", False) is flagged
 
     def test_rate_limited_label_failure_keeps_its_typed_limit(self, applier, mock_labels):
         """#7297: a launch must be able to tell a rate-limited write from a failed one."""
@@ -1580,8 +1600,8 @@ class TestCreateTechLeadIssueAction:
         """A gated proposal is created, and is deliberately INERT (#7262 F2).
 
         Under `propose` authority a follow-up is filed carrying
-        `proposed-tech-lead` and does nothing until an operator removes that
-        label. Counting it as executed would make the write-health alarm report
+        `awaiting-approval` and does nothing until a maintainer labels it
+        `approved`. Counting it as executed would make the write-health alarm report
         `writing` for precisely the state #7080 is about -- decisions piling up
         unapproved -- so the one signal that would have caught it says the
         opposite.
@@ -1591,8 +1611,8 @@ class TestCreateTechLeadIssueAction:
         mock_repository_host.create_issue.return_value = {"number": 100}
         action = CreateTechLeadIssueAction(
             title="Gated follow-up the review decided on",
-            body="Body",
-            labels=("agent:backend", PROPOSED_TECH_LEAD_LABEL),
+            body=with_proposal_marker("Body"),
+            labels=("agent:backend", AWAITING_APPROVAL_LABEL),
             reason="tech_lead decision action A4: create follow-up issue (gated)",
             flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
             origin=TechLeadCreationOrigin.derived_from_anchor(7255),
@@ -1606,6 +1626,28 @@ class TestCreateTechLeadIssueAction:
             for call in mock_events.publish.call_args_list
             if call.args[0].name == EventName.TECH_LEAD_ACTION_EXECUTED.value
         ]
+
+    def test_a_filed_proposal_joins_the_approval_index(self, applier, mock_repository_host):
+        """#7763 review r6 F2: a strip of every gate label before the approval
+        scope first observes it must not hide the proposal from the inbox."""
+        from issue_orchestrator.control.reconciliation import ExpectedState
+        from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
+
+        applier.tech_lead_ops = InMemoryTechLeadAuthorityStore()
+        mock_repository_host.create_issue.return_value = {"number": 100}
+        action = CreateTechLeadIssueAction(
+            title="Gated follow-up",
+            body=with_proposal_marker("Body"),
+            labels=("agent:backend", AWAITING_APPROVAL_LABEL),
+            reason="tech_lead decision action A4: create follow-up issue (gated)",
+            flavor=TechLeadSessionFlavor.HEALTH_REVIEW,
+            origin=TechLeadCreationOrigin.derived_from_anchor(7255),
+            expected=ExpectedState.with_labels(required={"agent:tech-lead"}),
+        )
+
+        assert applier.apply(action).success
+
+        assert applier.tech_lead_ops.proposal_index.indexed_proposals() == {100}
 
     def test_a_decided_follow_up_is_reported_as_an_executed_decision(
         self, applier, mock_repository_host, mock_events
@@ -3216,6 +3258,47 @@ class TestExpectedStateEnforcement:
 class TestEnqueueToMergeQueueAction:
     """The applier performs the protected enqueue and emits an event."""
 
+    @pytest.fixture(autouse=True)
+    def _labels(self, applier, mock_repository_host):
+        from issue_orchestrator.control.label_manager import LabelManager
+        from issue_orchestrator.infra.config import Config
+
+        applier.label_manager = LabelManager(Config())
+        mock_repository_host.get_issue_labels_fresh.return_value = ["agent:backend"]
+
+    def test_a_human_hold_put_on_since_classification_keeps_the_pr_out(
+        self, applier, mock_repository_host
+    ):
+        """#7593 review r2: classification read the issue a tick ago; the
+        enqueue write re-reads it, and a needs-human put on since then wins."""
+        mock_repository_host.get_issue_labels_fresh.return_value = ["agent:backend", "needs-human"]
+
+        result = applier.apply(EnqueueToMergeQueueAction(issue_number=228, pr_number=318))
+
+        assert result.result_type == ActionResultType.SKIPPED
+        mock_repository_host.enqueue_to_merge_queue.assert_not_called()
+
+    def test_a_merge_hold_put_on_the_pr_since_classification_keeps_it_out(
+        self, applier, mock_repository_host
+    ):
+        """#7678: the enqueue write re-reads the PR's labels too."""
+        mock_repository_host.get_issue_labels_fresh.side_effect = lambda number: (
+            ["code-reviewed", "needs-human"] if number == 318 else ["agent:backend"]
+        )
+
+        result = applier.apply(EnqueueToMergeQueueAction(issue_number=228, pr_number=318))
+
+        assert result.result_type == ActionResultType.SKIPPED
+        mock_repository_host.enqueue_to_merge_queue.assert_not_called()
+
+    def test_an_unreadable_issue_enqueues_nothing(self, applier, mock_repository_host):
+        mock_repository_host.get_issue_labels_fresh.side_effect = RuntimeError("502")
+
+        result = applier.apply(EnqueueToMergeQueueAction(issue_number=228, pr_number=318))
+
+        assert result.result_type == ActionResultType.FAILURE
+        mock_repository_host.enqueue_to_merge_queue.assert_not_called()
+
     def test_enqueue_calls_repository_and_emits_event(
         self, applier, mock_repository_host, mock_events
     ):
@@ -3270,6 +3353,8 @@ class TestClaimGateAudit:
         ActionType.ESCALATE_TO_HUMAN,
         ActionType.QUEUE_REVIEW,
         ActionType.ENQUEUE_TO_MERGE_QUEUE,
+        ActionType.RERUN_FAILED_CHECKS,
+        ActionType.ADVANCE_INTEGRATION,
     }
 
     # Action types that legitimately skip claim verification:
@@ -3301,10 +3386,17 @@ class TestClaimGateAudit:
     #   authority on the target issue before invoking the shared recovery
     #   operation; that owner then checks the full launch-bound evidence
     #   snapshot before publishing its retained branch/PR.
+    # - RELEASE_VALIDATED_WORK (#9092): the same dispatch gate checks mutation
+    #   authority on the target issue; its owner writes only the local store
+    #   (and reprojects the aggregate block through its own owner). Its only
+    #   GitHub writes are the proposal-issue outcome comment + close.
     # - RELEASE_WITHHELD_REVIEW: owner command (#7399) - re-verifies every
     #   precondition with read-only owners, then performs its only writes
     #   (pr-pending, review label, blocked-failed) as AddLabel/RemoveLabel
     #   actions dispatched back through this applier's claim-verified handlers.
+    # - SETTLE_PROPOSAL_APPROVAL: guarded by the reconciliation gate on its
+    #   proposal issue; it writes only approval labels/comments on an unclaimed
+    #   tech-lead proposal (never a claimed work item), re-verified fresh (#7763)
     # - DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS: orchestrator-owned ledger cleanup
     #   (#6779 R7/R10) - confirms each absent proposal with a targeted READ
     #   (get_issue_state) and discards only the local authority-store op row;
@@ -3365,9 +3457,22 @@ class TestClaimGateAudit:
         ActionType.RESET_RETRY_ISSUE,
         ActionType.KILL_HUNG_SESSION,
         ActionType.RECOVER_VALIDATED_WORK,
+        ActionType.RELEASE_VALIDATED_WORK,
         ActionType.RELEASE_WITHHELD_REVIEW,
+        # An APPROVED operator decision (#7593): its target write is the
+        # operator's own retry command (the dashboard's Retry, which is not
+        # claim-gated either), then create-once follow-up issues and one
+        # marker-deduped comment; the tech-lead dispatch gate checks the
+        # target's reconciliation state first.
+        ActionType.APPLY_OPERATOR_DECISION,
+        # A tech lead's resolution of a needs-human block (#7658): its owner
+        # writes only through the shared block's owner and the applier's own
+        # claim-verified comment/label/close dispatch; the tech-lead dispatch
+        # gate checks the target's reconciliation state first.
+        ActionType.RESOLVE_BLOCK,
         ActionType.RECOVER_TECH_LEAD_PROPOSAL,
         ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS,
+        ActionType.SETTLE_PROPOSAL_APPROVAL,
         # Writes only the local charter decision ledger (#7330); no GitHub call.
         ActionType.RECORD_TECH_LEAD_CHARTER_DECISIONS,
         # Records its decision locally, then dispatches its effect back through
@@ -3418,9 +3523,29 @@ class TestClaimGateAudit:
             ActionType.ESCALATE_TO_HUMAN: "_apply_escalate",
             ActionType.QUEUE_REVIEW: "_apply_queue_review",
             ActionType.ENQUEUE_TO_MERGE_QUEUE: "_apply_enqueue_to_merge_queue",
+            ActionType.RERUN_FAILED_CHECKS: "_apply_rerun_failed_checks",
         }
+        # Handlers extracted to their owner module receive the applier's claim
+        # verifier explicitly: the owner must call it, and the dispatch must
+        # pass the applier's own _verify_claim_before_write (#8144).
+        from issue_orchestrator.control import integration_branch
+
+        extracted = {
+            ActionType.ADVANCE_INTEGRATION: integration_branch.apply_advance_integration,
+        }
+        applier_source = inspect.getsource(ActionApplier)
 
         for action_type in self.GITHUB_WRITE_ACTIONS:
+            if action_type in extracted:
+                owner = extracted[action_type]
+                assert "verify_claim(" in inspect.getsource(owner), (
+                    f"{owner.__qualname__} for {action_type} does not call its claim verifier"
+                )
+                assert (
+                    f"{owner.__name__}(\n                action, self, verify_claim=self._verify_claim_before_write)"
+                    in applier_source
+                ), f"ActionApplier does not pass _verify_claim_before_write to {owner.__name__}"
+                continue
             handler_name = handler_map.get(action_type)
             assert handler_name, f"No handler mapping for {action_type}"
 
@@ -3608,11 +3733,15 @@ class TestActLevelOpsCrossTheGateExactlyOnce:
         # The kill path re-confirms consent through the repository host (a
         # different port), so it never contributes to the fresh-read count.
         mock_repository_host.get_issue.return_value = Issue(
-            number=self.PROPOSAL, title="Tech Lead proposal", labels=["agent:tech-lead"]
+            number=self.PROPOSAL, title="Tech Lead proposal",
+            labels=["agent:tech-lead", "tech-lead-proposal", "awaiting-approval", "approved"],
         )
         executor = MagicMock()
         executor.apply.side_effect = lambda action: ActionResult.ok(action)
+        from tests.approval_helpers import approving_everything
+
         applier = make_action_applier(
+            tech_lead_approvals=approving_everything(),
             labels=mock_labels,
             sessions=mock_sessions,
             events=mock_events,
@@ -3752,8 +3881,8 @@ class TestTechLeadIssueCreationCrossesTheReconciliationGate:
             ),
             CreateTechLeadProposalIssueAction(
                 title="Tech Lead proposal: reset_retry #12",
-                body="documentation only",
-                labels=("agent:tech-lead", "proposed-tech-lead"),
+                body=with_proposal_marker("documentation only"),
+                labels=("agent:tech-lead", "tech-lead-proposal", "awaiting-approval"),
                 origin=origin,
                 op=StoredTechLeadOp(
                     op_type="reset_retry",
@@ -4308,3 +4437,42 @@ def test_single_observation_creation_guards_every_mutation_and_preserves_recover
     assert mock_repository_host.create_issue.call_count == (not remote_issue_exists)
     assert authority.load_pattern_evidence(signature="sig").observation_count == 1
     assert authority.load_pending_case_file(signature="sig") is None
+
+
+def _merge_step(issue_number: int):
+    from issue_orchestrator.domain.integration_branch import MergeIntoIntegration
+    return MergeIntoIntegration(
+        issue_number=issue_number, issue_key=f"M0-{issue_number}", pr_number=900, pr_url="https://x/pr/900",
+        pr_title="t", head_sha="a" * 40, integration_branch="integration", integration_tip="b" * 40,
+        gate_label="code-reviewed",
+    )
+
+
+def test_integration_merge_checks_the_claim_of_the_issue_its_step_writes(
+    applier, mock_labels, mock_repository_host, mock_events,
+):
+    """#9098 final review F1: the claim target is the step's issue, through apply()."""
+    from issue_orchestrator.control.actions import AdvanceIntegrationAction
+
+    manager = MagicMock(spec=ClaimManager)
+    manager.check_winner.side_effect = lambda target, lease: target != 228
+    applier.claim_gate = ClaimGate(manager, mock_events)
+    applier.lease_id_lookup = lambda target: f"lease-{target}"
+    applier.standing_rulings, applier.label_manager = MagicMock(), mock_labels
+    action = AdvanceIntegrationAction(step=_merge_step(228), issue_number=228, pr_number=900)
+    with pytest.raises(ClaimLostError):
+        applier.apply(action)
+    mock_repository_host.assert_not_called()
+    assert not [c for c in mock_repository_host.method_calls if not c[0].startswith(("get", "list", "read"))]
+
+
+@pytest.mark.parametrize("wrapper_issue", [0, 229])
+def test_integration_action_whose_wrapper_disagrees_with_its_step_is_refused(applier, wrapper_issue):
+    from issue_orchestrator.control.actions import AdvanceIntegrationAction
+
+    applier.standing_rulings, applier.label_manager = MagicMock(), MagicMock()
+    action = AdvanceIntegrationAction(step=_merge_step(228), issue_number=wrapper_issue, pr_number=900)
+    result = applier.apply(action)
+    assert result.result_type is ActionResultType.FAILURE
+    assert "step writes #228" in (result.error or "")
+    assert not applier.standing_rulings.method_calls

@@ -47,7 +47,13 @@ TERMINAL_INVESTIGATION_ACTIONS = frozenset(
         "kill_hung_session",
         "request_rework",
         "recover_validated_work",
+        # The investigation found the work rebuilt elsewhere (#9092).
+        "release_validated_work",
         "release_withheld_review",
+        # The investigation found the remedy is the operator's call (#7593).
+        "propose_decision",
+        # The investigation decided the block itself (#7658).
+        "resolve_block",
     }
 )
 

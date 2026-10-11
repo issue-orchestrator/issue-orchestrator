@@ -212,6 +212,9 @@ class EventName(str, Enum):
     # Merge queue (optional GitHub Merge Queue integration)
     MERGE_QUEUE_ENQUEUED = "merge_queue.enqueued"
     MERGE_QUEUE_FAILED = "merge_queue.failed"
+    # Integration-branch mode (#8144): io merged/updated a PR or kept the branch
+    INTEGRATION_STEP_APPLIED = "integration.step_applied"
+    INTEGRATION_STEP_SKIPPED = "integration.step_skipped"
     REVIEW_EXCHANGE_STARTED = "review_exchange.started"
     REVIEW_EXCHANGE_ROUND_STARTED = "review_exchange.round_started"
     REVIEW_EXCHANGE_ROUND_COMPLETED = "review_exchange.round_completed"

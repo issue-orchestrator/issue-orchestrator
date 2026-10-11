@@ -28,11 +28,10 @@ from ..domain.review_validation import ReviewValidationEvidence
 from ..events import EventContext
 from ..ports.event_sink import EventSink
 from ..ports.review_exchange_approval_gate import ReviewExchangeApprovalGate
-from ..ports.coder_prompt import (
-    CoderPromptAddendumProvider,
-    NO_CODER_PROMPT_ADDENDUM,
-)
-from ..domain.coder_prompt import CoderPromptAddendumUnavailable
+from ..control.launch_prompt import NO_LAUNCH_PROMPT
+from ..ports.launch_prompt import LaunchPromptProvider
+from ..domain.launch_prompt import LaunchPromptUnavailable, PreparedLaunchPrompt
+from ..domain.review_exchange_turn import ExchangeStandingRulings, Role
 from ..domain.session_kind import SessionKind
 from .persistent_exchange_pair_registry_inmemory import (
     InMemoryPersistentExchangePairRegistry,
@@ -107,7 +106,7 @@ class PersistentReviewExchangeRunner:
         *,
         completion_intake: CompletionIntakeRuntime,
         turn_mailbox: "TurnMailbox | None" = None,
-        coder_prompt_addendum: CoderPromptAddendumProvider = NO_CODER_PROMPT_ADDENDUM,
+        launch_prompt: LaunchPromptProvider = NO_LAUNCH_PROMPT,
     ) -> None:
         self._completion_intake = completion_intake
         self._session_output = session_output
@@ -118,7 +117,7 @@ class PersistentReviewExchangeRunner:
         # and the teardown to two different recorders (#7141 finding 2).
         self._kill_evidence = pair_registry.kill_evidence
         self._turn_mailbox = turn_mailbox
-        self._coder_prompt_addendum = coder_prompt_addendum
+        self._launch_prompt = launch_prompt
 
     def job_timeout_seconds(
         self,
@@ -182,12 +181,12 @@ class PersistentReviewExchangeRunner:
             )
             return wt.path
 
-        prepared_coder_prompt = self._coder_prompt_addendum.prepare(kind=SessionKind.REWORK)
-        if isinstance(prepared_coder_prompt, CoderPromptAddendumUnavailable):
-            raise RuntimeError(
-                "Required coder prompt addendum unavailable: "
-                f"{prepared_coder_prompt.reason}"
-            )
+        prepared_coder_prompt = self._prepared(SessionKind.REWORK, issue_number)
+
+        def _rulings_for(role: Role) -> str | None:
+            # Read fresh for every turn: a ruling recorded mid-exchange binds the next turn.
+            kind = SessionKind.REWORK if role is Role.CODER else SessionKind.REVIEW
+            return self._prepared(kind, issue_number).rulings
 
         return run_persistent_session_exchange(
             exchange_run=exchange_run,
@@ -219,4 +218,12 @@ class PersistentReviewExchangeRunner:
             turn_mailbox=self._turn_mailbox,
             response_channels=response_channels,
             coder_prompt_addendum=prepared_coder_prompt.addendum,
+            standing_rulings=ExchangeStandingRulings(for_role=_rulings_for),
         )
+
+    def _prepared(self, kind: SessionKind, issue_number: int) -> PreparedLaunchPrompt:
+        """The launch-prompt additions for one exchange role, or a loud failure."""
+        prepared = self._launch_prompt.prepare(kind=kind, issue_number=issue_number)
+        if isinstance(prepared, LaunchPromptUnavailable):
+            raise RuntimeError(f"Required launch prompt input unavailable: {prepared.reason}")
+        return prepared

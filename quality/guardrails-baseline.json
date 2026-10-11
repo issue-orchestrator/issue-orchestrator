@@ -424,6 +424,22 @@
       "rule_id": "control_policy_branch_sites",
       "value": 4
     },
+    "control_policy_branch_sites:src/issue_orchestrator/control/tech_lead_approval.py": {
+      "detail": "7 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/tech_lead_approval.py",
+      "path": "src/issue_orchestrator/control/tech_lead_approval.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 7
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/tech_lead_approval_migration.py": {
+      "detail": "4 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/tech_lead_approval_migration.py",
+      "path": "src/issue_orchestrator/control/tech_lead_approval_migration.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 4
+    },
     "control_policy_branch_sites:src/issue_orchestrator/control/tech_lead_issue_policy.py": {
       "detail": "5 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
@@ -1375,6 +1391,14 @@
       "path": "src/issue_orchestrator/view_models/provider_circuit.py",
       "rule_id": "control_policy_branch_sites",
       "value": 5
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/view_models/tech_lead_page.py": {
+      "detail": "6 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/view_models/tech_lead_page.py",
+      "path": "src/issue_orchestrator/view_models/tech_lead_page.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 6
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/action_applier.py": {
       "detail": "1802 lines exceeds budget 800",
@@ -3224,10 +3248,10 @@
       "rule_id": "semgrep_typed_seams",
       "value": 1
     },
-    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/cli_tools/_runtime_models.py:issue-orchestrator.raw-public-seam-dict-return:9d96609331e3:line-120": {
-      "detail": "issue-orchestrator.raw-public-seam-dict-return line 120: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/cli_tools/_runtime_models.py:issue-orchestrator.raw-public-seam-dict-return:9d96609331e3:line-124": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 124: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
       "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/_runtime_models.py:issue-orchestrator.raw-public-seam-dict-return:9d96609331e3:line-120",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/_runtime_models.py:issue-orchestrator.raw-public-seam-dict-return:9d96609331e3:line-124",
       "path": "src/issue_orchestrator/entrypoints/cli_tools/_runtime_models.py",
       "rule_id": "semgrep_typed_seams",
       "value": 1

@@ -13,6 +13,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from issue_orchestrator.domain.tech_lead_approval import AWAITING_APPROVAL_LABEL
 from issue_orchestrator.control.actions import (
     AddCommentAction,
     CreateTechLeadIssueAction,
@@ -48,7 +49,6 @@ from issue_orchestrator.domain.tech_lead_charter_decisions import (
     CharterProposalLifecycle,
 )
 from issue_orchestrator.domain.tech_lead_session import (
-    PROPOSED_TECH_LEAD_LABEL,
     TechLeadSessionGeneration,
 )
 from issue_orchestrator.infra.config import Config
@@ -157,11 +157,11 @@ def test_create_issue_across_the_flow_depth_authority_grid(
         return
     [issue] = created
     if authority == "propose":
-        assert PROPOSED_TECH_LEAD_LABEL in issue.labels
+        assert AWAITING_APPROVAL_LABEL in issue.labels
         assert record.outcome is CharterOutcome.PROPOSED
         assert record.reason_code is CharterReason.ROLE_AUTHORITY_PROPOSE
     else:
-        assert PROPOSED_TECH_LEAD_LABEL not in issue.labels
+        assert AWAITING_APPROVAL_LABEL not in issue.labels
         assert record.outcome is CharterOutcome.EXECUTED
 
 
@@ -299,7 +299,7 @@ def test_default_config_plans_exactly_what_it_planned_before() -> None:
             CreateTechLeadProposalIssueAction,
         ]
         issue, kill, reset = plan
-        assert PROPOSED_TECH_LEAD_LABEL not in issue.labels
+        assert AWAITING_APPROVAL_LABEL not in issue.labels
         assert (kill.op.op_type, reset.op.op_type) == ("kill_hung_session", "reset_retry")
 
 

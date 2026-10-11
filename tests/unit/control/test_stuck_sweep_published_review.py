@@ -11,6 +11,7 @@ control case beside each so none can pass vacuously.
 
 from __future__ import annotations
 
+from issue_orchestrator.control.human_gates import HumanGates
 from issue_orchestrator.control.actions import ReleasePublishedReviewAction
 from issue_orchestrator.control.fact_gatherer import FactGatherer
 from issue_orchestrator.control.label_manager import LabelManager
@@ -96,9 +97,9 @@ def test_the_released_issue_passes_review_validity():
     review_pr = pr(HELD, 500)
 
     config = _config()
-    blocked = evaluate_review_validity(config=config, label_manager=lm, issue=before,
+    blocked = evaluate_review_validity(config=config, label_manager=lm, gates=HumanGates.unrecorded(lm), issue=before,
                                        pr=review_pr, review_label_confirmed=True)
-    released = evaluate_review_validity(config=config, label_manager=lm, issue=after,
+    released = evaluate_review_validity(config=config, label_manager=lm, gates=HumanGates.unrecorded(lm), issue=after,
                                         pr=review_pr, review_label_confirmed=True)
 
     assert blocked.reason == "issue_blocked"
@@ -149,7 +150,7 @@ def test_an_exhausted_investigation_does_not_block_the_release_that_supersedes_i
 
     labels = _Labels(["agent:web", lm.blocked_failed])
     owner = PublishedReviewRelease(
-        custody=gatherer.published_review, labels=lm, read_labels=labels.read, apply=labels.apply,
+        custody=gatherer.published_review, labels=lm, gates=HumanGates.unrecorded(lm), read_labels=labels.read, apply=labels.apply,
         review_label="needs-code-review",
     )
     assert owner.release(release.issue_number).released
@@ -233,7 +234,7 @@ def test_a_pr_with_its_own_block_is_held_not_released():
     assert snapshot.stuck_sweep_review_releases == ()
     assert HELD not in {f.issue_number for f in snapshot.discovered_failures}
     validity = evaluate_review_validity(
-        config=_config(), label_manager=lm, issue=_issue(HELD, labels=["agent:web"]),
+        config=_config(), label_manager=lm, gates=HumanGates.unrecorded(lm), issue=_issue(HELD, labels=["agent:web"]),
         pr=blocked_pr, review_label_confirmed=True)
     assert validity.reason == "pr_blocked", "lifting the issue block alone would not help"
 
@@ -405,3 +406,22 @@ def test_the_board_names_the_review_hold_the_sweep_observed():
     assert custody.state is CustodyState.HELD
     assert "open PR whose review owns it" in custody.reason
     assert not custody.needs_attention
+
+
+def test_work_republished_on_another_branch_is_not_investigated_as_stuck():
+    """#8137, porchpin#262: the record kept its original branch, but its work
+    is published on the issue's PR on ``-r1``. That PR holds the issue, so the
+    sweep hands it to review instead of funding investigations of an issue it
+    reads as abandoned."""
+    republished = f"{HELD}-validated-r1"
+    records = {HELD: (disposition(HELD, ValidatedWorkState.RECOVERED, pr_number=479,
+                                  published_branch=republished),)}
+    prs = {HELD: [pr(HELD, 479, branch_name=republished)]}
+    gatherer = _gatherer([_failed(HELD), _failed(PLAIN)], records=records, prs=prs)
+
+    snapshot = gatherer.create_snapshot(OrchestratorState(), issues=[])
+
+    injected = {failure.issue_number for failure in snapshot.discovered_failures}
+    assert HELD not in injected
+    assert snapshot.stuck_sweep_review_releases == (HELD,)
+    assert PLAIN in injected

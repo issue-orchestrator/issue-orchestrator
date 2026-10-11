@@ -37,6 +37,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, MagicMock, call, patch
 
+from issue_orchestrator.domain.issue_delivery import MergedPullRequest
 from issue_orchestrator.domain.models import (
     CompletionRecord,
     CompletionOutcome,
@@ -243,6 +244,8 @@ def mock_pr_adapter():
     adapter = Mock(spec=PRAdapter)
     adapter.get_prs_for_issue = Mock(return_value=[])
     adapter.get_prs_for_branch = Mock(return_value=[])
+    # No merged PR refs the issue: an unclaimed completion is a whole delivery (#8689).
+    adapter.merged_pr_history = Mock(return_value=())
     adapter.create_pr = Mock(
         return_value=PRInfo(
             number=42,
@@ -800,6 +803,75 @@ class TestPartialPRReference:
         assert result.success
         mock_git_adapter.push.assert_called()
 
+    def test_an_unclaimed_completion_on_an_issue_already_delivered_in_part_publishes_refs(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion,
+    ):
+        """#8689: merged PR #98 refs #123. A completion that forgot --partial
+        opens a "Refs" PR, and its result says why."""
+        mock_pr_adapter.merged_pr_history.return_value = (
+            MergedPullRequest(98, "Refs #123\n\nSlice 1", datetime(2026, 10, 5, tzinfo=timezone.utc)),
+        )
+        mock_pr_adapter.create_pr.side_effect = lambda **kwargs: self._pr(kwargs["body"])
+
+        result = self._run(processor, mock_git_adapter, worktree_with_completion, partial=False)
+
+        assert result.success
+        assert mock_pr_adapter.create_pr.call_args.kwargs["body"].startswith("Refs #123\n")
+        assert any("Partial delivery (inferred)" in action and "#98" in action
+                   for action in result.actions_taken)
+        mock_pr_adapter.merged_pr_history.assert_called_with(123)
+
+    @pytest.mark.parametrize("adopted_by", ["create", "reuse"])
+    def test_a_closing_pr_adopted_after_the_guard_read_is_refused_for_an_inferred_delivery(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion, adopted_by,
+    ):
+        """#8689 codex r4 F1: the guard's branch read saw no open PR, then
+        another publisher opened "Closes #123" on the branch. An idempotent
+        create (or the issue-scoped reuse lookup) hands that PR back; its body
+        is checked against the inferred partial delivery before success."""
+        mock_pr_adapter.merged_pr_history.return_value = (
+            MergedPullRequest(98, "Refs #123\n\nSlice 1", datetime(2026, 10, 5, tzinfo=timezone.utc)),
+        )
+        racing = self._pr("Closes #123\n\nRacing publisher")
+        mock_pr_adapter.get_prs_for_branch.return_value = []
+        if adopted_by == "create":
+            mock_pr_adapter.create_pr.return_value = racing
+        else:
+            mock_pr_adapter.get_prs_for_issue.return_value = [racing]
+
+        result = self._run(processor, mock_git_adapter, worktree_with_completion, partial=False)
+
+        assert not result.success
+        assert any("existing PR #99 closes it on merge" in e for e in result.errors)
+        assert not any(a.startswith(("Created PR", "Reused PR")) for a in result.actions_taken or [])
+
+    def test_a_finishing_completion_never_reuses_a_pr_that_only_refs_the_issue(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion,
+    ):
+        """#8689 codex r2 F1: the live reuse path keeps the open PR's "Refs"
+        body, so a --finishes-issue completion through it is refused before
+        any push or reuse."""
+        existing = self._pr("Refs #123\n\nBody")
+        mock_pr_adapter.get_prs_for_issue.return_value = [existing]
+        mock_pr_adapter.get_prs_for_branch.return_value = [existing]
+        mock_git_adapter.get_current_branch.return_value = "123-feature"
+        mock_git_adapter.branch_commit_messages_against_base.return_value = (
+            BranchCommitMessagesResult(success=True, messages=("Last slice",))
+        )
+        worktree = worktree_with_completion(
+            dataclasses.replace(self._record(partial=False), finishes_issue=True)
+        )
+
+        result = processor.process(
+            worktree, run_assets=make_session_run_assets(worktree),
+            issue_number=123, issue_title="Test Issue",
+        )
+
+        assert not result.success
+        assert any("existing PR #99 does not close it" in e for e in result.errors)
+        mock_git_adapter.push.assert_not_called()
+        mock_pr_adapter.create_pr.assert_not_called()
+
     def test_the_guard_runs_again_before_the_push_after_a_rebase_retry(
         self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion,
     ):
@@ -1050,7 +1122,7 @@ class TestReviewExchangeModeResolution:
         return make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=Mock(spec=LabelAdapter),
-            pr_adapter=Mock(spec=PRAdapter),
+            pr_adapter=Mock(spec=PRAdapter, **{"merged_pr_history.return_value": ()}),
             git_adapter=Mock(spec=GitAdapter),
             session_output=FileSystemSessionOutput(),
             event_bus=EventBus(),
@@ -1115,7 +1187,7 @@ class TestReviewExchangeExecution:
         return make_completion_processor(
             agent_callback_endpoint=ready_callback_endpoint(),
             label_adapter=Mock(spec=LabelAdapter),
-            pr_adapter=Mock(spec=PRAdapter),
+            pr_adapter=Mock(spec=PRAdapter, **{"merged_pr_history.return_value": ()}),
             git_adapter=Mock(spec=GitAdapter),
             session_output=session_output,
             review_exchange_runner=PersistentReviewExchangeRunner(
@@ -1501,6 +1573,54 @@ class TestReviewExchangeExecution:
         mock_pr_adapter.create_pr.assert_not_called()
         mock_label_adapter.add_label.assert_any_call(99, "code-reviewed")
         mock_label_adapter.remove_label.assert_any_call(99, "needs-code-review")
+
+    def test_a_reused_pr_gets_the_records_merge_hold(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ) -> None:
+        """#7678: a rework whose agent asks a person to decide before the merge
+        reuses its open PR; the hold goes on THAT PR, not the issue."""
+        from issue_orchestrator.domain.human_block import NeedsHumanCause
+        from tests.unit.control.test_retained_completion_preparation import _real_block
+
+        config = self._make_config(tmp_path)
+        config.review_exchange_mode = "via-draft-pr"
+        config.worktree_remediation_pr_collision = "reuse_open"
+        live: dict[int, set[str]] = {123: set(), 99: set()}
+        block, claims = _real_block(tmp_path, live)
+        processor = make_completion_processor(
+            agent_callback_endpoint=ready_callback_endpoint(),
+            label_adapter=mock_label_adapter, pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter, session_output=FileSystemSessionOutput(),
+            event_bus=event_bus, config=config, needs_human_block=block,
+            label_config={"needs_human": "needs-human"},
+        )
+        mock_git_adapter.get_current_branch.return_value = "123-branch"
+        mock_pr_adapter.get_prs_for_issue.return_value = [PRInfo(
+            number=99, title="#123 Existing PR", url="https://github.com/owner/repo/pull/99",
+            branch="123-branch", body="Body", state="open", labels=[],
+        )]
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+            pr_labels=["needs-human"],
+        )
+
+        worktree = worktree_with_completion(record)
+        result = processor.process(
+            worktree, run_assets=make_session_run_assets(worktree),
+            issue_number=123, issue_title="Test Issue", agent_label="agent:coder",
+        )
+
+        assert result.success is True, result.errors
+        mock_pr_adapter.create_pr.assert_not_called()
+        assert claims.needs_human_causes(99) == frozenset({NeedsHumanCause.MERGE_DECISION.value})
+        assert live[99] == {"needs-human"} and live[123] == set()
 
     def test_existing_pr_reuse_ignores_prior_attempt_branch_and_creates_new_pr(
         self,
@@ -2609,7 +2729,7 @@ class TestReviewExchangeExecution:
         allocator = allocation_for(output)
         processor = make_completion_processor(
             label_adapter=Mock(spec=LabelAdapter),
-            pr_adapter=Mock(spec=PRAdapter),
+            pr_adapter=Mock(spec=PRAdapter, **{"merged_pr_history.return_value": ()}),
             git_adapter=Mock(spec=GitAdapter),
             session_output=output,
             issue_run_allocator=allocator,
@@ -3606,8 +3726,9 @@ class TestTechLeadCompletionEffects:
         assert result.success is True
         assert len(review_runner.calls) == 1
         gate = review_runner.calls[0]["approval_gate"]
-        assert isinstance(gate, TechLeadDecisionApprovalGate)
-        assert gate.rejection_reason() is None
+        # The Tech Lead's artifact gate runs first, inside the standing-rulings gate (#8141).
+        assert isinstance(gate.other, TechLeadDecisionApprovalGate)
+        assert gate.rejection_reason(upheld_rulings=()) is None
 
     def test_ordinary_completion_supplies_no_approval_gate(
         self,
@@ -3634,7 +3755,9 @@ class TestTechLeadCompletionEffects:
 
         assert result.success is True
         assert len(review_runner.calls) == 1
-        assert review_runner.calls[0]["approval_gate"] is None
+        # Only the standing-rulings gate (#8141); no Tech Lead policy inside it.
+        gate = review_runner.calls[0]["approval_gate"]
+        assert gate.other is None and gate.rejection_reason(upheld_rulings=()) is None
 
     def test_completed_tech_lead_session_without_pair_records_critical_error(
         self,
@@ -4447,7 +4570,7 @@ class TestCompletionProcessorDirtyPolicy:
         assert "working tree is dirty" in result.message.lower()
         mock_git_adapter.push.assert_not_called()
 
-    def test_push_allows_when_all_mode_and_only_planted_untracked(
+    def test_push_allows_when_all_mode_and_dirty_list_is_empty(
         self,
         mock_label_adapter,
         mock_pr_adapter,
@@ -4456,9 +4579,8 @@ class TestCompletionProcessorDirtyPolicy:
         worktree_with_completion,
     ):
         # Reproduces the mode=all parity gap with the agent's coding-done
-        # check. has_uncommitted_changes fires on planted-untracked paths,
-        # but list_dirty_files filters them out (filter_orchestrator_untracked_planted),
-        # leaving an empty list. The previous gate required dirty_files to be
+        # check. has_uncommitted_changes can fire on paths list_dirty_files
+        # does not report, leaving an empty list. The previous gate required dirty_files to be
         # non-empty before short-circuiting to pass, so this case fell through
         # to a confusing "Working tree is dirty" with no files listed.
         config = Config(repo="test/repo")
@@ -4543,7 +4665,7 @@ class TestCompletionProcessorDirtyPolicy:
     ):
         """list_dirty_files returning ``None`` signals an enumeration
         failure: we don't know whether the dirty entries are the safe
-        planted/runtime kind or real blocking changes. The boolean
+        runtime kind or real blocking changes. The boolean
         ``has_*`` helpers fail closed by returning True on error;
         ``list_dirty_files`` must do the same, and the policy must NOT
         collapse ``None`` to ``[] -> pass`` (#6159 review feedback).
@@ -6507,7 +6629,7 @@ def test_manual_settlement_preserves_requested_effects_without_generic_publish(
     receipt = CompletionIntakeReceipt("a" * 64, "b" * 64)
     command = PublishValidatedHeadCommand(123, "owner/repo", "issue-123", "c" * 40,
         RemoteHeadExpectation.UNCONSTRAINED, None, tmp_path, None, "main",
-        PublicationContent("#123: Test Issue", "Implementation", True, False))
+        PublicationContent("#123: Test Issue", "Implementation", True, False, False))
     record = make_record(CompletionOutcome.COMPLETED,
         [RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR, RequestedAction.REMOVE_NEEDS_REWORK_LABEL],
         pr_labels=["feature"])
@@ -6866,3 +6988,56 @@ class TestReviewOutcomeNamesTheBranchItReviewed:
         assert approved is not None
         assert approved.data["branch_name"] == "123-still-the-same"
 
+
+
+class TestReservedPrLabelsOnTheReceiptPath:
+    """#7592 round 1: a receipt-backed publication reloads its record from the
+    prepared evidence. The door must route THAT record, the one the PR is
+    built from, or the reserved label reaches the PR and the issue never gets
+    the block the agent asked for."""
+
+    def test_a_receipt_publication_types_the_reserved_label_as_the_prs_merge_hold(
+        self, tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus,
+    ) -> None:
+        from issue_orchestrator.domain.human_block import NeedsHumanCause
+        from tests.unit.control.test_retained_completion_preparation import _real_block
+        from tests.unit.test_completion_evidence_intake import command, completion, setup
+
+        _ledger, run, capability, intake, working_copy, _ = setup(tmp_path)
+        raw = json.loads(completion())
+        raw["requested_actions"] = ["push_branch", "create_pr"]
+        raw["pr_labels"] = ["needs-human", "size:small"]
+        receipt = intake.submit(capability, command(json.dumps(raw).encode(), "normal-process"))
+        intake.drain()
+        config = Config(repo="example/repo")
+        config.review_enabled = False
+        config.config_path = _write_test_config(tmp_path)
+        mock_git_adapter.get_head_sha.return_value = working_copy.get_head_sha(run.worktree_path)
+        mock_pr_adapter.create_pr.return_value = PRInfo(
+            number=77, title="t", url="https://github.com/example/repo/pull/77",
+            branch="b", body="", state="open", labels=[],
+        )
+        live: dict[int, set[str]] = {42: set(), 77: set()}
+        block, claims = _real_block(tmp_path, live)
+        processor = make_completion_processor(
+            agent_callback_endpoint=ready_callback_endpoint(),
+            label_adapter=mock_label_adapter, pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter, session_output=FileSystemSessionOutput(),
+            event_bus=event_bus, config=config, completion_intake=intake,
+            label_config={"needs_human": "needs-human"}, needs_human_block=block,
+        )
+
+        result = processor.process(
+            run.worktree_path, 42, "Feature", run_assets=run, intake_receipt=receipt,
+        )
+
+        assert result.success, result.errors
+        mock_pr_adapter.create_pr.assert_called_once()
+        applied = [(c.args[0], c.args[1]) for c in mock_label_adapter.add_label.call_args_list]
+        assert (77, "size:small") in applied
+        assert [pair for pair in applied if pair[1] == "needs-human"] == []
+        # #7678: the request holds PR #77's merge, and leaves the issue's work alone.
+        assert live[77] == {"needs-human"}
+        assert claims.needs_human_causes(77) == frozenset({NeedsHumanCause.MERGE_DECISION.value})
+        assert live[42] == set()
+        assert claims.needs_human_causes(42) == frozenset()

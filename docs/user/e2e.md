@@ -88,10 +88,22 @@ directory. No agent session survives an engine stop (every agent is a PTY child 
 engine), so the case grades what an upgrade really inherits: run-ledger rows, pending-work
 claims, labels and every sqlite store's schema.
 
+Case D (#7593) plants porchpin#262's blocked item through the engine's own completion: a
+scripted coder ends by asking the operator whether to split its issue. A real tech lead's
+periodic health review must triage it as a filed `propose_decision` the operator can
+approve. It is graded on the triage the engine recorded in its charter ledger, so an
+engine that only advises fails it.
+
+Case E (#7678) plants the two meanings of `needs-human`, with no tech lead: one coder asks
+a pre-work question (it must hold the issue's work: no PR), another publishes and asks a
+person to decide before its PR merges (`--pr-labels needs-human`, porchpin#364 / PR #379).
+That issue must stay unblocked, and its PR must be reworked (the first review requests
+changes), approved, and still carry the merge hold, open and unmerged.
+
 `EXAM_ENGINE_REF` runs the engine from a fresh standalone clone of that commit, while the
 harness, its fault shims and the grader stay the current tree's, so the same exam can
 prove it fails before a fix and passes after it. Each run writes a JSON scorecard and a
-text summary to `$E2E_EXAM_OUT` (default `/tmp/e2e-orchestrator-logs/exam`). Case B uses
+text summary to `$E2E_EXAM_OUT` (default `/tmp/e2e-orchestrator-logs/exam`). Cases B and D use
 a real tech-lead model (`E2E_EXAM_TECH_LEAD_MODEL`, default `opus`). The exam never runs
 inside `make validate-pr`; its grader, case answers and fault shim have unit tests under
 `tests/unit/testing/exam/` that do.
@@ -101,6 +113,7 @@ inside `make validate-pr`; its grader, case answers and fault shim have unit tes
 | A | the review-exchange reviewer exits without answering, three exchanges in a row, after the work validated | recovery publishes the PR, code review runs, the PR leaves draft, no `blocked-failed`/`needs-human` remains |
 | B | the issue carries `blocked-failed` while its open, green PR waits on code review | the tech-lead investigation the stuck sweep starts names the veto and proposes releasing the review (not `reset_retry`); nothing destroys the PR |
 | C | the issue carries `in-progress` with no session plus the engine's `needs-reconcile` pause (porchpin#410's labels) | the engine handles the issue (it publishes events about it), the pause stays for a human, and the engine repeats nothing tick after tick (every case also fails on any livelock) |
+| I | a maintainer records a ruling on an issue whose approved PR conflicts with its base; the conflict rework extends what the ruling retires and the reviewer approves it; a coder's pre-work question that its spec answers is resolved by the tech lead (`resolve_block: execute`) | every rework prompt carries the ruling, the first as its brief; every later review prompt carries it; the approval of the contradicting diff is refused and flagged implementation-required; the resolved answer is a standing ruling in the issue body (#8141) |
 | U | the base engine is stopped without a drain while a coding session and a code review are mid-flight; the candidate restarts from the same checkout and state | the candidate starts, publishes no restore hazard (`session.run_unrestorable` / `session.claim_unreadable`), posts no comment and adds no hold label in its restart window (from its start until the harness pauses it after at least 5 ticks, with the work still held; every write is reported by kind), and then both pieces of work finish reviewed and approved |
 
 Run the live agent-guided onboarding acceptance explicitly:

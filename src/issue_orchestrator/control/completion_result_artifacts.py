@@ -11,6 +11,7 @@ from typing import Any, Protocol
 from ..domain.completion_intake import CompletionIntakeReceipt
 from ..domain.completion_processing import CompletionPublication
 from ..domain.events import SessionEvent
+from ..domain.issue_delivery import IssueDelivery
 from ..domain.models import COMPLETION_RECORD_PATH, CompletionRecord, RequestedAction
 from ..domain.pr_issue_reference import issue_reference_line
 from ..domain.runtime_identity import RuntimeIdentity
@@ -225,23 +226,30 @@ def cleanup_completion_record(
 def build_pr_body(
     record: CompletionRecord,
     issue_number: int,
+    *,
+    delivery: IssueDelivery,
     runtime_identity: RuntimeIdentity | None = None,
 ) -> str:
-    """Build the PR body from the completion record.
+    """Build the PR body from the completion record and its resolved delivery.
 
-    ``runtime_identity=None`` is for direct tests/helper callers. Production PR
-    creation injects a runtime identity so the audit section is always present.
+    ``delivery`` decides ``Refs`` or ``Closes`` (#8689): the record's own claim,
+    or the issue's history when the record states none. ``runtime_identity=None``
+    is for direct tests/helper callers. Production PR creation injects a runtime
+    identity so the audit section is always present.
     """
     parts = [
-        issue_reference_line(issue_number, partial=record.partial_pr),
+        issue_reference_line(issue_number, partial=delivery.partial),
         "",
     ]
-    if record.partial_pr:
+    if delivery.partial:
         parts.extend([
             f"Partial delivery: this PR does not finish #{issue_number}. "
             "The issue stays open after merge for its remaining work.",
             "",
         ])
+    inferred = delivery.explanation(issue_number)
+    if inferred:
+        parts.extend([inferred, ""])
 
     if record.implementation:
         parts.extend([

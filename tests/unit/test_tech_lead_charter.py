@@ -81,13 +81,13 @@ def test_every_charter_role_has_a_config_field_and_nothing_else_does() -> None:
     assert names == tuple(role.value for role in CharterRole)
 
 
-def test_reset_retry_is_the_destructive_kind() -> None:
+def test_reset_retry_and_release_validated_work_are_the_destructive_kinds() -> None:
     destructive = {
         kind
         for kind, action_class in CHARTER_ACTION_CLASSES.items()
         if action_class.binding is CharterBinding.DESTRUCTIVE
     }
-    assert destructive == {"reset_retry"}
+    assert destructive == {"reset_retry", "release_validated_work"}
 
 
 def test_release_withheld_review_is_a_flow_fix_that_is_not_destructive() -> None:
@@ -179,9 +179,27 @@ def test_a_disabled_role_makes_every_restricted_action_advice(kind: str) -> None
         # Noticing and advising are never restricted by the charter (#7329).
         assert verdict.outcome is CharterOutcome.EXECUTED
         assert verdict.reason_code is CharterReason.ADVISORY_EXECUTES
+    elif action_class.binding is CharterBinding.OPERATOR_DECISION:
+        # Putting a decision to the operator is a hand-over, not an act (#7593).
+        assert verdict.outcome is CharterOutcome.PROPOSED
+        assert verdict.reason_code is CharterReason.OPERATOR_DECISION_ALWAYS_PROPOSED
     else:
         assert verdict.outcome is CharterOutcome.ADVICE_ONLY
         assert verdict.reason_code is CharterReason.ROLE_DISABLED
+
+
+@pytest.mark.parametrize("ceiling", AUTHORITIES)
+def test_an_operator_decision_is_always_proposed_whatever_the_charter_says(
+    ceiling: CharterAuthority,
+) -> None:
+    """#7593: no dial lets the tech lead make the operator's decision, and no
+    dial can stop it putting one in front of them."""
+    for charter in _every_charter():
+        verdict = decide_charter(
+            "propose_decision", charter, action_ceiling=ceiling, ceiling_source="c"
+        )
+        assert verdict.outcome is CharterOutcome.PROPOSED
+        assert verdict.awaits_approval
 
 
 def _every_charter() -> list[TechLeadCharter]:

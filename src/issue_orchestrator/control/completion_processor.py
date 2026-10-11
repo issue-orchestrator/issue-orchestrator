@@ -108,7 +108,7 @@ from .completion_result_artifacts import (
 )
 from .completion_review_exchange import CompletionReviewExchange
 from .completion_ports import GitAdapter, LabelAdapter, PRAdapter
-from .completion_pr_labels import apply_pr_labels, reserved_pr_label_error
+from .completion_pr_labels import apply_pr_labels, route_reserved_pr_labels
 from .completion_types import (
     ERROR_PREFIX_CREATE_PR,
     ERROR_PREFIX_PUBLISH_BLOCKED,
@@ -125,8 +125,10 @@ from .review_exchange_pr_comment import (
 )
 from .partial_delivery_guard import PartialDeliveryGuard
 from .publication_source_guards import PublicationSourceGuards
+from .standing_ruling_review import StandingRulingsReview
+from ..ports.standing_rulings import NO_STANDING_RULINGS, StandingRulings
 from .tech_lead_approval_gate import build_tech_lead_decision_approval_gate
-from .tech_lead_completion import tech_lead_decision_processing_error
+from .tech_lead_completion import reject_invalid_tech_lead_completion
 from .tech_lead_session_policy import is_benign_tech_lead_no_commits, resolve_tech_lead_completion_actions
 from .worktree_head import current_worktree_head_sha
 from ..ports.pull_request_tracker import PRInfo
@@ -135,6 +137,7 @@ from ..ports.working_copy import PushResult
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from ..domain.issue_delivery import IssueDelivery
     from ..infra.config import Config
     from ..ports.agent_callback_endpoint import AgentCallbackEndpoint
     from ..ports.review_exchange_approval_gate import ReviewExchangeApprovalGate
@@ -230,6 +233,7 @@ class CompletionProcessor:
         # An explicit null object rather than an optional: it governs no label,
         # so a composition path without one behaves as it always did.
         needs_human_block: "SharedNeedsHumanBlock" = NO_OTHER_NEEDS_HUMAN_CAUSES,
+        standing_rulings: StandingRulings = NO_STANDING_RULINGS,  # the review rule's owner (#8141)
     ):
         """Initialize the processor with required adapters.
 
@@ -305,6 +309,7 @@ class CompletionProcessor:
         # so the catch-all ceiling matches the in-loop bound.
         self._validation_reroute_counts: dict[tuple[str, str], int] = {}
         self._publication_source_guards = PublicationSourceGuards(git_adapter, self._base_branch)
+        self._rulings_review = StandingRulingsReview(standing_rulings, self._reviewed_paths)
         self._partial_delivery = PartialDeliveryGuard(
             source=self._publication_source_guards, prs=pr_adapter,
             repo_slug=self._partial_claim_repo_slug,
@@ -390,6 +395,23 @@ class CompletionProcessor:
             log=logger,
         )
         return resolved.branch
+
+    def _reviewed_paths(self, worktree: Path, pr_number: int | None) -> tuple[str, ...]:
+        """Every path the reviewed branch touches, against its PR's CURRENT base
+        (a stacked PR's predecessor, a retargeted PR's new base), read fresh; the
+        default base before the branch has a PR."""
+        if pr_number is None:
+            branch = self.git_adapter.get_current_branch(worktree)
+            prs = self.pr_adapter.get_prs_for_branch(branch) if branch else []
+            if len(prs) > 1:
+                raise RuntimeError(f"branch {branch} has {len(prs)} open PRs: its review base is ambiguous")
+            pr_number = prs[0].number if prs else None
+        if pr_number is None:
+            return self._publication_source_guards.branch_paths(worktree, None)
+        pr = self.pr_adapter.get_pr(pr_number)
+        if pr is None or not pr.base_branch:
+            raise RuntimeError(f"PR #{pr_number} could not be read for its base branch")
+        return self._publication_source_guards.branch_paths(worktree, pr.base_branch)
 
     def process_registered_completion(
         self,
@@ -754,7 +776,7 @@ class CompletionProcessor:
             worktree, issue_number, issue_title, run_assets=run_assets,
             completion_path=completion_path, agent_label=agent_label,
             intake_receipt=intake_receipt, actions_taken=actions_taken, errors=errors,
-            prepared_evidence=prepared_evidence,
+            prepared_evidence=prepared_evidence, review_pr_number=pr_number,
         )
         if isinstance(prepared, ProcessingResult):
             return prepared
@@ -813,8 +835,13 @@ class CompletionProcessor:
         agent_label: str | None, intake_receipt: CompletionIntakeReceipt | None,
         actions_taken: list[str], errors: list[str],
         prepared_evidence: PreparedCompletionEvidence | None = None,
+        review_pr_number: int | None = None,
     ) -> PreparedCompletion | ProcessingResult:
-        """One owner runs every policy phase before live or manual execution."""
+        """One owner runs every policy phase before live or manual execution.
+
+        ``review_pr_number`` is the PR a review session reviewed; the standing
+        rulings' review rule reads its current base (#8141).
+        """
         try:
             context = (
                 context_from_prepared_evidence(prepared_evidence, intake_receipt, run_assets)
@@ -847,6 +874,11 @@ class CompletionProcessor:
             except CompletionIntakeError as exc:
                 return ProcessingResult.for_intake_refusal(exc).with_processing_policy(processing_policy)
             record = record_from_prepared_evidence(prepared_evidence, intake_receipt, run_assets)
+        # The shared human block never goes on a PR (#6999 F2, #7592): the door
+        # moves it to the issue, on the FINAL record (a receipt reloads above).
+        record = route_reserved_pr_labels(record, self.needs_human_block)
+        record = self._rulings_review.admit(record, issue_number=issue_number, worktree=worktree,
+                                            pr_number=review_pr_number)
 
         requested_actions = tuple(record.requested_actions)
         running_query = ReviewExchangeRunningQuery(
@@ -936,7 +968,7 @@ class CompletionProcessor:
         self, prepared: PreparedManualPublication, publication: PublishValidatedHeadOutcome,
     ) -> ProcessingResult:
         return settle_manual_publication(
-            prepared, publication, session_output=self.session_output, labels=self.label_adapter,
+            prepared, publication, session_output=self.session_output, labels=self.label_adapter, block=self.needs_human_block,
             finalize_review_exchange=self._finalize_review_exchange_pr,
             execute_planned_actions=self._execute_planned_actions, emit_completion_event=self._emit,
             post_issue_comment=self._add_issue_comment, cleanup_completion_record=self._cleanup_completion_record,
@@ -950,41 +982,10 @@ class CompletionProcessor:
         issue_number: int,
         run_assets: SessionRunAssets,
     ) -> ProcessingResult | None:
-        """Authoritative tech_lead authority + pair validation (ADR-0031).
-
-        A COMPLETED tech_lead session must have a trusted launch-authority
-        record (#6761 re-review F1) and a valid decision artifact pair
-        (#6761 F3). Running here — in the pre-action policy phase, before
-        the completion record is preserved and before ANY requested action
-        executes (#6769 finding 1) — a rejection produces ZERO push/PR/
-        comment calls and a failed processing result whose tagged error is
-        classified critical, so history records FAILED for every flavor and
-        the tech_lead failure labeling path fires downstream.
-        """
-        if not processing_policy.is_tech_lead:
-            return None
-        if self._config is None:
-            raise CompletionIntakeError("Tech Lead processing requires configured launch policy")
-        if record.outcome is not CompletionOutcome.COMPLETED:
-            return None
-        tech_lead_error = tech_lead_decision_processing_error(
-            self._config,
-            tech_lead_authority=self._tech_lead_authority,
-            run_dir=run_assets.run_dir,
-            run_id=run_assets.run_id,
-            session_name=run_assets.session_name,
-        )
-        if tech_lead_error is None:
-            return None
-        logger.warning(
-            "Tech Lead completion rejected before any action for issue #%d: %s",
-            issue_number,
-            tech_lead_error,
-        )
-        return ProcessingResult(
-            success=False,
-            message=f"Tech Lead completion rejected: {tech_lead_error}",
-            errors=[tech_lead_error],
+        """Authoritative tech_lead authority + pair validation (ADR-0031); see the owner."""
+        return reject_invalid_tech_lead_completion(
+            self._config, self._tech_lead_authority, record=record,
+            processing_policy=processing_policy, issue_number=issue_number, run_assets=run_assets,
         )
 
     def _review_exchange_approval_gate(
@@ -992,16 +993,18 @@ class CompletionProcessor:
         *,
         processing_policy: CompletionProcessingPolicy,
         run_assets: SessionRunAssets,
-    ) -> "ReviewExchangeApprovalGate | None":
-        """Build the artifact gate used at the terminal reviewer boundary."""
-        return build_tech_lead_decision_approval_gate(
+        issue_number: int,
+        worktree: Path,
+    ) -> "ReviewExchangeApprovalGate":
+        """The gates at the terminal reviewer boundary: the Tech Lead's artifacts, then the rulings."""
+        return self._rulings_review.exchange_gate(issue_number, worktree, build_tech_lead_decision_approval_gate(
             self._config,
             processing_policy=processing_policy,
             tech_lead_authority=self._tech_lead_authority,
             run_dir=run_assets.run_dir,
             run_id=run_assets.run_id,
             session_name=run_assets.session_name,
-        )
+        ))
 
     def _check_pre_action_policies(
         self,
@@ -1116,18 +1119,6 @@ class CompletionProcessor:
                         failure_kind="validation_failed",
                     ),
                 )
-        # Rejected at the door, BEFORE any side effect (#6999 F2 round 5).
-        # ``pr_labels`` is whatever the agent wrote, and the shared human-block
-        # label is not among the things it may hand itself: applied, it would
-        # create a block with no cause recorded, which a later typed release
-        # then takes away from whoever did record one. The agent has the typed
-        # needs_human outcome for that, which goes through the block owner.
-        # The completion FAILS rather than dropping the entry quietly - a
-        # silently ignored request is one nothing downstream can see.
-        if reserved := reserved_pr_label_error(record, self.needs_human_block):
-            return None, None, ProcessingResult(
-                success=False, message=reserved, errors=[reserved]
-            )
 
         session_name = (
             run_assets.session_name
@@ -1427,6 +1418,7 @@ class CompletionProcessor:
             agent_label=processing_policy.agent_label,
             approval_gate=self._review_exchange_approval_gate(
                 processing_policy=processing_policy, run_assets=run_assets,
+                issue_number=issue_number, worktree=worktree,
             ),
             initial_validation_evidence=validation_evidence,
             current_head_sha=current_worktree_head_sha(
@@ -1595,8 +1587,8 @@ class CompletionProcessor:
             actions_taken=actions_taken,
             run_review_exchange_loop=self._run_review_exchange_loop,
             approval_gate=self._review_exchange_approval_gate(
-                processing_policy=processing_policy,
-                run_assets=run_assets,
+                processing_policy=processing_policy, run_assets=run_assets,
+                issue_number=issue_number, worktree=worktree,
             ),
         )
         if deferred:
@@ -1910,6 +1902,21 @@ class CompletionProcessor:
 
         return self._ActionResult()
 
+    def acquire_agent_human_block(self, issue_number: int) -> BlockOutcome:
+        """Put the shared block on ``issue_number`` because an agent asked.
+
+        The one place an agent's request for a human becomes the block: the
+        live completion's ``ADD_NEEDS_HUMAN_LABEL`` and recovery of a retained
+        record that asked for one both land here, with the same cause.
+        """
+        return self.needs_human_block.acquire(
+            HumanBlockRequest(
+                target=issue_number,
+                cause=_AGENT_BLOCK_CAUSES[RequestedAction.ADD_NEEDS_HUMAN_LABEL],
+                reason="agent requested needs_human on completion",
+            )
+        )
+
     def _shared_block_request(
         self,
         action: RequestedAction,
@@ -1928,16 +1935,9 @@ class CompletionProcessor:
         ``None`` means "not mine" - a different action, or a composition with
         no owner wired - and the caller's ordinary table handles it.
         """
-        cause = _AGENT_BLOCK_CAUSES.get(action)
-        if cause is None:
+        if action not in _AGENT_BLOCK_CAUSES:
             return None
-        outcome = self.needs_human_block.acquire(
-            HumanBlockRequest(
-                target=issue_number,
-                cause=cause,
-                reason="agent requested needs_human on completion",
-            )
-        )
+        outcome = self.acquire_agent_human_block(issue_number)
         if outcome is BlockOutcome.UNGOVERNED:
             # No owner in this composition; the ordinary adapter path applies.
             return None
@@ -2184,11 +2184,12 @@ class CompletionProcessor:
         expected_base, stack_decision = publication.base_branch, publication.stack_decision
         exchange_mode = publication.exchange_mode
         pr_title, pr_body = publication.title, publication.body
+        actions_taken.extend(filter(None, [publication.delivery.explanation(issue_number)]))
         skip_hooks = os.environ.get("E2E_SKIP_PUSH_HOOKS") == "1"
 
         # Check for existing PR to reuse after review exchange succeeds.
         reused = self._reuse_existing_pr_if_available(
-            issue_number=issue_number,
+            issue_number=issue_number, record=record, delivery=publication.delivery,
             branch=branch,
             exchange_mode=exchange_mode,
             exchange_result=exchange_result,
@@ -2232,6 +2233,8 @@ class CompletionProcessor:
 
         if pr:
             branch = pr.branch
+            if self._pull_requests.adopted_pr_refused(pr, issue_number=issue_number, delivery=publication.delivery, errors=errors):
+                return self._ActionResult(branch=branch, halt=True)
             settle_failure = self._settle_created_pr(
                 pr=pr,
                 record=record,
@@ -2275,7 +2278,7 @@ class CompletionProcessor:
     def _reuse_existing_pr_if_available(
         self,
         *,
-        issue_number: int,
+        issue_number: int, record: CompletionRecord, delivery: "IssueDelivery",
         branch: str,
         exchange_mode: str | None,
         exchange_result: Any | None,
@@ -2293,6 +2296,8 @@ class CompletionProcessor:
         )
         if not existing_pr:
             return None
+        if self._pull_requests.adopted_pr_refused(existing_pr, issue_number=issue_number, delivery=delivery, errors=errors):
+            return self._ActionResult(branch=branch, halt=True)
         # Stack invariant (ADR-0029 / #6596): an existing PR may only be reused
         # if it already targets the base the stack publish gate requires. A
         # successor PR opened against ``main`` (or still on a now-merged
@@ -2310,12 +2315,11 @@ class CompletionProcessor:
             if retarget is not None:
                 return retarget
         actions_taken.append(f"Reused PR #{existing_pr.number}")
-        logger.info(
-            "Reused existing PR #%d for issue #%d: %s",
-            existing_pr.number,
-            issue_number,
-            existing_pr.url,
-        )
+        logger.info("Reused existing PR #%d for issue #%d: %s", existing_pr.number, issue_number, existing_pr.url)
+        # The reused PR gets the record's labels and merge hold too (#7678).
+        if not apply_pr_labels(pr_number=existing_pr.number, record=record, labels=self.label_adapter,
+                               block=self.needs_human_block, actions_taken=actions_taken, errors=errors):
+            return self._ActionResult(branch=branch, pr_url=existing_pr.url, halt=True)
         review_exchange_completed = False
         if exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result:
             review_exchange_completed = True
@@ -2511,8 +2515,7 @@ class CompletionProcessor:
         * its LABELS, because the record that produced it is agent-authored and
           may have asked for the shared human block (#6999 F2).
 
-        (An earlier "Closes #N" PR for a partial completion is refused before
-        any write by the partial-delivery guard in ``prepare_pull_request``.)
+        (Its issue reference line is checked against the delivery by the caller, #8689.)
         """
         base_failure = self._enforce_created_pr_base(
             pr=pr,
@@ -2527,11 +2530,8 @@ class CompletionProcessor:
         actions_taken.append(f"Created PR #{pr.number}")
         logger.info("Created PR #%d: %s", pr.number, pr.url)
         if not apply_pr_labels(
-            pr_number=pr.number,
-            record=record,
-            labels=self.label_adapter,
-            actions_taken=actions_taken,
-            errors=errors,
+            pr_number=pr.number, record=record, labels=self.label_adapter, block=self.needs_human_block,
+            actions_taken=actions_taken, errors=errors,
         ):
             return self._ActionResult(branch=branch, pr_url=pr.url, halt=True)
         return None

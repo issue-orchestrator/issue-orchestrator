@@ -15,8 +15,14 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
+from ...domain.decision_steps import (
+    DECISION_STEP_MARKER_PREFIX,
+    DECISION_STEP_RULING_PREFIX,
+    OPERATOR_CHECKLIST_HEADING,
+)
+from ...domain.standing_ruling import REWORK_BRIEF_OPENING, RULINGS_PROMPT_HEADING
 from ...domain.tech_lead_artifacts import VALID_TECH_LEAD_ACTION_TYPES
-from .observation import ExamObservation, PullRequestState, WorkItemFact
+from .observation import ExamObservation, PullRequestState, TriageFact, WorkItemFact
 from .upgrade import UpgradeSpec
 
 
@@ -61,6 +67,28 @@ class Goal:
 
     def evaluate(self, observation: ExamObservation) -> GoalCheck:
         return self.check(observation.item(self.role))
+
+
+#: The role of a goal about the whole run rather than one work item.
+RUN_ROLE = "run"
+
+
+def _no_item_check(item: WorkItemFact) -> GoalCheck:
+    raise TypeError(f"a run-level goal is not graded on one item (#{item.issue_number})")
+
+
+@dataclass(frozen=True)
+class RunGoal(Goal):
+    """A predicate on the whole observation (Case K's delivery PR, #8144).
+
+    Its role is :data:`RUN_ROLE`, which names no work item, so a per-item
+    probe never asks it; the grader evaluates it on the observation.
+    """
+
+    run_check: Callable[[ExamObservation], GoalCheck] = field(default=lambda observation: GoalCheck(False, ""))
+
+    def evaluate(self, observation: ExamObservation) -> GoalCheck:
+        return self.run_check(observation)
 
 
 @dataclass(frozen=True)
@@ -422,6 +450,39 @@ def single_pull_request(role: str) -> Goal:
     return Goal(f"{role}.single_pull_request", role, f"the {role} work is published as exactly one PR", check)
 
 
+#: The engine's event for a session it launched on an item (``session_launcher``).
+SESSION_STARTED_EVENT = "session.started"
+
+
+def never_worked(role: str) -> Goal:
+    """The engine never worked the item: no session launched, no pull request.
+
+    For an item that must stay inert (a proposal nobody approved, #7763):
+    the scheduler admitting it even once is the failure, whatever happened
+    after.
+    """
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        launches = item.events.count(SESSION_STARTED_EVENT)
+        numbers = sorted(pr.number for pr in item.pull_requests)
+        return GoalCheck(
+            not launches and not numbers,
+            f"issue #{item.issue_number}: {launches} session(s) launched, PRs {numbers or '(none)'}",
+        )
+
+    return Goal(f"{role}.never_worked", role, f"the {role} issue is never worked", check)
+
+
+def no_pull_request(role: str) -> Goal:
+    """The item published nothing: its work never ran past the person's hold."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        numbers = sorted(pr.number for pr in item.pull_requests)
+        return GoalCheck(not numbers, f"linked PRs: {numbers or '(none)'}")
+
+    return Goal(f"{role}.no_pull_request", role, f"the {role} work published no PR", check)
+
+
 def published_work_survives(role: str) -> Goal:
     """No pull request of the item was closed unmerged or lost its branch."""
 
@@ -445,4 +506,420 @@ def published_work_survives(role: str) -> Goal:
         role,
         f"no {role} PR is closed unmerged or loses its branch",
         check,
+    )
+
+
+def item_triaged(role: str, classes: Iterable[str], *, or_resolution_proposed: bool = False) -> Goal:
+    """The tech lead disposed of the blocked item with one of ``classes`` (#7593).
+
+    Graded on the engine's own record of the triage, and only when it is in
+    force: an operator decision counts once its proposal is FILED (the
+    operator has something to approve), any other class once it took effect.
+    A diagnosis, advice or a case file never records a triage at all.
+
+    ``or_resolution_proposed`` also accepts a FILED ``resolve_block`` proposal
+    awaiting the operator (#7658): under ``propose`` authority it puts the same
+    decision in front of the operator as a ``propose_decision`` does.
+    """
+    wanted = frozenset(classes)
+    names = "/".join(sorted(wanted))
+
+    def accepted(triage: TriageFact) -> bool:
+        proposed_resolution = (
+            or_resolution_proposed
+            and triage.action_kind == "resolve_block"
+            and triage.effect == "awaiting_approval"
+        )
+        return (triage.triage_class in wanted or proposed_resolution) and triage.in_force
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        triage = item.triage
+        if triage is None:
+            return GoalCheck(False, f"no tech-lead triage was recorded for #{item.issue_number}")
+        described = (
+            f"#{item.issue_number} triaged {triage.triage_class} by {triage.action_kind}"
+            f" ({triage.effect}"
+            + (f", proposal #{triage.proposal_issue_number}" if triage.proposal_issue_number else "")
+            + ")"
+        )
+        return GoalCheck(accepted(triage), described)
+
+    return Goal(f"{role}.triaged_{names}", role, f"the {role} item is triaged {names}", check)
+
+
+def item_resolved(role: str, effects: Iterable[str]) -> Goal:
+    """The tech lead decided the item's block itself with ``resolve_block`` (#7658).
+
+    Graded on the engine's own charter record of the item: some ``resolve_block``
+    decision whose effect is one of ``effects`` and in force (``applied`` when the
+    operator let it execute; ``awaiting_approval`` with its proposal FILED when it
+    must be approved). Any session's decision counts, a failure investigation's
+    included, and a later explanation of the item does not undo it. That is
+    unlike :func:`item_triaged`'s latest-triage rule, because a resolve that
+    took effect has already cleared the block.
+    """
+    wanted = frozenset(effects)
+    names = "/".join(sorted(wanted))
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        for decision in item.decisions:
+            if (
+                decision.action_kind == "resolve_block"
+                and decision.effect in wanted
+                and decision.in_force
+            ):
+                return GoalCheck(True, f"#{item.issue_number} resolve_block ({decision.effect})")
+        recorded = ", ".join(f"{d.action_kind} ({d.effect})" for d in item.decisions) or "none"
+        return GoalCheck(
+            False, f"#{item.issue_number}: no {names} resolve_block; decisions: {recorded}"
+        )
+
+    return Goal(f"{role}.resolved_{names}", role, f"the tech lead resolved the {role} block ({names})", check)
+
+
+def item_handed_over(role: str) -> Goal:
+    """The tech lead handed the item to a person, and the hand-over stands (#7658).
+
+    The item's latest in-force triage that DISPOSED of it is ``human_hand_over``.
+    A later ``explained`` triage disposes of nothing new: it says why the item
+    still waits, so it leaves the hand-over standing. A later remedy or operator
+    decision replaces it. (A hand-over currently re-grants its own item to the
+    next health review, #8112, which then explains it.)
+    """
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        disposing = [
+            decision
+            for decision in item.decisions
+            if decision.triage_class not in (None, "explained") and decision.in_force
+        ]
+        recorded = ", ".join(
+            f"{d.triage_class or '-'}/{d.action_kind} ({d.effect})" for d in item.decisions
+        ) or "none"
+        if not disposing:
+            return GoalCheck(False, f"#{item.issue_number}: no disposing triage; decisions: {recorded}")
+        latest = disposing[-1]
+        return GoalCheck(
+            latest.triage_class == "human_hand_over",
+            f"#{item.issue_number} last disposed {latest.triage_class} by {latest.action_kind}"
+            f" ({latest.effect}); decisions: {recorded}",
+        )
+
+    return Goal(f"{role}.handed_over", role, f"the {role} item is handed to a person", check)
+
+
+def no_tech_lead_decision(role: str, kind: str) -> Goal:
+    """The tech lead never decided ``kind`` about the item, whatever its effect
+    (#7658): a merge hold is the operator's, so even a proposal to resolve it
+    is wrong."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        count = item.decided_kinds.count(kind)
+        return GoalCheck(
+            count == 0,
+            f"#{item.issue_number}: {count} {kind} decision(s) recorded"
+            if count else f"#{item.issue_number}: no {kind} decision recorded",
+        )
+
+    return Goal(f"{role}.no_{kind}", role, f"the tech lead never decides {kind} about the {role} item", check)
+
+
+# -- standing rulings (#8141) ---------------------------------------------------
+
+#: The engine's events for a rework session it launched, and a review approval.
+REWORK_STARTED_EVENT = "rework.started"
+REVIEW_APPROVED_EVENT = "review.approved"
+#: Session kinds as a run directory records them.
+REWORK_TASK = "rework"
+REVIEW_TASK = "review"
+
+
+def rulings_in_body(role: str) -> Goal:
+    """The item's issue body carries a standing ruling."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        if item.body_rulings_error:
+            return GoalCheck(False, f"issue #{item.issue_number}'s rulings block: {item.body_rulings_error}")
+        listed = [f"{r.ruling_id} ({r.authority})" for r in item.body_rulings] or ["none"]
+        return GoalCheck(bool(item.body_rulings), f"issue #{item.issue_number}'s body rulings: {', '.join(listed)}")
+
+    return Goal(f"{role}.ruling_in_body", role, f"the {role} issue body carries a standing ruling", check)
+
+
+_DECISION_HEADING = re.compile(r"^## Tech lead resolved this block \([a-z]+\): (?P<title>.+)$", re.MULTILINE)
+_DECISION_EVIDENCE = "\n\n### Evidence"
+
+
+def _posted_answer(decision: str) -> tuple[str, str] | None:
+    """(title, body) of a posted resolve_block decision (the engine's
+    ``_decision_comment`` layout: heading, the decision body, then Evidence)."""
+    heading = _DECISION_HEADING.search(decision)
+    if heading is None:
+        return None
+    rest = decision[heading.end():].lstrip("\n")
+    body, found, _ = rest.partition(_DECISION_EVIDENCE)
+    return (heading.group("title").strip(), body.strip()) if found and body.strip() else None
+
+
+def _states(ruling_text: str, decision: str) -> bool:
+    """Whether a ruling carries a posted decision's complete answer: its title and its whole body."""
+    answer = _posted_answer(decision)
+    return answer is not None and answer[0] in ruling_text and answer[1] in ruling_text
+
+
+def resolution_answer_in_body(role: str, *, authority: str) -> Goal:
+    """porchpin#327: the tech lead's applied ``resolve_block`` answer is a standing
+    ruling in the item's BODY, word for word the decision it posted."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        if item.body_rulings_error:
+            return GoalCheck(False, f"issue #{item.issue_number}'s rulings block: {item.body_rulings_error}")
+        if not item.resolution_comments:
+            return GoalCheck(False, f"no resolve_block decision was posted on #{item.issue_number}")
+        answers = [r for r in item.body_rulings if r.authority == authority]
+        stated = [r.ruling_id for r in answers if any(_states(r.text, c) for c in item.resolution_comments)]
+        return GoalCheck(
+            bool(stated),
+            f"#{item.issue_number}: {len(item.resolution_comments)} decision(s) posted;"
+            f" {authority} rulings in the body: {[r.ruling_id for r in answers] or 'none'};"
+            f" stating a posted decision: {stated or 'none'}",
+        )
+
+    return Goal(f"{role}.resolution_answer_in_body", role,
+                f"the {role} issue body carries the applied resolve_block answer as a standing ruling", check)
+
+
+def _carries_every_ruling(text: str, item: WorkItemFact) -> list[str]:
+    """The body rulings a prompt does NOT bind its session to (id and full text)."""
+    if RULINGS_PROMPT_HEADING not in text:
+        return [ruling.ruling_id for ruling in item.body_rulings]
+    return [
+        ruling.ruling_id for ruling in item.body_rulings
+        if f"`{ruling.ruling_id}`" not in text or ruling.text not in text
+    ]
+
+
+def rework_prompts_carry_rulings(role: str) -> Goal:
+    """Every rework of the item was told its standing rulings in full, as its BRIEF.
+
+    porchpin#379's conflict rework extended the design the ruling retired:
+    nothing in its prompt tied it to the ruling.
+    """
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        reworks = item.prompts_of(REWORK_TASK)
+        if not item.body_rulings:
+            return GoalCheck(False, f"issue #{item.issue_number} carries no standing ruling to bind a rework")
+        if not reworks:
+            return GoalCheck(False, f"no rework of #{item.issue_number} ran (no rework prompt captured)")
+        unbound = [(index, missing) for index, prompt in enumerate(reworks, start=1)
+                   if (missing := _carries_every_ruling(prompt.text, item))]
+        unbriefed = [index for index, prompt in enumerate(reworks, start=1) if REWORK_BRIEF_OPENING not in prompt.text]
+        return GoalCheck(
+            not unbound and not unbriefed,
+            f"{len(reworks)} rework prompt(s); missing rulings (prompt #, ids): {unbound or 'none'};"
+            f" without the brief: {unbriefed or 'none'}",
+        )
+
+    return Goal(f"{role}.rework_prompts_carry_rulings", role,
+                f"every {role} rework carries the standing rulings in full, as its brief", check)
+
+
+def reviews_after_rework_carry_rulings(role: str) -> Goal:
+    """Every review of the reworked PR was told to check the diff against each ruling."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        reworks = item.prompts_of(REWORK_TASK)
+        if not reworks:
+            return GoalCheck(False, f"no rework of #{item.issue_number} ran")
+        after = [p for p in item.prompts_of(REVIEW_TASK) if p.captured_ns > reworks[0].captured_ns]
+        if not after:
+            return GoalCheck(False, f"no review of #{item.issue_number}'s reworked PR ran")
+        unbound = [index for index, prompt in enumerate(after, start=1) if _carries_every_ruling(prompt.text, item)]
+        return GoalCheck(not unbound, f"{len(after)} review prompt(s) after the rework; unbound: {unbound or 'none'}")
+
+    return Goal(f"{role}.reviews_carry_rulings", role,
+                f"every review of the reworked {role} PR carries the standing rulings", check)
+
+
+def contradicting_approval_refused(role: str) -> Goal:
+    """No review approval stood once a rework touched what the ruling governs,
+    and the engine flagged at least one refused approval (implementation-required)."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        if REWORK_STARTED_EVENT not in item.events:
+            return GoalCheck(False, f"no rework of #{item.issue_number} started")
+        after = item.events[item.events.index(REWORK_STARTED_EVENT):]
+        approvals = after.count(REVIEW_APPROVED_EVENT)
+        return GoalCheck(
+            approvals == 0 and item.refused_approvals > 0,
+            f"{approvals} review approval(s) after the first rework;"
+            f" {item.refused_approvals} refused approval(s) flagged on the PR",
+        )
+
+    return Goal(f"{role}.contradicting_approval_refused", role,
+                f"an approval of the reworked {role} diff is refused, never accepted", check)
+
+
+# -- a decision's steps beyond its item (#8691) ---------------------------------
+
+_STEP_MARKER = re.compile(re.escape(DECISION_STEP_MARKER_PREFIX) + r"[^:]+:(?P<index>\d+) -->")
+_STEP_APPLIED = re.compile(r"Step \d+ applied:")
+_HAND_STEP_PROSE = re.compile(r"before you approve", re.IGNORECASE)
+
+
+def issue_in_milestone(role: str, title: str) -> Goal:
+    """The issue is in the milestone named ``title`` (porchpin#459 moved #327 to M1)."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        return GoalCheck(item.milestone == title,
+                         f"issue #{item.issue_number}'s milestone: {item.milestone or 'none'}")
+
+    return Goal(f"{role}.in_milestone", role, f"the {role} issue is in milestone {title!r}", check)
+
+
+def issue_is_closed(role: str) -> Goal:
+    """The issue is closed (a superseded proposal, closed by the decision)."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        return GoalCheck(item.issue_state == "closed", f"issue #{item.issue_number} is {item.issue_state}")
+
+    return Goal(f"{role}.issue_closed", role, f"the {role} issue is closed", check)
+
+
+def decision_steps_ran_once(role: str, *, at_least: int) -> Goal:
+    """An approved decision about the item ran its typed steps, each exactly
+    once: every step marker on its proposal says applied, no step index twice."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        if not item.decision_proposals:
+            return GoalCheck(False, f"no decision proposal was filed about #{item.issue_number}")
+        seen = []
+        for proposal in item.decision_proposals:
+            indices = [int(m.group("index")) for c in proposal.step_comments for m in _STEP_MARKER.finditer(c)]
+            applied = all(_STEP_APPLIED.match(c) for c in proposal.step_comments)
+            once = len(indices) == len(set(indices))
+            seen.append(f"#{proposal.number}: steps {sorted(indices)}"
+                        f"{'' if once else ' (a step ran twice)'}{'' if applied else ' (a step was refused)'}")
+            if once and applied and len(indices) >= at_least:
+                return GoalCheck(True, f"#{item.issue_number}'s proposal {seen[-1]}")
+        return GoalCheck(False, f"#{item.issue_number}: no proposal ran >= {at_least} steps once each; {'; '.join(seen)}")
+
+    return Goal(f"{role}.decision_steps_ran_once", role,
+                f"approving the {role} decision ran its typed steps, each exactly once", check)
+
+
+def operator_checklist_names(role: str, term: str) -> Goal:
+    """The item's decision proposal puts what io cannot do (``term``) in the
+    operator's checklist, not in prose."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        for proposal in item.decision_proposals:
+            _, found, checklist = proposal.body.partition(OPERATOR_CHECKLIST_HEADING)
+            listed = [line for line in checklist.splitlines() if line.startswith("- [ ]")]
+            wanted = re.compile(re.escape(term), re.IGNORECASE)
+            if found and any(wanted.search(line) for line in listed):
+                return GoalCheck(True, f"proposal #{proposal.number}'s checklist names {term!r}")
+        numbers = [p.number for p in item.decision_proposals] or "none"
+        return GoalCheck(False, f"no decision proposal about #{item.issue_number} lists {term!r} for the"
+                                f" operator (proposals: {numbers})")
+
+    return Goal(f"{role}.operator_checklist", role,
+                f"the {role} decision lists {term!r} as the operator's own step", check)
+
+
+def no_hand_steps_in_prose(role: str) -> Goal:
+    """No decision proposal about the item buries chores in "Before you approve" prose."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        if not item.decision_proposals:
+            return GoalCheck(False, f"no decision proposal was filed about #{item.issue_number}")
+        prose = [p.number for p in item.decision_proposals if _HAND_STEP_PROSE.search(p.body)]
+        return GoalCheck(not prose, f"proposals with 'Before you approve' prose: {prose or 'none'}")
+
+    return Goal(f"{role}.no_hand_steps_in_prose", role,
+                f"the {role} decision carries no 'Before you approve' chores", check)
+
+
+def body_ruling_states(role: str, text: str, *, authority: str) -> Goal:
+    """The item's body carries ``text`` word for word in a standing ruling of
+    ``authority`` that a decision STEP recorded (#8691), not the decision itself."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        if item.body_rulings_error:
+            return GoalCheck(False, f"issue #{item.issue_number}'s rulings block: {item.body_rulings_error}")
+        # A decision STEP's ruling (``ds-<proposal>-<step>``), never the decision's own.
+        stating = [r.ruling_id for r in item.body_rulings
+                   if r.authority == authority and r.ruling_id.startswith(DECISION_STEP_RULING_PREFIX) and text in r.text]
+        listed = [r.ruling_id for r in item.body_rulings] or "none"
+        return GoalCheck(bool(stating), f"#{item.issue_number}: rulings {listed}; stating the note: {stating or 'none'}")
+
+    return Goal(f"{role}.body_ruling_states_note", role,
+                f"the {role} issue body carries the decided note as a standing ruling", check)
+
+
+#: The engine's events for a rework of an item's PR.
+REWORK_EVENTS = ("review.rework_started", "rework.started")
+#: Integration mode's event for an applied step (a merge into integration, a
+#: mechanical update of a PR to its tip, #8144).
+INTEGRATION_STEP_APPLIED_EVENT = "integration.step_applied"
+
+
+def no_rework(role: str, rework_labels: Iterable[str]) -> Goal:
+    """The item's PR never went back to an agent: no rework event, no rework label."""
+    labels = frozenset(rework_labels)
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        reworks = [name for name in item.events if name in REWORK_EVENTS]
+        carried = sorted({label for pr in item.pull_requests for label in pr.labels} & labels)
+        return GoalCheck(
+            not reworks and not carried,
+            f"issue #{item.issue_number}: rework events {reworks or '(none)'}, rework labels {carried or '(none)'}",
+        )
+
+    return Goal(f"{role}.no_rework", role, f"the {role} PR spends no rework cycle", check)
+
+
+def integration_steps_applied(role: str, *, at_least: int) -> Goal:
+    """Integration mode applied at least this many steps to the item's PR
+    (a mechanical update to the tip, then the merge)."""
+
+    def check(item: WorkItemFact) -> GoalCheck:
+        applied = item.events.count(INTEGRATION_STEP_APPLIED_EVENT)
+        return GoalCheck(applied >= at_least, f"issue #{item.issue_number}: {applied} integration step(s) applied")
+
+    return Goal(
+        f"{role}.integration_steps_applied",
+        role,
+        f"io applied at least {at_least} integration step(s) to the {role} PR",
+        check,
+    )
+
+
+def delivery_lists_every_pr(roles: Iterable[str]) -> Goal:
+    """The run's open delivery PR (the harness reads the one from the run's own
+    integration branch) lists every role's PR."""
+    wanted_roles = tuple(roles)
+
+    def run_check(observation: ExamObservation) -> GoalCheck:
+        delivery = observation.delivery
+        if delivery is None:
+            return GoalCheck(False, "no open delivery PR from the run's integration branch")
+        wanted = sorted(
+            pr.number for role in wanted_roles for pr in observation.item(role).pull_requests
+        )
+        missing = sorted(set(wanted) - set(delivery.listed_pr_numbers))
+        passed = delivery.state.is_open and not missing and bool(wanted)
+        return GoalCheck(
+            passed,
+            f"delivery PR #{delivery.number} {delivery.head}->{delivery.base} ({delivery.state.value})"
+            f" lists {list(delivery.listed_pr_numbers)}; missing {missing or '(none)'}",
+        )
+
+    return RunGoal(
+        "delivery_lists_every_pr",
+        RUN_ROLE,
+        "one open delivery PR lists every PR it delivers",
+        _no_item_check,
+        run_check=run_check,
     )

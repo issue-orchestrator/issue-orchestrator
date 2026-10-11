@@ -3,6 +3,7 @@
 from ..domain.validated_work import ValidatedWorkEvidence, ValidatedWorkFailure, ValidatedWorkState
 from ..domain.validated_work_capture import AutomaticCaptureDecision
 from ..domain.validated_work_escrow import EscrowArtifacts, escrow_locator, evidence_pins
+from ..domain.validated_work_remote_authority import CarriedByIssuePullRequest
 from ..domain.validated_work_store import EvidenceAdmission, AdmissionOutcome
 from ..ports.validated_work_escrow import ValidatedWorkEscrow
 from ..ports.validated_work_preservation import ValidatedWorkAdmissionStore
@@ -22,15 +23,19 @@ class ValidatedWorkCustody:
     def capture_automatic(
         self, evidence: ValidatedWorkEvidence, sources: EscrowArtifacts,
         decision: AutomaticCaptureDecision,
+        *, carried: CarriedByIssuePullRequest | None = None,
     ) -> AdmissionOutcome:
+        """``carried`` is the open-PR proof this capture's own remote
+        observation just recorded (#8137): it may resolve the admission."""
         return self._capture(
             evidence, sources, state=decision.state,
-            reason=decision.reason, failure=decision.failure,
+            reason=decision.reason, failure=decision.failure, carried=carried,
         )
 
     def _capture(self, evidence: ValidatedWorkEvidence, sources: EscrowArtifacts,
                  *, state: ValidatedWorkState, reason: str,
-                 failure: ValidatedWorkFailure | None) -> AdmissionOutcome:
+                 failure: ValidatedWorkFailure | None,
+                 carried: CarriedByIssuePullRequest | None = None) -> AdmissionOutcome:
         pins = evidence_pins(evidence)
         proposed = EvidenceAdmission(
             evidence, state, failure, reason,
@@ -39,4 +44,4 @@ class ValidatedWorkCustody:
         )
         # Capture returns original observations when a prior rename survived a crash.
         durable = self._escrow.capture(proposed, sources)
-        return self._store.admit(durable)
+        return self._store.admit(durable, carried=carried)

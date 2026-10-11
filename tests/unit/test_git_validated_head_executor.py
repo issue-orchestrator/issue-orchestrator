@@ -131,7 +131,7 @@ def setup(tmp_path, monkeypatch):
         rig.root,
         None,
         "main",
-        PublicationContent("#1: Feature", "Closes #1\n\nImplementation details", True, False),
+        PublicationContent("#1: Feature", "Closes #1\n\nImplementation details", True, False, False),
     )
     return rig, remote, executor, command
 
@@ -520,7 +520,7 @@ def test_partial_publication_refuses_a_pr_that_closes_its_issue(setup, existing_
     _, remote, executor, command = setup
     partial = replace(
         command,
-        content=PublicationContent("#1: Feature", "Refs #1\n\nOne slice", True, True),
+        content=PublicationContent("#1: Feature", "Refs #1\n\nOne slice", True, True, False),
     )
     remote.add_pr(
         partial,
@@ -544,7 +544,7 @@ def test_the_typed_partial_claim_decides_not_the_rendered_body(setup):
     _, remote, executor, command = setup
     claimed = replace(
         command,
-        content=PublicationContent("#1: Feature", "Closes #1\n\nText", True, True),
+        content=PublicationContent("#1: Feature", "Closes #1\n\nText", True, True, False),
     )
     remote.add_pr(
         claimed,
@@ -559,7 +559,44 @@ def test_the_typed_partial_claim_decides_not_the_rendered_body(setup):
 
 def test_publication_content_refuses_an_untyped_partial_claim():
     with pytest.raises(ValueError, match="typed partial claim"):
-        PublicationContent("#1: Feature", "Refs #1", True, "yes")  # type: ignore[arg-type]
+        PublicationContent("#1: Feature", "Refs #1", True, "yes", False)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("partial", "finishes", "message"),
+    [(False, "yes", "typed finishing claim"), (True, True, "cannot both continue and finish")],
+)
+def test_publication_content_refuses_an_invalid_finishing_claim(partial, finishes, message):
+    with pytest.raises(ValueError, match=message):
+        PublicationContent("#1: Feature", "Closes #1", True, partial, finishes)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("existing_line", "refused"),
+    [("Refs #1", True), ("Closes #1", False)],
+)
+def test_finishing_publication_refuses_a_pr_that_only_refs_its_issue(setup, existing_line, refused):
+    """#8689 codex r2: a recovery publication that declares it finishes #1
+    must not adopt a PR that only refs #1. Reuse keeps that body, so merging
+    it would leave the finished issue open."""
+    _, remote, executor, command = setup
+    finishing = replace(
+        command,
+        content=PublicationContent("#1: Feature", "Closes #1\n\nLast slice", True, False, True),
+    )
+    remote.add_pr(
+        finishing,
+        body=f"{existing_line}\n\n{publication_marker(finishing.issue_number, finishing.branch_name)}",
+    )
+
+    outcome = executor.publish_or_reconcile(finishing)
+
+    if refused:
+        assert outcome.status is PublishValidatedHeadStatus.REJECTED
+        assert outcome.failure is ValidatedWorkFailure.PR_ISSUE_REFERENCE_MISMATCH
+    else:
+        assert outcome.status is PublishValidatedHeadStatus.PUBLISHED
+    assert remote.created == 0
 
 
 @pytest.mark.parametrize(

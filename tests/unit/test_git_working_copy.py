@@ -301,55 +301,49 @@ class TestListDirtyFiles:
 
             assert files is None
 
-    def test_list_dirty_files_all_mode_filters_untracked_planted(
+    def test_list_dirty_files_all_mode_reports_untracked_io_source(
         self, git_wc, worktree_path
     ):
-        """Untracked orchestrator-planted paths are filtered in all-mode.
+        """An untracked file under io's own ``cli_tools/`` is dirty.
 
-        ``sync_cli_tools`` copies cli_tools into every worktree. In a foreign
-        target repo they appear here as untracked and must not fire the
-        dirty-tree guard — otherwise coding-done fails in every worktree.
+        io plants nothing in a worktree (#7566), so in io's own repo such a
+        file is an agent's new module and must block publication until it
+        is committed.
         """
-        planted = "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py"
+        new_tool = "src/issue_orchestrator/entrypoints/cli_tools/new_tool.py"
         with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="", stderr=""),
                 MagicMock(returncode=0, stdout="", stderr=""),
                 MagicMock(
                     returncode=0,
-                    stdout=f"new-real-file.txt\0{planted}\0",
+                    stdout=f"new-real-file.txt\0{new_tool}\0",
                     stderr="",
                 ),
             ]
 
             files = git_wc.list_dirty_files(worktree_path, "all")
 
-            assert files == ["new-real-file.txt"]
+            assert files == ["new-real-file.txt", new_tool]
 
-    def test_list_dirty_files_tracked_mode_keeps_planted_modifications(
+    def test_list_dirty_files_tracked_mode_reports_io_source_modifications(
         self, git_wc, worktree_path
     ):
-        """Tracked modifications to planted paths survive the filter.
-
-        In the orchestrator's own repo these paths are tracked source —
-        a developer edit is legitimate and must still fire the guard. The
-        filter applies only to the untracked-enumeration branch, which is
-        never consulted in tracked-mode.
-        """
-        planted = "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py"
+        """In io's own repo, an edit to tracked cli_tools source is dirty."""
+        edited = "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py"
         with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.side_effect = [
-                MagicMock(returncode=0, stdout=f"{planted}\0", stderr=""),
+                MagicMock(returncode=0, stdout=f"{edited}\0", stderr=""),
                 MagicMock(returncode=0, stdout="", stderr=""),
             ]
 
             files = git_wc.list_dirty_files(worktree_path, "tracked")
 
-            assert files == [planted]
+            assert files == [edited]
 
 
-class TestGetCommitsAheadOfMain:
-    """Tests for get_commits_ahead_of_main method."""
+class TestGetCommitsAheadOfBase:
+    """Tests for get_commits_ahead_of (against the worktree's base, #8144)."""
 
     def test_get_commits_ahead_of_main_success(self, git_wc, worktree_path):
         """Test getting commits ahead of main."""
@@ -363,8 +357,9 @@ class TestGetCommitsAheadOfMain:
                 stderr="",
             )
 
-            commits = git_wc.get_commits_ahead_of_main(worktree_path)
+            commits = git_wc.get_commits_ahead_of(worktree_path, "integration")
 
+            assert "origin/integration..HEAD" in mock_run.call_args.args[1]
             assert len(commits) == 2
             assert commits[0].sha == "abc123"
             assert commits[0].message == "Add feature X"
@@ -384,7 +379,7 @@ class TestGetCommitsAheadOfMain:
                 stderr="",
             )
 
-            commits = git_wc.get_commits_ahead_of_main(worktree_path)
+            commits = git_wc.get_commits_ahead_of(worktree_path, "integration")
 
             assert commits == []
 
@@ -395,7 +390,7 @@ class TestGetCommitsAheadOfMain:
                 1, "git", stderr="error"
             )
 
-            commits = git_wc.get_commits_ahead_of_main(worktree_path)
+            commits = git_wc.get_commits_ahead_of(worktree_path, "integration")
 
             assert commits == []
 
@@ -412,7 +407,7 @@ class TestGetCommitsAheadOfMain:
                 stderr="",
             )
 
-            commits = git_wc.get_commits_ahead_of_main(worktree_path)
+            commits = git_wc.get_commits_ahead_of(worktree_path, "integration")
 
             # Should skip malformed line
             assert len(commits) == 2
@@ -1625,6 +1620,27 @@ class TestBranchPostImagePathsAgainstBase:
         assert "to_rename.txt" not in paths
         # A pure deletion leaves nothing in the branch tip, so it is excluded.
         assert "to_delete.txt" not in paths
+
+    def test_touched_paths_include_deletions_and_both_sides_of_a_rename(self, tmp_path):
+        """#8141: the review rule must see a ruled file deleted or renamed away."""
+        root = tmp_path / "repo"
+        self._init_repo(root)
+        (root / "ruled.txt").write_text("hello\n")
+        (root / "retired.txt").write_text("bye\n")
+        _run_git_cmd(root, "add", "-A")
+        _run_git_cmd(root, "commit", "-q", "-m", "base")
+        base = _run_git_cmd(root, "rev-parse", "HEAD")
+        _run_git_cmd(root, "checkout", "-q", "-b", "feature")
+        os.replace(root / "ruled.txt", root / "moved.txt")
+        (root / "retired.txt").unlink()
+        (root / "added.txt").write_text("")
+        _run_git_cmd(root, "add", "-A")
+        _run_git_cmd(root, "commit", "-q", "-m", "feature")
+
+        result = GitWorkingCopy().branch_touched_paths_against_base(root, base)
+
+        assert result.success
+        assert set(result.paths) == {"ruled.txt", "moved.txt", "retired.txt", "added.txt"}
 
     def test_uses_path_oriented_command_and_parses_nul_output(
         self, git_wc, worktree_path

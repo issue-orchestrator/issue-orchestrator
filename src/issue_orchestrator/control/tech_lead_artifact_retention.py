@@ -93,6 +93,8 @@ _DISCOVERED_FACT_ATTRS: tuple[str, ...] = (
     "discovered_awaiting_merge_drifts",
     "discovered_awaiting_merge_escalations",
     "discovered_merge_queue_enqueues",
+    "discovered_ci_reruns",
+    "discovered_integration_steps",
     "discovered_reworks",
     "discovered_escalations",
     "discovered_failures",

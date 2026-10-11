@@ -39,6 +39,7 @@ from ..adapters.human_block_gate import FileHumanBlockMutationGate
 from ..domain.issue_disposition_gate import IssueDispositionGateStatus
 from pathlib import Path
 from typing import Iterator
+from collections.abc import Sequence
 
 from ..domain.pending_work import PendingWorkClaim, PendingWorkKind
 from ..domain.session_run import SessionRunAssets
@@ -48,11 +49,17 @@ from ..ports.pending_work_claim_store import (
     ClaimLookup,
     ClaimState,
     ConflictingPendingWorkClaimError,
+    GenerationBinding,
+    NeedsHumanCauseRow,
     QuarantineCause,
     QuarantineLabelState,
     QuarantineRecord,
     UnreadableClaim,
     UnresolvedClaim,
+)
+from .needs_human_generation import (
+    bind_generation, end_generation as _end_generation,
+    open_generation as _open_generation, read_episodes,
 )
 from .pending_work_codec import (
     PendingWorkClaimDecodeError,
@@ -100,6 +107,12 @@ def _issue_number_of(claim: PendingWorkClaim) -> int:
     if resolver is not None:
         return int(resolver() or 0)
     return int(getattr(request, "issue_number", 0))
+
+
+#: The tables a cold reader (``io engine-audit``, #7490) needs to find in a
+#: copy of this store's database before opening the store on it: opening
+#: creates missing tables, which would read a damaged file as an empty one.
+AUDIT_TABLES = ("pending_work_claim", "pending_work_claim_quarantine")
 
 
 class SqlitePendingWorkClaimStore:
@@ -535,19 +548,18 @@ class SqlitePendingWorkClaimStore:
     ) -> None:
         """Replace every cause with this one, in a single transaction."""
         with self._write_lock, self._transaction() as conn:
-            conn.execute(
-                "DELETE FROM needs_human_cause WHERE issue_number = ?",
-                (issue_number,),
-            )
-            conn.execute(
-                "DELETE FROM needs_human_removal_intent WHERE issue_number = ?",
-                (issue_number,),
-            )
+            _end_generation(conn, issue_number)
             conn.execute(
                 "INSERT INTO needs_human_cause (issue_number, cause, reason) "
                 "VALUES (?, ?, ?)",
                 (issue_number, cause, reason),
             )
+            _open_generation(conn, issue_number)
+
+    def open_needs_human_generation(self, issue_number: int) -> None:
+        with self._write_lock, self._transaction() as conn:
+            _end_generation(conn, issue_number)
+            _open_generation(conn, issue_number)
 
     def needs_human_causes(self, issue_number: int) -> frozenset[str]:
         return frozenset(
@@ -555,6 +567,15 @@ class SqlitePendingWorkClaimStore:
             for row in self._get_connection().execute(
                 "SELECT cause FROM needs_human_cause WHERE issue_number = ?",
                 (issue_number,),
+            )
+        )
+
+    def needs_human_cause_targets(self) -> frozenset[int]:
+        return frozenset(
+            int(row["issue_number"])
+            for row in self._get_connection().execute(
+                "SELECT issue_number FROM needs_human_cause "
+                "UNION SELECT issue_number FROM needs_human_generation"
             )
         )
 
@@ -568,13 +589,26 @@ class SqlitePendingWorkClaimStore:
 
     def clear_needs_human_causes(self, issue_number: int) -> None:
         with self._write_lock, self._transaction() as conn:
-            conn.execute(
-                "DELETE FROM needs_human_cause WHERE issue_number = ?",
-                (issue_number,),
-            )
-            conn.execute(
-                "DELETE FROM needs_human_removal_intent WHERE issue_number = ?",
-                (issue_number,),
+            _end_generation(conn, issue_number)
+
+    def needs_human_episodes(self, issue_numbers: Sequence[int]) -> dict[int, str]:
+        return read_episodes(self._get_connection(), issue_numbers)
+
+    def bind_needs_human_episode(
+        self, issue_number: int, *, event_id: int, applied_at: str
+    ) -> str:
+        self.bind_needs_human_generation(
+            issue_number, event_id=event_id, applied_at=applied_at, own_write=False
+        )
+        return self.needs_human_episodes([issue_number])[issue_number]
+
+    def bind_needs_human_generation(
+        self, issue_number: int, *, event_id: int, applied_at: str, own_write: bool
+    ) -> GenerationBinding:
+        with self._write_lock, self._transaction() as conn:
+            return bind_generation(
+                conn, issue_number, event_id=event_id, applied_at=applied_at,
+                own_write=own_write,
             )
 
     # -- quarantine --------------------------------------------------------
@@ -672,6 +706,21 @@ class SqlitePendingWorkClaimStore:
             )
         )
 
+    def list_needs_human_causes(self) -> tuple[NeedsHumanCauseRow, ...]:
+        """Every recorded cause of the shared needs-human block, as stored
+        (the improver's blocked-items input, #7490): read only."""
+        return tuple(
+            NeedsHumanCauseRow(
+                issue_number=int(row["issue_number"]),
+                cause=str(row["cause"]),
+                reason=str(row["reason"]),
+            )
+            for row in self._get_connection().execute(
+                "SELECT issue_number, cause, reason FROM needs_human_cause "
+                "ORDER BY issue_number, cause"
+            )
+        )
+
     def quarantined_issue_numbers(self) -> frozenset[int]:
         """Issues held open by a quarantine whose cause is still present.
 
@@ -738,3 +787,4 @@ __all__ = [
     "PendingWorkClaimMigrationError",
     "SqlitePendingWorkClaimStore",
 ]
+

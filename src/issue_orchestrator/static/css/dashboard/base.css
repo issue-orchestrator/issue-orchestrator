@@ -1051,3 +1051,29 @@ html[data-embedded="true"] .embedded-sep {
     color: var(--text-muted);
     font-size: 11px;
 }
+
+/* "N waiting on you" (#7763): embedded-only, opens the Control Center's Tech
+   lead page. The count is text; the border only reinforces a non-zero count. */
+.tech-lead-waiting-badge {
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.tech-lead-waiting-badge[data-waiting]:not([data-waiting="0"]) {
+    border-color: var(--warning, #d29922);
+}
+.tech-lead-waiting-badge:focus-visible,
+.custody-open-tech-lead:focus-visible {
+    outline: 2px solid var(--accent, #58a6ff);
+    outline-offset: 2px;
+}
+/* The custody drawer's link into the Tech lead page needs the Control Center. */
+html:not([data-embedded="true"]) .custody-open-tech-lead {
+    display: none;
+}

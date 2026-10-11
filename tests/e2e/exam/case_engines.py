@@ -19,7 +19,7 @@ from typing import Any, Mapping
 from issue_orchestrator.infra.config import Config
 
 from tests.e2e.exam.agents import CODER_LABEL
-from tests.e2e.exam.engine import ExamEngine, exam_config
+from tests.e2e.exam.engine import ExamEngine, RulingAgents, exam_config
 from tests.e2e.exam.engine_checkout import EngineCheckout
 from tests.e2e.exam.seeding import E2E_DATA_LABEL
 
@@ -57,6 +57,23 @@ class CaseEngine:
     tech_lead: bool = False
     release_file: Path | None = None
     """Hold work mid-flight until this file exists (``exam_config``)."""
+    asking_coders: bool = False
+    """Add the coders that end by asking the operator (``exam_config``)."""
+    reviewer_changes_once: Path | None = None
+    """The first post-publish review requests changes (``exam_config``)."""
+    resolution_coders: bool = False
+    """Add the coders that plant Cases F/G's needs-human blocks (``exam_config``)."""
+    ruling_agents: RulingAgents | None = None
+    """Case I's ruled coder, held reviewer and answerable coder (``exam_config``)."""
+    deciding_coder: bool = False
+    """Case J's coder that asks porchpin#459's question (``exam_config``)."""
+    integration_coders: bool = False
+    """Case K's coder that writes a file of its own issue (``exam_config``)."""
+    worktree_reuse: bool = False
+    """Let the engine reuse worktrees. The e2e default (reuse disabled) makes
+    a batch/health tech lead's anchor launch refuse itself: its branch is
+    marked for preservation, and the global fresh-worktree switch would
+    recreate it."""
 
     def config(
         self,
@@ -77,10 +94,17 @@ class CaseEngine:
             reviewer_exchange_fault=self.reviewer_exchange_fault,
             tech_lead_model=tech_lead_model,
             release_file=self.release_file,
+            asking_coders=self.asking_coders,
+            reviewer_changes_once=self.reviewer_changes_once,
+            resolution_coders=self.resolution_coders,
+            ruling_agents=self.ruling_agents,
+            deciding_coder=self.deciding_coder,
+            integration_coders=self.integration_coders,
         )
 
     def engine(self, config: Config, checkout: EngineCheckout) -> ExamEngine:
-        return ExamEngine(config, checkout, overlay=self.overlay)
+        env = {"ORCHESTRATOR_DISABLE_WORKTREE_REUSE": "0"} if self.worktree_reuse else None
+        return ExamEngine(config, checkout, overlay=self.overlay, env=env)
 
 
 def case_a_engine() -> CaseEngine:
@@ -143,4 +167,160 @@ def case_u_engine(release_file: Path) -> CaseEngine:
         reviewer_exchange_fault="none",
         overlay={"review": {"exchange": {"mode": "via-draft-pr"}}},
         release_file=release_file,
+    )
+
+
+def case_d_engine(authority: Mapping[str, str] = EXAM_TECH_LEAD_AUTHORITY) -> CaseEngine:
+    """A real tech lead reached through the periodic health review, the only
+    run granted blocked items to triage (#7593), with production authority.
+
+    The stuck sweep is off: it would re-investigate the questions as stuck
+    failures, and its exhaustion escalation is a different item than the one
+    porchpin's tech lead left untriaged. Reviews run as their own sessions
+    after publication (``via-draft-pr``), as porchpin#379's did.
+    """
+    return CaseEngine(
+        reviewer_exchange_fault="none",
+        tech_lead=True,
+        asking_coders=True,
+        worktree_reuse=True,  # the health review's anchor keeps its branch
+        overlay={
+            "review": {
+                "exchange": {"mode": "via-draft-pr"},
+                "tech_lead_follow_up_agent": CODER_LABEL,
+            },
+            "tech_lead": {
+                "max_concurrent": 1,
+                "explicit_labels": [E2E_DATA_LABEL],
+                "inherit_labels": [E2E_DATA_LABEL],
+                "authority": dict(authority),
+                "findings": {"promote": "off"},
+                "health_review": {"interval_minutes": 2},
+                "stuck_sweep": {"enabled": False},
+            },
+        },
+    )
+
+
+def case_h_engine() -> CaseEngine:
+    """Approval labels on planted proposals (#7763): the tech lead is ENABLED
+    (approval verification is tech-lead work) but no trigger ever runs it —
+    no batch threshold, no health review, no stuck sweep, no promotion — so
+    its model is configured and never spent. The coder works whatever a
+    verified approval admits."""
+    return CaseEngine(
+        reviewer_exchange_fault="none",
+        tech_lead=True,
+        overlay={
+            "review": {"tech_lead_follow_up_agent": CODER_LABEL},
+            "tech_lead": {
+                "max_concurrent": 1,
+                "authority": dict(EXAM_TECH_LEAD_AUTHORITY),
+                "findings": {"promote": "off"},
+                "health_review": {"interval_minutes": 0},
+                "stuck_sweep": {"enabled": False},
+            },
+        },
+    )
+
+
+def case_e_engine(changes_once: Path) -> CaseEngine:
+    """Two people-decisions, typed (#7678): a pre-work question on an issue,
+    and a decision before a published PR merges. No tech lead: the engine
+    alone must keep the first item's work held and let the second PR's review
+    and rework run. The first review requests changes (``changes_once``), so
+    the PR goes through one rework under its merge hold.
+    """
+    return CaseEngine(
+        reviewer_exchange_fault="none",
+        asking_coders=True,
+        reviewer_changes_once=changes_once,
+        overlay={
+            "review": {
+                "exchange": {"mode": "via-draft-pr"},
+                "tech_lead_follow_up_agent": CODER_LABEL,
+            },
+        },
+    )
+
+
+def case_resolution_engine(*, resolve_block: str) -> CaseEngine:
+    """Cases F (``resolve_block: execute``) and G (``propose``, the default) (#7658).
+
+    The Case D engine (health reviews grant blocked items to triage; the stuck
+    sweep is off, so the only tech-lead run on each item is the triage) with
+    the coders that plant porchpin's four needs-human blocks. Only the
+    ``resolve_block`` dial differs between the two cases: that dial alone is
+    what an operator changes to hand the tech lead these decisions.
+    """
+    base = case_d_engine({**EXAM_TECH_LEAD_AUTHORITY, "resolve_block": resolve_block})
+    return CaseEngine(
+        reviewer_exchange_fault=base.reviewer_exchange_fault,
+        tech_lead=True,
+        resolution_coders=True,
+        worktree_reuse=True,
+        # The give-up coder's exit must land as the engine giving up
+        # (needs-human, session_lifecycle) at once, as porchpin#326's did. With
+        # the interrupted-coding auto-retry on, the first run put the retry
+        # guard label on and the item was never relaunched in 38 minutes.
+        overlay={**base.overlay, "retry": {"interrupted_sessions": {"retry_coding": False}}},
+    )
+
+
+def case_i_engine(agents: RulingAgents) -> CaseEngine:
+    """Case I (#8141): a standing ruling must bind a conflict rework and its review.
+
+    The Case F engine (health reviews triage blocked items, ``resolve_block:
+    execute``, so an approved answer is applied at once) with Case I's agents:
+    the ruled item's coder captures its prompts, its reviewer holds until the
+    ruling is recorded and then approves whatever it sees, and the answerable
+    coder asks a question its issue's spec answers. Reviews run after
+    publication (``via-draft-pr``), as porchpin#379's did.
+    """
+    base = case_resolution_engine(resolve_block="execute")
+    return CaseEngine(
+        reviewer_exchange_fault=base.reviewer_exchange_fault,
+        tech_lead=True,
+        worktree_reuse=True,
+        ruling_agents=agents,
+        overlay=base.overlay,
+    )
+
+
+def case_j_engine() -> CaseEngine:
+    """Case J (#8691): the Case D engine (health reviews triage blocked items
+    with production authority; a decision always waits for the operator) with
+    the coder that asks porchpin#459's question until a decision is posted."""
+    base = case_d_engine()
+    return CaseEngine(
+        reviewer_exchange_fault=base.reviewer_exchange_fault,
+        tech_lead=True,
+        deciding_coder=True,
+        worktree_reuse=True,
+        overlay=base.overlay,
+    )
+
+
+def integration_branch_name(run_id: str) -> str:
+    """Case K's integration branch: one per run, so runs never share it."""
+    return f"exam-integration-{run_id}"
+
+
+def case_k_engine(branch: str) -> CaseEngine:
+    """Case K (#8144): integration mode on a branch io creates itself.
+
+    ``merge_after: tech-lead-reviewed`` lets the harness release all three
+    approved PRs at once (it labels them, as a batch tech-lead review would),
+    so io's one-merge-per-pass, oldest-first rule deterministically leaves the
+    last-created item's PR behind the first merge. Reviews run after
+    publication (``via-draft-pr``): the scripted reviewer answers only
+    post-publish reviews.
+    """
+    return CaseEngine(
+        reviewer_exchange_fault="none",
+        integration_coders=True,
+        overlay={
+            "review": {"exchange": {"mode": "via-draft-pr"}},
+            "integration": {"enabled": True, "branch": branch, "merge_after": "tech-lead-reviewed"},
+        },
     )

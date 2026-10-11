@@ -40,6 +40,13 @@ def get_issue_labels(repo: str, issue_number: int) -> list[str]:
     return _github_adapter(repo).get_issue_labels(issue_number)
 
 
+def get_issue_labels_fresh(repo: str, issue_number: int) -> list[str]:
+    """Labels on an issue as GitHub has them now (the label cache bypassed)."""
+    adapter = _github_adapter(repo)
+    adapter.invalidate_label_cache(issue_number)
+    return adapter.get_issue_labels(issue_number)
+
+
 def get_pr_uncached(repo: str, pr_number: int) -> dict:
     """Fetch a PR bypassing the HTTP cache (boundary verification)."""
     adapter = _github_adapter(repo)

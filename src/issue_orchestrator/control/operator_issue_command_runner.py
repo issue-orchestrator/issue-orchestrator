@@ -105,6 +105,24 @@ class OperatorIssueCommandRunner:
             lambda settled: self._remove_from_board(issue_number),
         ))
 
+    def requeue_resolved(self, issue_number: int) -> tuple[str, ...]:
+        """Retry's local half for an issue whose block another owner settled.
+
+        A tech lead's resolution discharges only the needs-human causes it
+        decided (#7658), so it never runs retry's label sweep. What it still
+        needs is retry's LOCAL commit - the history gates and the cached copy
+        - or the planner never looks at the issue again until a restart. The
+        cached copy takes the FRESH labels, so a block another owner reconciles
+        (a stale ``blocked-cross-milestone``) is seen and settled by it, while
+        the scheduler still refuses the issue for as long as it carries one.
+        """
+        def settle() -> tuple[str, ...]:
+            observed = tuple(self.fresh_labels.read_issue_labels(issue_number))
+            self._make_retryable(issue_number, observed, OperatorUnblockOutcome())
+            return tuple(self.unblocker.labels.get_blocking(list(observed)))
+
+        return self.run_locked(settle)
+
     # -- internals ---------------------------------------------------------
 
     def _settle(

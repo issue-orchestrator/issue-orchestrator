@@ -36,6 +36,68 @@ function getRecoveryView() {
     return recoveryView;
 }
 
+// ============================================
+// Tech lead page (#7763): one cross-repo view model, a badge on every view
+// ============================================
+let techLeadView = null;
+let techLeadLandingDecided = false;
+const TECH_LEAD_REFRESH_MS = 30000;
+
+function getTechLeadView() {
+    if (techLeadView === null && typeof createControlCenterTechLeadView === 'function') {
+        techLeadView = createControlCenterTechLeadView({
+            fetch: (...args) => fetch(...args),
+            contractJson: window.uiContractJson,
+            notify: showToast,
+            confirm: (message) => window.confirm(message),
+            onBadgeChange: () => updateTechLeadBadges(),
+        });
+        techLeadView.bind(document.getElementById('techLeadView'));
+    }
+    return techLeadView;
+}
+
+function updateTechLeadBadges() {
+    const state = getTechLeadView()?.badgeState();
+    if (!state) return;  // nothing read yet: the badges keep "Checking…"
+    const { count, text } = state;
+    document.getElementById('techLeadNavCount').textContent = text;
+    const badge = document.getElementById('techLeadHeaderBadge');
+    badge.textContent = text;
+    badge.dataset.waiting = String(count);
+    // The embedded repo dashboard hides this header; it shows the same count.
+    const iframe = document.getElementById('activityIframe');
+    try {
+        iframe?.contentWindow?.postMessage({ type: 'cc-tech-lead-waiting', count, text }, '*');
+    } catch (e) { /* cross-origin, ignore */ }
+}
+
+async function refreshTechLead() {
+    const view = getTechLeadView();
+    if (!view) return null;
+    // The view owns success vs "unable to check" (#7763 review r17 F2) and
+    // tells updateTechLeadBadges after every refresh: never a stale all-clear.
+    return view.refresh();
+}
+
+async function openTechLead(repository = null, number = null) {
+    switchView('techLead');
+    await refreshTechLead();
+    if (repository && number) getTechLeadView()?.focusEntry(repository, number);
+}
+
+async function initTechLead() {
+    const params = new URLSearchParams(window.location.search);
+    const payload = await refreshTechLead();
+    if (techLeadLandingDecided) return;
+    techLeadLandingDecided = true;
+    // Pending items are front and centre: land on the page when anything
+    // waits, unless a deep link asked for something else.
+    if (params.get('view') === 'techLead' || (!params.get('repo') && payload?.waiting_count > 0)) {
+        switchView('techLead');
+    }
+}
+
 function focusRecoveryEngineControls(repoKey) {
     const card = [...document.querySelectorAll('.repo-card[data-repo-key]')]
         .find(candidate => candidate.dataset.repoKey === repoKey);
@@ -654,6 +716,7 @@ function switchView(viewName, repoPath = null) {
 
     // Update header title
     const titles = {
+        techLead: 'Tech lead',
         repositories: 'Repository Engines',
         activity: 'Repository Engine',
         tools: 'Tools',
@@ -670,6 +733,9 @@ function switchView(viewName, repoPath = null) {
     if (viewName === 'goalPilot') {
         goalPilotConfig();
         goalPilotLoadRuns();
+    }
+    if (viewName === 'techLead') {
+        refreshTechLead();
     }
 }
 
@@ -731,12 +797,29 @@ setInterval(() => {
     }
 }, 5000);
 
+function handleTechLeadFrameMessage(message) {
+    if (message === null) return;  // refused; already reported
+    if (message.type === 'cc-open-tech-lead') {
+        openTechLead(message.repository ?? null, message.number ?? null);
+    } else if (message.type === 'cc-tech-lead-waiting-request') {
+        updateTechLeadBadges();
+    }
+}
+
 // Listen for messages from embedded dashboard iframe
 window.addEventListener('message', (event) => {
     if (!event.data?.type) return;
     // Dashboard requests navigation back to repositories
     if (event.data.type === 'cc-back-to-repos') {
         switchView('repositories');
+        return;
+    }
+    // The repo dashboard's badge and its blocked-item drawer open the page:
+    // read through the generated contract, then dispatch on the VALIDATED type.
+    const techLeadMessage = getTechLeadView()?.readFrameMessage(
+        event, document.getElementById('activityIframe')?.contentWindow);
+    if (techLeadMessage !== undefined) {
+        handleTechLeadFrameMessage(techLeadMessage);
         return;
     }
     if (event.data.type !== 'dashboard-status') return;
@@ -1833,7 +1916,9 @@ async function pauseRepo(path) {
             body: JSON.stringify({ repo_root: path })
         });
         if (!response.ok) {
-            throw new Error('Failed to pause repository engine');
+            // The Control Center says why the engine did not pause (#8222).
+            const cause = await window.uiContractJson.errorMessage(response);
+            throw new Error('Failed to pause repository engine: ' + cause);
         }
         showToast('Repository engine paused', 'success');
         await loadRepos();
@@ -1850,7 +1935,9 @@ async function resumeRepo(path) {
             body: JSON.stringify({ repo_root: path })
         });
         if (!response.ok) {
-            throw new Error('Failed to resume repository engine');
+            // The Control Center says why the engine did not resume (#8222).
+            const cause = await window.uiContractJson.errorMessage(response);
+            throw new Error('Failed to resume repository engine: ' + cause);
         }
         showToast('Repository engine resumed', 'success');
         await loadRepos();
@@ -2630,17 +2717,44 @@ function setupShutdownHudDraggable() {
 // ============================================
 // Toasts
 // ============================================
+function dismissToast(toast) {
+    toast.style.opacity = '0';
+    setTimeout(() => toast.remove(), 300);
+}
+
+// Errors and warnings carry a cause the operator may need to read, copy or
+// hear in full — an engine's refusal, a timeout explanation (#8222) — so they
+// stay until dismissed. The message is height-bounded and keyboard-scrollable
+// so a long cause never runs off a small screen. Info/success auto-dismiss.
 function showToast(message, type = 'info') {
     const container = document.getElementById('toastContainer');
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
-    toast.textContent = message;
-    container.appendChild(toast);
+    const text = document.createElement('div');
+    text.className = 'toast-message';
+    text.textContent = message;
+    toast.appendChild(text);
+    const sticky = type === 'error' || type === 'warning';
+    if (sticky) {
+        toast.classList.add('sticky');
+        text.tabIndex = 0;
+        text.setAttribute('role', 'note');
+        text.setAttribute('aria-label', type === 'error' ? 'Error details' : 'Warning details');
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'toast-close';
+        close.setAttribute('aria-label', 'Dismiss notification');
+        close.textContent = '×';
+        close.addEventListener('click', () => dismissToast(toast));
+        toast.appendChild(close);
+    }
+    // Newest first: sticky errors accumulate, and the latest one (with its
+    // dismiss control) must land in view at the top of the bounded stack.
+    container.prepend(toast);
 
-    setTimeout(() => {
-        toast.style.opacity = '0';
-        setTimeout(() => toast.remove(), 300);
-    }, 4000);
+    if (!sticky) {
+        setTimeout(() => dismissToast(toast), 4000);
+    }
 }
 
 // ============================================
@@ -2830,6 +2944,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // Load repos
     loadRepos();
     loadSystemState();
+    initTechLead();
+    setInterval(refreshTechLead, TECH_LEAD_REFRESH_MS);
+    document.getElementById('techLeadHeaderBadge').addEventListener('click', (event) => {
+        event.preventDefault();
+        openTechLead();
+    });
 
     // Navigation
     document.querySelectorAll('.nav-item[data-view]').forEach(item => {

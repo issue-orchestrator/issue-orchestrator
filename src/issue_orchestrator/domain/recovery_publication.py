@@ -16,6 +16,9 @@ class PreparedRecoveryPublication:
     completion: PreparedCompletionEvidence
     processing_policy: CompletionProcessingPolicy
     review_disposition: ReviewDisposition
+    #: The agent asked a person to decide before the PR merges (#7678): the
+    #: hold goes on the published PR before the publication is resolved.
+    merge_hold_requested: bool = False
 
     def __post_init__(self) -> None:
         self.command.require_disposition_binding(self.workspace.record_id)
