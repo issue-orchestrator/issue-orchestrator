@@ -5,6 +5,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from functools import partial
 
+from ..domain.human_block import BlockOutcome
 from ..domain.models import OrchestratorState
 from ..domain.published_work_finalization import PublishedWorkFinalizationRequest, PublishedWorkTarget, FinalizationStatus
 from ..domain.recovery_attempt import RecoveryAttemptPending, target_from_verification
@@ -28,8 +29,10 @@ class RecoveryPublicationCompletion:
     def __init__(self, *, store: ValidatedWorkStore, effects: ValidatedWorkEffectAuthority,
                  finalizer: PublishedWorkFinalizer, verifier: PublicationVerifier,
                  cleanup: RecoveryPublicationCleanup, recovery_label: str,
+                 hold_merge: Callable[[int], BlockOutcome],
                  clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> None:
         self._store, self._effects = store, effects
+        self._hold_merge = hold_merge
         self._finalizer, self._verifier = finalizer, verifier
         self._cleanup = cleanup
         self._recovery_label, self._clock = recovery_label, clock
@@ -51,6 +54,13 @@ class RecoveryPublicationCompletion:
         if confirmed != target:
             return RecoveryAttemptPending("Publication no longer matches the finalization target",
                                           observed.failure, rate_limit=observed.rate_limit)
+        if prepared.merge_hold_requested:
+            # Before the publication resolves, so a replay re-asserts it (#7678).
+            held = self._hold_merge(target.pr_number)
+            if not held.committed:
+                return RecoveryAttemptPending(
+                    f"PR #{target.pr_number}'s merge hold for a person did not commit"
+                    f" ({held.value}); recovery waits for it")
         request = PublishedWorkFinalizationRequest(
             state, token, claim, record.finalization_phase, target,
             RetryReviewRouting(target.key.branch_name, False,

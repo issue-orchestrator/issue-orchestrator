@@ -105,6 +105,20 @@ an existing PR keeps it. If the existing PR already says `Closes #N`, a
 `--partial` completion is refused rather than merged as a close, and a human
 has to change that PR's reference line.
 
+Once an earlier PR of the issue has merged with `Refs #N`, the orchestrator
+treats a completion without `--partial` as partial too, so a forgotten flag
+cannot close an issue with work still owed. The PR that finishes such an issue
+says so with `--finishes-issue` instead:
+```bash
+coding-done completed \
+  --implementation "What the last slice did" \
+  --problems "Any issues encountered, or 'None'" \
+  --finishes-issue
+```
+If your branch already has an open PR that says `Refs #N`, a `--finishes-issue`
+completion is refused rather than merged as a partial slice, and a human has
+to change that PR's reference line to `Closes #N`.
+
 If you discovered unrelated ancillary work while staying focused on the assigned issue, write those proposals to a JSON or JSONL file first, then add `--follow-up-file path` to the completed command above.
 Each entry should include `title` and `reason`, and may include `evidence`, `suggested_labels`, and `blocking`.
 
@@ -145,6 +159,7 @@ All statuses support:
 Completed status also supports:
 - `--follow-up-file path` - Structured proposals for ancillary follow-up issues discovered during the work
 - `--partial` - This PR delivers part of the issue; it references the issue instead of closing it
+- `--finishes-issue` - This PR finishes an issue that earlier PRs delivered in part; it closes the issue
 
 ## What happens after coding-done
 

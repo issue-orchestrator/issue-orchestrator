@@ -96,9 +96,10 @@ _REWORK_HEADERS: dict[PostApprovalAction, tuple[str, str, str]] = {
         "A required status check has FAILED or ERRORED on this PR's "
         "head commit. The reviewer already approved, but a CI/check "
         "regression is now blocking merge.",
-        "Open the PR's checks tab to identify the failing check, "
-        "reproduce locally, fix the underlying problem, and push "
-        "so the checks turn green.",
+        "Read the CI failure triage below (the engine reads the failed "
+        "jobs' logs for you; agents cannot read Actions logs) to identify "
+        "the failure, reproduce it locally, fix the underlying problem, "
+        "and push so the checks turn green.",
     ),
 }
 

@@ -245,14 +245,17 @@ def test_act_level_wiring_state_is_synchronized(variant: str) -> None:
     assert "never auto-executes" not in text, (
         f"{variant} still promises human gating for every kill"
     )
-    assert "`proposed-tech-lead`" in text, (
-        f"{variant} does not document the gated-proposal label"
+    assert "`tech-lead-proposal` and `awaiting-approval`" in text, (
+        f"{variant} does not document the gated-proposal labels"
     )
-    assert "removing that label" in text, (
-        f"{variant} does not document label removal as the approval gesture"
+    assert "approves one with the `approved` label" in text, (
+        f"{variant} does not document the positive `approved` label as the approval gesture"
     )
-    assert "Never propose or\n  touch the `proposed-tech-lead` label" in text, (
-        f"{variant} does not forbid the agent from touching the gate label"
+    assert "proposed-tech-lead" not in text, (
+        f"{variant} still documents the retired proposed-tech-lead gate"
+    )
+    assert "Never propose or\n  touch `tech-lead-proposal`, `awaiting-approval` or `approved`" in text, (
+        f"{variant} does not forbid the agent from touching the approval labels"
     )
     # The pre-#6778 shadow-only claim must be gone from every variant.
     assert "recorded as would-have-done until its" not in text, (
@@ -360,14 +363,17 @@ def test_generic_target_scope_rule_matches_the_two_scope_runtime_split(
     assert "and `kill_hung_session` may only\n  target the manifest PRs" not in (
         section
     ), f"{variant} generic rule still forbids the health review's cohort targets"
-    # The generic rule must name the health-review act-level authority.
-    assert "`problem_cohort` (health review)" in section, (
-        f"{variant} generic rule does not name problem_cohort act-level authority"
+    # The generic rule must name the health-review act-level authority: the
+    # cohort it owns plus the blocked items it was granted to triage (#7593).
+    assert "`problem_cohort` or in `blocked-item-triage.json` (health review)" in section, (
+        f"{variant} generic rule does not name the health review's act-level authority"
     )
-    # Anchor-scoped verbs stay anchor-scoped, including in a health review.
-    assert "THIS tracking issue (health review)" in section, (
-        f"{variant} generic rule does not keep post_comment anchor-scoped"
-    )
+    # Anchor-scoped verbs stay anchor-scoped in a health review, apart from the
+    # granted blocked items they may hand over or explain (#7593).
+    assert (
+        "THIS tracking issue and the blocked items in\n"
+        "    `tech-lead-data/blocked-item-triage.json` (health review)"
+    ) in section, f"{variant} generic rule does not keep post_comment anchor-scoped"
     # A batch review's act-level scope is empty at runtime (frozenset()), so
     # the prompt must not invite a manifest-PR/anchor reset (#6764 F1).
     assert "no act-level target at all" in section, (

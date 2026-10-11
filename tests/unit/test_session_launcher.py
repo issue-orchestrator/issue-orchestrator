@@ -10,7 +10,7 @@ These tests verify:
 Tests mock at port boundaries, not internal patches, following the hexagonal architecture.
 """
 
-from tests.unit.control.liveness_doubles import gated
+from tests.unit.control.liveness_doubles import gated, liveness_owner
 from issue_orchestrator.control.host_rate_limit_launch_gate import live_episode_keys
 from issue_orchestrator.domain.issue_run_evidence import ReworkTarget
 from issue_orchestrator.domain.tech_lead_scratch_identity import (
@@ -56,8 +56,8 @@ from issue_orchestrator.domain.repository_launch_selection import (
 from issue_orchestrator.control.provider_circuit_effects import (
     record_provider_resilience_effects,
 )
+from issue_orchestrator.control.completion_containment import CompletionContainment
 from issue_orchestrator.control.session_completion import (
-    _apply_completed_decisions,
     unprocessed_session_policy,
     _terminate_finished_session,
     handle_session_completion,
@@ -165,7 +165,9 @@ from issue_orchestrator.ports import (
     NullManifestDownloader,
     InMemoryProviderCircuitStore,
 )
-from issue_orchestrator.ports.coder_prompt import CoderPromptAddendumProvider
+from issue_orchestrator.ports.coder_prompt import CoderPromptAddendumProvider, NO_CODER_PROMPT_ADDENDUM
+from issue_orchestrator.control.launch_prompt import IssueLaunchPrompt
+from issue_orchestrator.ports.standing_rulings import NO_STANDING_RULINGS, StandingRulings
 from issue_orchestrator.domain.coder_prompt import (
     CoderPromptAddendumUnavailable,
     PreparedCoderPromptAddendum,
@@ -372,6 +374,7 @@ class MockWorktreeManager:
         return WorktreeInfo(
             path=worktree_path,
             branch_name=branch_name or f"{issue_number}-feature",
+            base_branch=base_branch or "main",
         )
 
     def remove_checkout(self, worktree_path: Path, *, force: bool = False) -> None:
@@ -403,7 +406,8 @@ class MockWorkingCopy:
         self.current_branch: str | None = "main"
         self.head_sha: str | None = None
 
-    def get_commits_ahead_of_main(self, worktree: Path) -> list[CommitInfo]:
+    def get_commits_ahead_of(self, worktree: Path, base_branch: str) -> list[CommitInfo]:
+        self.compared_against = base_branch
         return self.commits_ahead
 
     def get_current_branch(self, worktree: Path) -> str | None:
@@ -611,12 +615,17 @@ def _build_launcher_bundle(
     *,
     board_snapshot_provider: BoardSnapshotProvider | None = None,
     coder_prompt_addendum: CoderPromptAddendumProvider | None = None,
+    standing_rulings: StandingRulings | None = None,
     claim_manager: MagicMock | None = None,
     provider_resilience: ProviderResilienceManager | None = None,
     provider_readiness_probe: ProviderReadinessProbe | None = None,
     issue_run_ledger: IssueRunLedger | None = None,
     refresh_issue_fn: Callable[[int], Any] | None = None,
     recovery_holds: Any = None,
+    needs_human_block: Any = None,
+    blocked_item_triage: Any = None,
+    manifest_downloader: Any = None,
+    validated_work_recovery_authority: Any = None,
 ) -> LauncherTestBundle:
     """Create a SessionLauncher with mock dependencies and tracking.
 
@@ -677,14 +686,22 @@ def _build_launcher_bundle(
 
     mock_action_applier = MagicMock()
     launcher_kwargs = {}
-    if coder_prompt_addendum is not None:
-        launcher_kwargs["coder_prompt_addendum"] = coder_prompt_addendum
+    if coder_prompt_addendum is not None or standing_rulings is not None:
+        launcher_kwargs["launch_prompt"] = IssueLaunchPrompt(
+            coder_prompt_addendum or NO_CODER_PROMPT_ADDENDUM, standing_rulings or NO_STANDING_RULINGS,
+        )
     if provider_resilience is not None:
         launcher_kwargs["provider_resilience"] = provider_resilience
     if provider_readiness_probe is not None:
         launcher_kwargs["provider_readiness_probe"] = provider_readiness_probe
     if recovery_holds is not None:
         launcher_kwargs["recovery_holds"] = recovery_holds
+    if needs_human_block is not None:
+        launcher_kwargs["needs_human_block"] = needs_human_block
+    if blocked_item_triage is not None:
+        launcher_kwargs["blocked_item_triage"] = blocked_item_triage
+    if validated_work_recovery_authority is not None:
+        launcher_kwargs["validated_work_recovery_authority"] = validated_work_recovery_authority
     if issue_run_ledger is None:
         issue_run_ledger = SqliteIssueRunLedger(sample_config.repo_root / "state" / "runs.sqlite", repo_slug="test-owner/test-repo")
     launcher = make_session_launcher(
@@ -699,7 +716,7 @@ def _build_launcher_bundle(
         working_copy=mock_working_copy,
         command_runner=mock_command_runner,
         session_output=FileSystemSessionOutput(),
-        manifest_downloader=NullManifestDownloader(),
+        manifest_downloader=manifest_downloader or NullManifestDownloader(),
         tech_lead_authority=SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root),
         session_exists_fn=mock_session_exists,
         create_session_fn=mock_create_session,
@@ -841,7 +858,7 @@ class TestDetectExistingWork:
         working_copy = MockWorkingCopy()
         working_copy.commits_ahead = []
 
-        result = detect_existing_work(tmp_path, working_copy)
+        result = detect_existing_work(tmp_path, working_copy, base_branch="main")
 
         assert result is None
 
@@ -853,7 +870,7 @@ class TestDetectExistingWork:
         ]
         working_copy.head_sha = "abc123"
 
-        result = detect_existing_work(tmp_path, working_copy, seed_ref="abc123")
+        result = detect_existing_work(tmp_path, working_copy, base_branch="main", seed_ref="abc123")
 
         assert result is None
 
@@ -866,7 +883,7 @@ class TestDetectExistingWork:
         ]
         working_copy.current_branch = "123-feature"
 
-        result = detect_existing_work(tmp_path, working_copy)
+        result = detect_existing_work(tmp_path, working_copy, base_branch="main")
 
         assert result is not None
         assert "2 existing commit(s)" in result
@@ -882,7 +899,7 @@ class TestDetectExistingWork:
             for i in range(15)
         ]
 
-        result = detect_existing_work(tmp_path, working_copy)
+        result = detect_existing_work(tmp_path, working_copy, base_branch="main")
 
         assert result is not None
         assert "15 existing commit(s)" in result
@@ -891,9 +908,9 @@ class TestDetectExistingWork:
     def test_handles_exception_gracefully(self, tmp_path):
         """Verify handles exceptions and returns None (lines 91-93)."""
         working_copy = MagicMock()
-        working_copy.get_commits_ahead_of_main.side_effect = Exception("Git error")
+        working_copy.get_commits_ahead_of.side_effect = Exception("Git error")
 
-        result = detect_existing_work(tmp_path, working_copy)
+        result = detect_existing_work(tmp_path, working_copy, base_branch="main")
 
         assert result is None
 
@@ -965,6 +982,8 @@ class TestLaunchIssueSession:
 
         ledger = MagicMock(spec=IssueRunLedger)
         ledger.record_run.side_effect = IssueRunEvidenceUnavailable("ledger unavailable")
+        # The launch boundary reads the issue fresh (#7763); it exists on GitHub.
+        mock_repository_host.issues.append(sample_issue)
         bundle = _build_launcher_bundle(
             sample_config, mock_event_sink, mock_repository_host,
             mock_worktree_manager, mock_working_copy, mock_command_runner,
@@ -1672,6 +1691,22 @@ class TestLaunchIssueSession:
         assert any(part.endswith("__coding-1") for part in completion_parts)
         assert payload["completion_path_absolute"] == str((worktree_path / completion_path).resolve())
         SessionStartedPayload.model_validate(payload)
+
+    @pytest.mark.parametrize("held", [IssueState.NEEDS_HUMAN, IssueState.BLOCKED])
+    def test_relaunch_after_a_cleared_hold_puts_the_issue_back_in_progress(
+        self, launcher_bundle, sample_issue, held
+    ):
+        """A relaunch means a person cleared the hold, so the next hold is defined (#8693).
+
+        Left in the held state, the relaunched session's own needs_human or
+        block had no transition and raised in the completion pass.
+        """
+        launcher_bundle.issue_machines[123] = IssueStateMachine(sample_issue, initial_state=held)
+
+        result = launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is True
+        assert launcher_bundle.issue_machines[123].get_state() is IssueState.IN_PROGRESS
 
     def test_triggers_state_machine_transitions(self, launcher_bundle, sample_issue):
         """Verify state machine transitions are triggered."""
@@ -4358,7 +4393,7 @@ class TestLaunchTechLeadIssueSessionFlavors:
         assert run_manifest["tech_lead_charter"] == str(charter_path)
         charter = charter_path.read_text()
         assert "## flow (depth: restructure, authority: propose)" in charter
-        assert "- Proposes for operator approval: `kill_hung_session`, `recover_validated_work`, `release_withheld_review`, `create_issue`" in charter
+        assert "- Proposes for operator approval: `kill_hung_session`, `recover_validated_work`, `release_withheld_review`, `resolve_block`, `propose_decision`, `create_issue`" in charter
 
     def test_failure_investigation_skips_manifest_and_records_focus(
         self, launcher_bundle, mock_repo_host, mock_events, tmp_path
@@ -4676,6 +4711,125 @@ class TestLaunchTechLeadIssueSessionFlavors:
         assert snapshot.problem_issue_numbers() == frozenset({41, 42, 43}), (
             "the snapshot's cohort surface is the grant, not its failure list"
         )
+
+    def test_health_review_records_and_shows_the_cohorts_releasable_records(
+        self, sample_config, mock_events, mock_repo_host, mock_worktree_manager,
+        mock_working_copy, mock_command_runner, tmp_path,
+    ):
+        """#9092: every unresolved retained record of an act-level issue is a
+        launch grant a release may name: written once for the agent to read,
+        and recorded as the trusted copy approval binds."""
+        from issue_orchestrator.control.tech_lead_recovery_targets import (
+            VALIDATED_WORK_RELEASE_TARGETS_FILENAME,
+        )
+        from issue_orchestrator.domain.tech_lead_session import HEALTH_REVIEW_MARKER_LABEL
+        from issue_orchestrator.domain.validated_work import RemoteBaselineStatus, ValidatedWorkKey
+        from issue_orchestrator.domain.validated_work_commands import ValidatedWorkAuthoritySnapshot
+
+        def grant(issue_number: int, head: str) -> ValidatedWorkAuthoritySnapshot:
+            key = ValidatedWorkKey("test/repo", issue_number, f"{issue_number}-work", head)
+            return ValidatedWorkAuthoritySnapshot(
+                key.record_id, f"e-{head[:4]}", 0, head, key.branch_name, key.repo_slug,
+                issue_number, None, None, RemoteBaselineStatus.UNOBSERVED)
+
+        releasable = tuple(sorted((grant(42, "a" * 40), grant(42, "b" * 40)), key=lambda g: g.record_id))
+        asked: list[tuple[int, ...]] = []
+
+        class Authority:
+            def grants_for(self, issue_numbers):
+                return ()
+
+            def release_grants_for(self, issue_numbers):
+                asked.append(tuple(issue_numbers))
+                return releasable
+
+        bundle = _build_launcher_bundle(
+            sample_config, mock_events, mock_repo_host, mock_worktree_manager,
+            mock_working_copy, mock_command_runner, validated_work_recovery_authority=Authority(),
+        )
+        config = bundle.launcher.config
+        self.enable_tech_lead_agent(config, tmp_path)
+        issue = Issue(number=905, title="Health Review — problem storm",
+                      labels=["agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL], repo="test/repo")
+
+        result = bundle.launcher.launch_issue_session(
+            issue, active_sessions=[],
+            tech_lead_scope=TechLeadLaunchScope(
+                flavor=TechLeadSessionFlavor.HEALTH_REVIEW, problem_issue_numbers=(41, 42)),
+        )
+
+        assert result.success is True
+        assert asked == [(41, 42)]
+        run_dir = self.started_run_dir(mock_events)
+        shown = json.loads((run_dir / "tech-lead-data" / VALIDATED_WORK_RELEASE_TARGETS_FILENAME).read_text())
+        assert shown == [item.to_dict() for item in releasable]
+        authority = SqliteTechLeadAuthorityStore.for_repo(config.repo_root).load(
+            run_id=result.session.run_assets.run_id,
+            session_name=result.session.run_assets.session_name,
+        )
+        assert authority is not None
+        assert authority.observed_validated_work_releases == releasable
+
+    def test_health_review_is_granted_and_told_its_triage_agenda(
+        self, sample_config, mock_events, mock_repo_host, mock_worktree_manager,
+        mock_working_copy, mock_command_runner, tmp_path,
+    ):
+        """#7593: the blocked items owed a triage become the run's grants, its
+        agenda file, and an orchestrator-owned addendum to its prompt, so the
+        duty reaches a repository whose own tech-lead prompt never heard of it."""
+        from issue_orchestrator.domain.blocked_item_triage import (
+            TriageAgenda,
+            TriageAgendaItem,
+            TriageGrant,
+        )
+        from issue_orchestrator.domain.tech_lead_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        question = "Should I split #262 and land the share-page slice under Refs?"
+        agenda = TriageAgenda(items=(TriageAgendaItem(
+            issue_number=262, title="Live seller pickup index", labels=("needs-human",),
+            blocking_labels=("needs-human",), needs_human_causes=("agent_completion",),
+            fingerprint="needs-human", agent_question=question, reason="never triaged",
+            prior=None,
+        ),), in_force=(179,))
+
+        class _Agenda:
+            def agenda(self, *, anchor_issue_number):
+                assert anchor_issue_number == 906
+                return agenda
+
+        bundle = _build_launcher_bundle(
+            sample_config, mock_events, mock_repo_host, mock_worktree_manager,
+            mock_working_copy, mock_command_runner, blocked_item_triage=_Agenda(),
+        )
+        config = bundle.launcher.config
+        self.enable_tech_lead_agent(config, tmp_path)
+        issue = Issue(
+            number=906, title="Health Review", repo="test/repo",
+            labels=["agent:tech-lead", HEALTH_REVIEW_MARKER_LABEL],
+        )
+
+        result = bundle.launcher.launch_issue_session(issue, active_sessions=[])
+
+        assert result.success is True
+        authority = SqliteTechLeadAuthorityStore.for_repo(config.repo_root).load(
+            run_id=result.session.run_assets.run_id,
+            session_name=result.session.run_assets.session_name,
+        )
+        assert authority is not None
+        assert authority.triage_grants == (TriageGrant(262, "needs-human"),)
+        assert 262 in authority.allowed_targets()
+        assert 262 in authority.allowed_act_level_targets()
+        run_dir = self.started_run_dir(mock_events)
+        written = json.loads((run_dir / "tech-lead-data" / "blocked-item-triage.json").read_text())
+        assert [item["issue_number"] for item in written["items"]] == [262]
+        assert written["items"][0]["agent_question"] == question
+        assert written["triage_in_force"] == [179]
+        manifest = json.loads((run_dir / "manifest.json").read_text())
+        prompt = Path(manifest["session_prompt_path"]).read_text()
+        assert "## Blocked-item triage (REQUIRED by the orchestrator" in prompt
+        assert "#262 Live seller pickup index" in prompt
 
     def test_periodic_health_review_gains_no_cohort_from_pending_failures(
         self, launcher_bundle, mock_repo_host, mock_events, tmp_path
@@ -6211,16 +6365,18 @@ class TestRestoreRunningSessions:
 class TestProcessActiveSessions:
     """Tests for process_active_sessions function (line 1034)."""
 
-    def test_completed_decision_batch_applies_siblings_before_raising(self):
-        """One failed completed decision must not discard the rest of the drain batch."""
+    def test_completed_decision_batch_confines_a_failed_decision_to_its_session(
+        self, sample_agent_config, tmp_path
+    ):
+        """One failed completed decision is that session's: siblings apply, nothing raises (#8000)."""
         observed_at = datetime.fromisoformat("2026-08-26T00:20:00+00:00")
         first = CompletedDecision(
-            session=MagicMock(terminal_id="issue-1"),
+            session=_completion_session(sample_agent_config, tmp_path, 1),
             decision=None,
             error=RuntimeError("decide failed"),
         )
         second = CompletedDecision(
-            session=MagicMock(terminal_id="issue-2"),
+            session=_completion_session(sample_agent_config, tmp_path, 2),
             decision=SessionDecision(
                 status=SessionStatus.RUNNING,
                 provider_success=ProviderSuccessDecision(
@@ -6243,14 +6399,18 @@ class TestProcessActiveSessions:
                 provider_resilience,
             )
 
-        with pytest.raises(RuntimeError, match="decide failed"):
-            _apply_completed_decisions([first, second], apply)
+        containment = _containment()
+        containment.apply_each([first, second], apply, in_pass=lambda session: True)
 
         assert applied == ["issue-1", "issue-2"]
         provider_resilience.record_success.assert_called_once_with(
             "codex",
             observed_at=observed_at,
         )
+        # The decide failure is recorded against its session (retried next tick).
+        failed = containment.owner.admit(CompletionContainment.key(first.session)).row
+        assert failed is not None and "decide failed" in failed.last_reason
+        assert containment.owner.admit(CompletionContainment.key(second.session)).row is None
 
     def test_provider_resilience_effects_are_recorded_on_apply_thread(self):
         """Provider-circuit mutations happen when the drained decision is applied."""
@@ -6346,6 +6506,7 @@ class TestProcessActiveSessions:
             kill_session_fn=lambda x: None,
             config=config,
             pending_work_claims=_test_claim_store(),
+            containment=_containment(),
         )
 
         # Session should still be in active list
@@ -6394,6 +6555,7 @@ class TestProcessActiveSessions:
             kill_session_fn=MagicMock(),
             config=MagicMock(),
             pending_work_claims=_test_claim_store(),
+            containment=_containment(),
         )
 
         assert state.active_sessions == [session]
@@ -6448,6 +6610,7 @@ class TestProcessActiveSessions:
             kill_session_fn=MagicMock(),
             config=MagicMock(),
             pending_work_claims=_test_claim_store(),
+            containment=_containment(),
         )
 
         assert captured_phase["value"] == "active_sessions:#392"
@@ -6529,6 +6692,7 @@ class TestProcessActiveSessions:
                 kill_session_fn=MagicMock(),
                 config=MagicMock(),
                 pending_work_claims=_test_claim_store(),
+                containment=_containment(),
             )
 
         # Session stayed active because the controller deferred…
@@ -6618,6 +6782,7 @@ class TestProcessActiveSessions:
             kill_session_fn=kill_session_fn,
             config=MagicMock(),
             pending_work_claims=_test_claim_store(),
+            containment=_containment(),
         )
 
         assert state.active_sessions == []
@@ -6744,6 +6909,7 @@ class TestProcessActiveSessions:
                 config=MagicMock(),
                 completion_dispatcher=dispatcher,
                 pending_work_claims=_test_claim_store(),
+                containment=_containment(),
             )
 
         # Tick 1: the decision is offloaded to the runner, NOT run inline — the
@@ -6891,6 +7057,7 @@ class TestProcessActiveSessions:
                 config=MagicMock(),
                 completion_dispatcher=dispatcher,
                 pending_work_claims=_test_claim_store(),
+                containment=_containment(),
             )
 
         # Tick 1: dispatch the decision (submit #1); nothing is decided yet.
@@ -8067,6 +8234,23 @@ class TestStackRelaunchGate:
         assert result.success is False
         assert mock_worktree_manager.create_calls == []
         assert any(str(e.name) == "issue.dependency_blocked" for e in mock_events.events)
+
+
+def _containment() -> CompletionContainment:
+    return CompletionContainment(liveness_owner())
+
+
+def _completion_session(agent_config: Any, tmp_path: Path, number: int) -> Session:
+    worktree = tmp_path / f"worktree-{number}"
+    return Session(
+        key=SessionKey(issue=FakeIssueKey(str(number)), kind=SessionKind.CODE),
+        issue=Issue(number=number, title="Test", labels=["agent:web"]),
+        agent_config=agent_config,
+        terminal_id=f"issue-{number}",
+        worktree_path=worktree,
+        branch_name=f"{number}-feature",
+        run_assets=make_session_run_assets(worktree, session_name=f"issue-{number}"),
+    )
 
 
 def _test_claim_store(tmp_path=None):
@@ -10554,3 +10738,635 @@ class TestAnOpenPrEndsOnlyTheSessionWhoseOutputItIs:
         status = self._observer(sample_config, runner, host).check_session(session)
 
         assert (status is SessionStatus.COMPLETED) is completed
+
+
+class TestTechLeadProposalLaunchConsent:
+    """#7763 review r4 F1: the ONE launch boundary — planned launches and
+    startup's resumption of partial work alike — re-checks a proposal's
+    approval fresh and refuses without a standing maintainer approval."""
+
+    @staticmethod
+    def _proposal(labels) -> Issue:
+        from issue_orchestrator.domain.tech_lead_approval import with_proposal_marker
+
+        return Issue(number=123, title="Follow-up", labels=["agent:web", *labels],
+                     repo="test/repo", body=with_proposal_marker("b"))
+
+    def test_an_unapproved_proposal_never_spawns(self, launcher_bundle, mock_repo_host) -> None:
+        from tests.approval_helpers import GATED, make_approvals
+
+        proposal = self._proposal([*GATED, "in-progress"])
+        mock_repo_host.issues[123] = proposal
+        launcher_bundle.action_applier.tech_lead_approvals = make_approvals()
+
+        result = launcher_bundle.launcher.launch_issue_session(proposal, active_sessions=[])
+
+        assert not result.success
+        assert "tech-lead proposal" in result.reason
+        assert launcher_bundle.create_session_calls == []
+
+    def test_a_bot_reapproval_since_the_last_tick_never_spawns(self, launcher_bundle, mock_repo_host) -> None:
+        from tests.approval_helpers import ADMITTED, BOT, FakeApprovalEvidence, make_approvals
+
+        evidence = FakeApprovalEvidence()
+        evidence.label(123)  # a maintainer approved; the scan verified it
+        approvals = make_approvals(evidence)
+        proposal = self._proposal(ADMITTED)
+        approvals.verify(proposal)
+        evidence.label(123, by=BOT)  # removed and re-applied by a bot, unobserved
+        mock_repo_host.issues[123] = proposal
+        launcher_bundle.action_applier.tech_lead_approvals = approvals
+
+        result = launcher_bundle.launcher.launch_issue_session(proposal, active_sessions=[])
+
+        assert not result.success
+        assert launcher_bundle.create_session_calls == []
+
+    def test_an_approval_removed_during_worktree_preparation_never_spawns(
+        self, launcher_bundle, mock_repo_host, mock_worktree_manager
+    ) -> None:
+        """#7763 review r11 F1: consent is re-read after the slow worktree
+        preparation, before anything irreversible; the worktree is cleaned up
+        and the claim released."""
+        from tests.approval_helpers import ADMITTED, approving_everything
+
+        proposal = self._proposal(ADMITTED)
+        mock_repo_host.issues[123] = proposal
+        launcher_bundle.action_applier.tech_lead_approvals = approving_everything()
+        prepare = mock_worktree_manager.create
+
+        def prepare_while_a_maintainer_revokes(*args, **kwargs):
+            # The maintainer removes `approved` while the worktree is prepared.
+            mock_repo_host.issues[123] = self._proposal(["tech-lead-proposal"])
+            return prepare(*args, **kwargs)
+
+        mock_worktree_manager.create = prepare_while_a_maintainer_revokes
+
+        result = launcher_bundle.launcher.launch_issue_session(proposal, active_sessions=[])
+
+        assert not result.success
+        assert result.disposition is LaunchDisposition.WITHDRAWN
+        assert launcher_bundle.create_session_calls == []
+        [prepared] = mock_worktree_manager.create_calls  # it got that far...
+        assert len(mock_worktree_manager.remove_calls) == 1  # ...and was cleaned up
+
+    def test_a_known_proposal_stripped_of_labels_and_marker_never_spawns(
+        self, launcher_bundle, mock_repo_host
+    ) -> None:
+        """#7763 review r15 F1: proposal identity is the owner's index, not
+        what the issue's labels and body say after an edit."""
+        from tests.approval_helpers import approving_everything
+
+        approvals = approving_everything()
+        approvals.remember_proposals([123])  # filed by the tech lead, indexed
+        approvals.record_scope((), {}, retired=[123])  # closed once: retired (r18 F1)
+        ordinary_looking = Issue(number=123, title="Follow-up", labels=["agent:web"], repo="test/repo", body="b")
+        mock_repo_host.issues[123] = ordinary_looking
+        launcher_bundle.action_applier.tech_lead_approvals = approvals
+
+        assert not approvals.admits(ordinary_looking)
+        result = launcher_bundle.launcher.launch_issue_session(ordinary_looking, active_sessions=[])
+
+        assert not result.success
+        assert launcher_bundle.create_session_calls == []
+
+    def test_an_op_backed_proposal_never_migrated_never_spawns(self, launcher_bundle, mock_repo_host) -> None:
+        """#7763 review r19 F1: an op in the durable ledger names its issue a
+        proposal even with no index row, labels or marker (e.g. one the
+        migration skipped as out of scope until its scope label came back)."""
+        from tests.approval_helpers import approving_everything
+
+        approvals = approving_everything()
+        approvals.ledger_numbers = lambda: (123,)  # the authority store's op ledger
+        ordinary_looking = Issue(number=123, title="Reset it", labels=["agent:web"], repo="test/repo", body="b")
+        mock_repo_host.issues[123] = ordinary_looking
+        launcher_bundle.action_applier.tech_lead_approvals = approvals
+
+        assert not approvals.admits(ordinary_looking)
+        result = launcher_bundle.launcher.launch_issue_session(ordinary_looking, active_sessions=[])
+
+        assert not result.success
+        assert launcher_bundle.create_session_calls == []
+        approvals.observe([ordinary_looking])  # seen on the board: back in the scope's reads
+        assert 123 in approvals.indexed_proposals()
+
+    def test_a_validation_retry_and_a_rework_of_a_revoked_proposal_never_spawn(
+        self, launcher_bundle, mock_repo_host
+    ) -> None:
+        """#7763 review r22 F1: every coding launch path asks the same consent
+        check: an admitted proposal whose `approved` was removed gets no
+        validation retry and no rework session."""
+        from tests.approval_helpers import make_approvals
+
+        revoked = self._proposal(["tech-lead-proposal"])  # admitted, then `approved` removed
+        mock_repo_host.issues[123] = revoked
+        launcher_bundle.action_applier.tech_lead_approvals = make_approvals()
+        retry = PendingValidationRetry(
+            issue_number=123, issue_title="Follow-up", agent_label="agent:web",
+            worktree_path="/tmp/worktree-123", branch_name="123-follow-up",
+            original_prompt="Work on issue #123", validation_error="tests failed",
+            validation_error_file="/tmp/validation-errors.txt", retry_count=1,
+            source_kind=SessionKind.CODE, validation_cmd="make test",
+        )
+
+        retried = launcher_bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
+
+        assert not retried.success and retried.disposition is LaunchDisposition.WITHDRAWN
+        mock_repo_host.prs[123] = [
+            PRInfo(456, "Fix #123", "url", "123-follow-up", "Fixes #123", "open", [], head_sha="a" * 40)
+        ]
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web", rework_cycle=1, feedback="Address the review",
+        )
+
+        reworked = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert not reworked.success and reworked.disposition is LaunchDisposition.WITHDRAWN
+        assert launcher_bundle.create_session_calls == []
+
+    def test_a_revocation_after_the_hold_is_caught_at_terminal_creation(
+        self, launcher_bundle, mock_repo_host
+    ) -> None:
+        """#7763 review r26 F1: consent is read once more right before the
+        terminal is created; a revocation after the durable hold (here, while
+        the launch moves the issue to in-progress) spawns nothing and undoes
+        the in-progress move."""
+        from tests.approval_helpers import ADMITTED, approving_everything
+
+        proposal = self._proposal(ADMITTED)
+        mock_repo_host.issues[123] = proposal
+        launcher_bundle.action_applier.tech_lead_approvals = approving_everything()
+        moves = []
+
+        def apply(action, *_args, **_kwargs):
+            moves.append(action)
+            if isinstance(action, AddLabelAction) and action.label == "in-progress":
+                mock_repo_host.issues[123] = self._proposal(["tech-lead-proposal"])  # revoked now
+            return MagicMock(success=True)
+
+        launcher_bundle.action_applier.apply.side_effect = apply
+
+        result = launcher_bundle.launcher.launch_issue_session(proposal, active_sessions=[])
+
+        assert not result.success
+        assert launcher_bundle.create_session_calls == []
+        labels = [(type(m).__name__, m.label) for m in moves if isinstance(m, (AddLabelAction, RemoveLabelAction))]
+        assert ("AddLabelAction", "in-progress") in labels and ("RemoveLabelAction", "in-progress") in labels
+
+    def test_a_revocation_after_a_retrys_hold_is_caught_at_terminal_creation(
+        self, launcher_bundle, mock_repo_host
+    ) -> None:
+        """#7763 review r26 F1, the validation-retry path."""
+        from tests.approval_helpers import ADMITTED, approving_everything
+
+        mock_repo_host.issues[123] = self._proposal(ADMITTED)
+        launcher_bundle.action_applier.tech_lead_approvals = approving_everything()
+
+        def apply(action, *_args, **_kwargs):
+            if isinstance(action, AddLabelAction) and action.label == "in-progress":
+                mock_repo_host.issues[123] = self._proposal(["tech-lead-proposal"])  # revoked now
+            return MagicMock(success=True)
+
+        launcher_bundle.action_applier.apply.side_effect = apply
+        retry = PendingValidationRetry(
+            issue_number=123, issue_title="Follow-up", agent_label="agent:web",
+            worktree_path="/tmp/worktree-123", branch_name="123-follow-up",
+            original_prompt="Work on issue #123", validation_error="tests failed",
+            validation_error_file="/tmp/validation-errors.txt", retry_count=1,
+            source_kind=SessionKind.CODE, validation_cmd="make test",
+        )
+
+        result = launcher_bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
+
+        assert not result.success
+        assert launcher_bundle.create_session_calls == []
+
+    def test_a_revocation_during_the_rework_feedback_fetch_spawns_nothing(
+        self, launcher_bundle, mock_repo_host
+    ) -> None:
+        """#7763 review r26 F1, the rework path."""
+        from tests.approval_helpers import ADMITTED, approving_everything
+
+        mock_repo_host.issues[123] = self._proposal(ADMITTED)
+        launcher_bundle.action_applier.tech_lead_approvals = approving_everything()
+        mock_repo_host.prs[123] = [
+            PRInfo(456, "Fix #123", "url", "123-follow-up", "Fixes #123", "open", [], head_sha="a" * 40)
+        ]
+        reviews = mock_repo_host.get_pr_reviews
+
+        def fetch_while_revoked(pr_number):
+            mock_repo_host.issues[123] = self._proposal(["tech-lead-proposal"])
+            return reviews(pr_number)
+
+        mock_repo_host.get_pr_reviews = fetch_while_revoked
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web", rework_cycle=1, feedback="Address the review",
+        )
+
+        result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert not result.success and result.disposition is LaunchDisposition.WITHDRAWN
+        assert launcher_bundle.create_session_calls == []
+
+    def test_a_standing_approval_launches(self, launcher_bundle, mock_repo_host) -> None:
+        from tests.approval_helpers import ADMITTED, approving_everything
+
+        proposal = self._proposal(ADMITTED)
+        mock_repo_host.issues[123] = proposal
+        launcher_bundle.action_applier.tech_lead_approvals = approving_everything()
+
+        result = launcher_bundle.launcher.launch_issue_session(proposal, active_sessions=[])
+
+        assert result.success
+
+
+def test_startup_never_queues_a_fully_stripped_proposal_as_an_anchor(
+    sample_config, mock_repo_host, tmp_path
+) -> None:
+    """#7763 review r10 F2: a non-op follow-up whose gate labels were all
+    stripped is still a proposal by its body marker, so a batch-anchor title
+    and the tech-lead agent label never make it an anchor."""
+    from issue_orchestrator.control.health_review_trigger import (
+        recover_pending_tech_lead_anchors,
+    )
+    from issue_orchestrator.domain.tech_lead_approval import with_proposal_marker
+
+    TestLaunchTechLeadIssueSessionFlavors.enable_tech_lead_agent(sample_config, tmp_path)
+    mock_repo_host.issues = {
+        906: Issue(
+            number=906,
+            title="Tech Lead Batch Review follow-up",
+            labels=["agent:tech-lead"],
+            repo="test/repo",
+            body=with_proposal_marker("Proposed follow-up."),
+        )
+    }
+    state = OrchestratorState()
+
+    recover_pending_tech_lead_anchors(
+        state,
+        repository_host=mock_repo_host,
+        config=sample_config,
+        session_exists=lambda name: False,
+        tech_lead_authority=SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root),
+        claims=_claims_store(),
+    )
+
+    assert state.pending_tech_lead_reviews == []
+
+
+# -- standing rulings (#8141) ---------------------------------------------------
+
+
+@pytest.fixture
+def ruled_bodies():
+    """Issue 123's body carries one maintainer ruling; 365's too."""
+    from tests.standing_ruling_helpers import IssueBodies, a_ruling, body_with
+
+    ruling = a_ruling("m-0123456789ab", files=("exam-output.txt",))
+    return IssueBodies({123: body_with(ruling), 365: body_with(ruling)}), ruling
+
+
+@pytest.fixture
+def rulings_bundle(
+    sample_config,
+    mock_events,
+    mock_repo_host,
+    mock_worktree_manager,
+    mock_working_copy,
+    mock_command_runner,
+    ruled_bodies,
+):
+    from tests.standing_ruling_helpers import rulings_owner
+
+    bodies, ruling = ruled_bodies
+    owner = rulings_owner(bodies)
+    bundle = _build_launcher_bundle(
+        sample_config, mock_events, mock_repo_host, mock_worktree_manager, mock_working_copy,
+        mock_command_runner, standing_rulings=owner,
+    )
+    return bundle, owner, bodies, ruling
+
+
+class TestStandingRulingsReachEveryLaunch:
+    """#8141: porchpin#379's conflict rework and its reviewer never saw the
+    maintainer's ruling. Every launch path binds its session to the issue's
+    standing rulings, framed for what the session does."""
+
+    def test_a_coding_session_is_told_to_build_to_the_ruling(self, rulings_bundle, sample_issue) -> None:
+        from issue_orchestrator.domain.standing_ruling import BINDING_BEGIN, RULINGS_PROMPT_HEADING
+
+        bundle, _owner, _bodies, ruling = rulings_bundle
+
+        result = bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is True
+        prompt = result.session.original_prompt
+        assert prompt.startswith(f"{BINDING_BEGIN}\n{RULINGS_PROMPT_HEADING}123")  # binding, before the task
+        assert f"`{ruling.ruling_id}`" in prompt and ruling.text in prompt and "Build to these rulings" in prompt
+        assert ruling.ruling_id in bundle.create_session_calls[0]["cmd"]
+
+    def test_a_conflict_rework_carries_the_ruling_as_its_brief(self, rulings_bundle) -> None:
+        from issue_orchestrator.domain.standing_ruling import REWORK_BRIEF_OPENING
+
+        bundle, _owner, _bodies, ruling = rulings_bundle
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web",
+            rework_cycle=1,
+            feedback="Merge conflict against base branch: rebase and resolve the conflicts.",
+        )
+
+        result = bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert result.success is True
+        command = bundle.create_session_calls[0]["cmd"]
+        assert REWORK_BRIEF_OPENING in command and ruling.ruling_id in command
+        assert command.index(REWORK_BRIEF_OPENING) < command.index("Merge conflict against base branch")
+
+    def test_a_validation_retry_drops_a_ruling_retired_since_its_launch(self, rulings_bundle) -> None:
+        """#8347 (codex r3 F1): the retry embeds its original prompt, whose rulings
+        were read then; only the rulings read for the retry bind it."""
+        from tests.standing_ruling_helpers import a_ruling, body_with
+        from issue_orchestrator.domain.launch_prompt import RULINGS_SEPARATOR
+        from issue_orchestrator.domain.standing_ruling import RulingsAudience, rulings_prompt
+
+        bundle, _owner, bodies, ruling = rulings_bundle
+        retired = a_ruling("m-0000000dead0", "Retired since the launch.")
+        original = f"{rulings_prompt(123, (retired,), RulingsAudience.CODER)}{RULINGS_SEPARATOR}Work on issue #123"
+        retry = PendingValidationRetry(
+            issue_number=123, issue_title="Fix checkout", agent_label="agent:web",
+            worktree_path="/tmp/worktree-123", branch_name="123-fix-checkout",
+            original_prompt=original, validation_error="dirty worktree",
+            validation_error_file=None, retry_count=1, source_kind=SessionKind.CODE, validation_cmd="make test",
+        )
+        bodies.bodies[123] = body_with(ruling)
+
+        assert bundle.launcher.launch_validation_retry_session(retry, active_sessions=[]).success is True
+        command = bundle.create_session_calls[0]["cmd"]
+        assert ruling.ruling_id in command and "Work on issue #123" in command
+        assert retired.ruling_id not in command and retired.text not in command
+
+    def test_a_validation_retry_is_bound_too(self, rulings_bundle) -> None:
+        bundle, _owner, _bodies, ruling = rulings_bundle
+        retry = PendingValidationRetry(
+            issue_number=123, issue_title="Fix checkout", agent_label="agent:web",
+            worktree_path="/tmp/worktree-123", branch_name="123-fix-checkout",
+            original_prompt="Work on issue #123", validation_error="dirty worktree",
+            validation_error_file=None, retry_count=1, source_kind=SessionKind.CODE, validation_cmd="make test",
+        )
+
+        assert bundle.launcher.launch_validation_retry_session(retry, active_sessions=[]).success is True
+        assert ruling.ruling_id in bundle.create_session_calls[0]["cmd"]
+
+    def test_a_review_must_check_the_diff_against_each_ruling_and_attest_it(self, rulings_bundle) -> None:
+        bundle, _owner, _bodies, ruling = rulings_bundle
+        review = PendingReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"), pr_number=456,
+            pr_url="https://github.com/test/repo/pull/456", branch_name="123-feature", _issue_number=123,
+        )
+
+        result = bundle.launcher.launch_review_session(review, active_sessions=[])
+
+        assert result.success is True
+        command = bundle.create_session_calls[0]["cmd"]
+        assert f"`{ruling.ruling_id}`" in command
+        assert "--upholds-ruling <id>" in command and "implementation-required" in command
+
+    def test_a_retrospective_review_is_bound_too(self, rulings_bundle) -> None:
+        bundle, _owner, _bodies, ruling = rulings_bundle
+        review = PendingRetrospectiveReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="365"), issue_number=365,
+            issue_title="Review old implementation", agent_label="agent:web", trigger_label="lack-of-review-redo",
+            prior_pr_number=512, prior_pr_url="https://github.com/test/repo/pull/512",
+        )
+
+        result = bundle.launcher.launch_retrospective_review_session(review, active_sessions=[])
+
+        assert result.success is True
+        assert f"`{ruling.ruling_id}`" in result.session.original_prompt
+        assert "--upholds-ruling" in result.session.original_prompt
+
+    def test_unreadable_rulings_refuse_the_launch_before_anything_is_touched(
+        self, rulings_bundle, sample_issue, mock_worktree_manager,
+    ) -> None:
+        bundle, owner, bodies, _ruling = rulings_bundle
+        owner.index.rows.clear()  # a fresh state directory: the body must be read
+        bodies.unreadable.add(123)
+
+        result = bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is False
+        assert result.disposition is LaunchDisposition.RETRYABLE_FAILURE  # the work stays queued
+        assert "could not be read for its standing rulings" in result.reason
+        assert bundle.create_session_calls == [] and mock_worktree_manager.create_calls == []
+
+    def test_an_issue_with_no_rulings_launches_unchanged(self, launcher_bundle, sample_issue) -> None:
+        from issue_orchestrator.domain.standing_ruling import RULINGS_PROMPT_HEADING
+
+        result = launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is True and RULINGS_PROMPT_HEADING not in result.session.original_prompt
+
+
+class TestTechLeadRunsAreBoundByTheRulingsOfTheWorkTheyCover:
+    """#8347: a batch review approved PRs against rulings it was never told
+    (porchpin#379's failure class). A tech-lead run is bound by the rulings of
+    every other issue whose work it covers, read fresh from each body: a batch
+    review's PRs' issues, and a health review's problem cohort."""
+
+    @pytest.fixture
+    def tech_lead_bundle(self, rulings_bundle, sample_config, tmp_path):
+        bundle, owner, bodies, ruling = rulings_bundle
+        sample_config.agents["agent:tech-lead"] = AgentConfig(
+            prompt_path=tmp_path / "prompt.md", model="sonnet", timeout_minutes=45,
+        )
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
+        anchor = Issue(number=125, title="Batch Review", labels=["agent:tech-lead"], repo="test/repo")
+        return bundle, owner, bodies, ruling, anchor
+
+    @staticmethod
+    def _batch_of(mock_repo_host, *prs: tuple[int, str, str]) -> None:
+        mock_repo_host.prs_with_label = [
+            PRInfo(number=number, title=f"PR {number}", url=f"https://github.com/test/repo/pull/{number}",
+                   branch=branch, body=body, state="open", labels=["code-reviewed"], head_sha=f"{number:040d}")
+            for number, branch, body in prs
+        ]
+
+    def test_a_batch_review_is_told_each_covered_prs_rulings(
+        self, tech_lead_bundle, mock_repo_host, sample_config
+    ) -> None:
+        from issue_orchestrator.domain.standing_ruling import COVERED_RULINGS_HEADING, RULINGS_PROMPT_HEADING
+
+        bundle, _owner, bodies, ruling, anchor = tech_lead_bundle
+        self._batch_of(mock_repo_host, (512, "365-walk", "Closes #365"), (513, "feature", "Refs #400"))
+
+        result = bundle.launcher.launch_issue_session(anchor, active_sessions=[])
+
+        assert result.success is True
+        prompt = result.session.original_prompt
+        authority = SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root).load(
+            run_id=result.session.run_assets.run_id, session_name=result.session.run_assets.session_name,
+        )
+        assert authority is not None and authority.covered_work == ((365, (512,)), (400, (513,)))
+        assert COVERED_RULINGS_HEADING in prompt
+        assert f"{RULINGS_PROMPT_HEADING}365 (PR #512)" in prompt and ruling.text in prompt
+        assert "issue #400" not in prompt  # no ruling on it: nothing to bind
+        assert ruling.ruling_id in bundle.create_session_calls[0]["cmd"]
+        assert {365, 400} <= set(bodies.reads)  # each covered body read fresh at launch
+
+    def test_the_links_come_from_the_pr_text_the_agent_is_given(
+        self, sample_config, mock_events, mock_repo_host, mock_worktree_manager, mock_working_copy,
+        mock_command_runner, ruled_bodies, tmp_path,
+    ) -> None:
+        """codex r6 F1: the listing linked #400, the PR text downloaded for the
+        agent links #365: the agent reviews against #365's ruling."""
+        from issue_orchestrator.domain.tech_lead_manifest import PRFiles
+        from tests.standing_ruling_helpers import rulings_owner
+
+        class EditedSinceListing:
+            def download(self, manifest, worktree_path):
+                data = worktree_path / manifest.data_dir
+                data.mkdir(parents=True, exist_ok=True)
+                for pr in manifest.prs:
+                    (data / f"pr-{pr.number}-meta.json").write_text(json.dumps(
+                        {"number": pr.number, "branch": "feature", "body": "Closes #365"}
+                    ))
+                    pr.files = PRFiles(diff="", metadata=f"pr-{pr.number}-meta.json")
+                return manifest
+
+        bodies, ruling = ruled_bodies
+        bundle = _build_launcher_bundle(
+            sample_config, mock_events, mock_repo_host, mock_worktree_manager, mock_working_copy,
+            mock_command_runner, standing_rulings=rulings_owner(bodies), manifest_downloader=EditedSinceListing(),
+        )
+        sample_config.agents["agent:tech-lead"] = AgentConfig(
+            prompt_path=tmp_path / "prompt.md", model="sonnet", timeout_minutes=45,
+        )
+        sample_config.tech_lead_review_agent = "agent:tech-lead"
+        self._batch_of(mock_repo_host, (512, "feature", "Closes #400"))
+
+        result = bundle.launcher.launch_issue_session(
+            Issue(number=125, title="Batch Review", labels=["agent:tech-lead"], repo="test/repo"), active_sessions=[],
+        )
+
+        assert result.success is True, result.reason
+        assert ruling.text in result.session.original_prompt
+        authority = SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root).load(
+            run_id=result.session.run_assets.run_id, session_name=result.session.run_assets.session_name,
+        )
+        assert authority is not None and authority.covered_work == ((365, (512,)),)
+
+    def test_a_health_review_is_told_its_problem_cohorts_rulings(self, tech_lead_bundle) -> None:
+        from issue_orchestrator.domain.standing_ruling import RULINGS_PROMPT_HEADING
+
+        bundle, _owner, _bodies, ruling, anchor = tech_lead_bundle
+
+        result = bundle.launcher.launch_issue_session(
+            anchor, active_sessions=[],
+            tech_lead_scope=TechLeadLaunchScope(
+                flavor=TechLeadSessionFlavor.HEALTH_REVIEW, problem_issue_numbers=(365,),
+            ),
+        )
+
+        assert result.success is True
+        assert f"{RULINGS_PROMPT_HEADING}365\n" in result.session.original_prompt
+        assert ruling.text in result.session.original_prompt
+
+    def test_a_covered_issue_with_a_damaged_rulings_block_refuses_the_launch(
+        self, tech_lead_bundle, mock_repo_host
+    ) -> None:
+        bundle, _owner, bodies, _ruling, anchor = tech_lead_bundle
+        self._batch_of(mock_repo_host, (512, "365-walk", "Closes #365"))
+        bodies.bodies[365] = bodies.bodies[365].replace("<!-- io:standing-rulings:end -->", "")
+
+        result = bundle.launcher.launch_issue_session(anchor, active_sessions=[])
+
+        assert result.success is False
+        assert result.disposition is LaunchDisposition.RETRYABLE_FAILURE
+        assert bundle.create_session_calls == []
+
+    def test_a_branch_number_github_has_no_issue_for_does_not_wedge_the_batch(
+        self, tech_lead_bundle, mock_repo_host
+    ) -> None:
+        """codex r1 F2: branch ``999-feature`` with no issue #999 and ``Closes
+        #365``: the batch still starts, bound by #365's ruling."""
+        bundle, _owner, bodies, ruling, anchor = tech_lead_bundle
+        self._batch_of(mock_repo_host, (512, "999-feature", "Closes #365"))
+        bodies.unreadable.add(999)
+
+        result = bundle.launcher.launch_issue_session(anchor, active_sessions=[])
+
+        assert result.success is True and ruling.text in result.session.original_prompt
+
+    @staticmethod
+    def _health_retry(sample_config, tmp_path):
+        """A health review over issue 365, as its validation retry finds it."""
+        from dataclasses import replace
+
+        carrier = TestAValidationRetryCarriesItsLaunchAuthority()
+        checkout = tmp_path / "worktree-6410"
+        checkout.mkdir()
+        source = SessionRunIdentity(session_name="tech-lead-1", run_id="run-original", started_at="2026-09-18")
+        SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root).record(
+            run_id=source.run_id, session_name=source.session_name,
+            authority=TechLeadLaunchAuthority(
+                flavor=TechLeadSessionFlavor.HEALTH_REVIEW, anchor_issue_number=6410, problem_issue_numbers=(365,),
+                covered_work=((365, ()),),
+            ),
+        )
+        data = carrier._seed_launch_inputs(checkout, source)
+        (data / "tech-lead-assignment.json").write_text(
+            json.dumps(TechLeadAssignment(flavor=TechLeadSessionFlavor.HEALTH_REVIEW).to_dict())
+        )
+        BoardSnapshot(
+            generated_at="2026-09-18T00:00:00", orchestrator_paused=False, recent_failures=[], problem_cohort=[365],
+        ).write(data / "board-snapshot.json")
+        return replace(carrier._retry(source, worktree_path=str(checkout)), branch_name="6410-health-review")
+
+    def test_a_retried_run_is_bound_by_the_rulings_standing_now(
+        self, tech_lead_bundle, sample_config, tmp_path
+    ) -> None:
+        """codex r1 F1: a ruling recorded on a covered issue after the original
+        launch binds the validation retry; the retry reads it fresh."""
+        from issue_orchestrator.domain.standing_ruling import RULINGS_PROMPT_HEADING
+        from tests.standing_ruling_helpers import a_ruling, body_with
+
+        from dataclasses import replace
+
+        from issue_orchestrator.domain.standing_ruling import covered_rulings_prompt
+
+        bundle, _owner, bodies, retired, _anchor = tech_lead_bundle
+        # The original launch was bound by a ruling the maintainer has retired since.
+        retry = self._health_retry(sample_config, tmp_path)
+        launched_with = covered_rulings_prompt({365: ()}, {365: (retired,)})
+        retry = replace(retry, original_prompt=f"Run the health review.\n\n{launched_with}")
+        since = a_ruling("m-00000000beef", "Recorded after the original launch.")
+        bodies.bodies[365] = body_with(since)
+
+        result = bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
+
+        assert result.success is True, result.reason
+        prompt = bundle.create_session_calls[0]["cmd"]
+        assert f"{RULINGS_PROMPT_HEADING}365" in prompt and since.text in prompt
+        assert retired.ruling_id not in prompt and retired.text not in prompt  # codex r3 F1
+        assert "Run the health review." in prompt
+
+    def test_a_failed_github_read_keeps_the_retry_queued_and_releases_its_claim(
+        self, tech_lead_bundle, sample_config, tmp_path
+    ) -> None:
+        """codex r2 F1: a GitHub failure reading the covered work's rulings is a
+        retryable refusal that releases the claim, never an escaped exception."""
+        bundle, _owner, bodies, _ruling, _anchor = tech_lead_bundle
+        retry = self._health_retry(sample_config, tmp_path)
+        bodies.failing.add(365)
+
+        with patch.object(SessionLauncher, "_release_claim_if_held", autospec=True) as release:
+            result = bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
+
+        assert result.success is False
+        assert result.disposition is LaunchDisposition.RETRYABLE_FAILURE
+        assert "GitHub read of #365 failed" in result.reason
+        assert release.call_count == 1 and bundle.create_session_calls == []

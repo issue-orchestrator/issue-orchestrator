@@ -4,6 +4,7 @@ Provides functions to create/update/close issues during test execution.
 """
 
 import logging
+from collections.abc import Callable
 
 from issue_orchestrator.domain.issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from issue_orchestrator.testing.support.test_data import (
@@ -21,6 +22,9 @@ def inflight_create(
     title: str,
     labels: list[str],
     body: str = "Created mid-test.",
+    *,
+    on_created: Callable[[int], None] | None = None,
+    ensure_labels: bool = True,
 ) -> tuple[IssueKey, int]:
     """Create an issue while orchestrator is running.
 
@@ -32,6 +36,9 @@ def inflight_create(
         title: Issue title (should include [EXTERNAL-ID] prefix)
         labels: Labels to apply
         body: Issue body
+        on_created: Run with the issue number as soon as GitHub answers the
+            create, before the visibility wait (see ``create_issue``).
+        ensure_labels: False when the caller already ensured every label.
 
     Returns:
         Tuple of (IssueKey, issue_number) for the created issue
@@ -46,7 +53,7 @@ def inflight_create(
             f"Title must contain external ID prefix like [M1-011]: {title!r}"
         )
 
-    issue_number = create_issue(repo, title, labels, body)
+    issue_number = create_issue(repo, title, labels, body, on_created=on_created, ensure_labels=ensure_labels)
     logger.info("Created issue #%d with external_id=%s", issue_number, parsed.external_id)
     return GitHubIssueKey(repo=repo, external_id=parsed.external_id), issue_number
 

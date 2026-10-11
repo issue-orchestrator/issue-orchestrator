@@ -16,8 +16,8 @@ report it as a finding before anything else you found, and follow the verdict:
 
 - `proposing_only` - runs ARE deciding and nothing is being applied. Do NOT
   re-diagnose the runs. Look at the approval gate (`tech_lead.authority.*`
-  entries set to `propose` create gated proposal issues that stay inert until an
-  operator removes the `proposed-tech-lead` label) and at the act-level
+  entries set to `propose` create gated proposal issues that stay inert until a
+  maintainer approves them with the `approved` label) and at the act-level
   appliers. Count the outstanding gated proposals and name them.
 - `silent` - runs continue and are producing neither proposals nor applied
   decisions. Something upstream of the decision is failing; the runs themselves

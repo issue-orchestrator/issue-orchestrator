@@ -32,6 +32,7 @@ from ..domain.issue_run_allocation import IssueRunAllocation
 from ..domain.issue_run_evidence import IssueRunEvidenceUnavailable
 from ..domain.session_key import SessionKey
 from ..domain.session_kind import SessionKind
+from ..domain.launch_prompt import LaunchPromptUnavailable
 from ..ports.operator_issue_commands import (
     OperatorCommandIntent,
     OperatorCommandOutcome,
@@ -368,12 +369,21 @@ async def launch_debug_session(  # noqa: C901 - debug session with validation an
         "Work with the user to investigate and fix the issue. When done, the user will run "
         "'coding-done --resume' to continue the orchestrator flow."
     )
-    base_command = agent_config.get_command(
+    # The engine's one composition of a launch prompt: the issue's standing
+    # rulings first, the coder addendum after (#8141); unavailable refuses.
+    prepared = orchestrator.deps.launch_prompt.prepare(kind=SessionKind.CODE, issue_number=issue_number)
+    if isinstance(prepared, LaunchPromptUnavailable):
+        return JSONResponse({"success": False, "error": prepared.reason}, status_code=503)
+    debug_prompt = prepared.compose(agent_config.render_initial_prompt(
+        issue_number=issue_number, issue_title=issue.title, worktree=worktree,
+        existing_work=debug_context, task_kind=SessionKind.CODE.value,
+    ))
+    base_command = agent_config.get_command_for_prompt(
+        debug_prompt,
         issue_number=issue_number,
         issue_title=issue.title,
         worktree=worktree,
-        existing_work=debug_context,
-        task_kind="code",
+        task_kind=SessionKind.CODE.value,
     )
 
     try:

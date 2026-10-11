@@ -218,3 +218,75 @@ exit 99
 
         assert result.returncode == 42
         assert log_path.read_text().splitlines() == ["verify"]
+
+
+_HOOK_SRC = Path(__file__).parent.parent.parent / "hooks" / "pre-push"
+
+
+def test_embeds_the_shared_pre_push_ref_functions_verbatim() -> None:
+    """hooks/pre-push is a tracked file, so it carries a copy of the shared
+    delete-only decision. The copy must not drift from its owner."""
+    from issue_orchestrator.infra.hooks.pre_push_refs import pre_push_refs_shell
+
+    assert pre_push_refs_shell() in _HOOK_SRC.read_text()
+
+
+def _git(cwd: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, f"git {' '.join(args)}:\n{result.stderr}"
+    return result.stdout
+
+
+def _repo_using_hooks_dir(tmp_path: Path) -> tuple[Path, Path]:
+    """The documented ``git config core.hooksPath hooks`` install, with a bare
+    remote and a verify-pr stand-in that records each run and its stdin."""
+    remote = tmp_path / "remote.git"
+    _git(tmp_path, "init", "--bare", "-b", "main", str(remote))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "T")
+    _write_executable(repo / "hooks" / "pre-push", _HOOK_SRC.read_text())
+    log_path = tmp_path / "verify.log"
+    _write_executable(
+        repo / "scripts" / "verify-pr.sh",
+        f'#!/usr/bin/env bash\necho "=== verify" >> "{log_path}"\ncat >> "{log_path}"\n',
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "seed")
+    _git(repo, "config", "core.hooksPath", "hooks")
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "branch", "stale")
+    _git(repo, "push", "--no-verify", "origin", "main", "stale")
+    return repo, log_path
+
+
+def test_real_delete_push_skips_verify_pr(tmp_path: Path) -> None:
+    repo, log_path = _repo_using_hooks_dir(tmp_path)
+
+    _git(repo, "push", "origin", "--delete", "stale")
+
+    assert not log_path.exists()
+    assert "stale" not in _git(repo, "ls-remote", "--heads", "origin")
+
+
+def test_real_update_push_runs_verify_pr_with_the_ref_lines(tmp_path: Path) -> None:
+    repo, log_path = _repo_using_hooks_dir(tmp_path)
+    (repo / "file").write_text("change\n")
+    _git(repo, "add", "file")
+    _git(repo, "commit", "-m", "change")
+    head = _git(repo, "rev-parse", "HEAD").strip()
+
+    _git(repo, "push", "origin", "main")
+
+    lines = log_path.read_text().splitlines()
+    assert lines[0] == "=== verify"
+    assert len(lines) == 2 and lines[1].startswith(f"refs/heads/main {head} ")

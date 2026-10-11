@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
+import re
 import shlex
 import shutil
 
@@ -13,10 +14,13 @@ from ..adapters.git.git_cli import GitCLI, SubprocessCommandRunner
 from ..domain.repository_launch_selection import RepositoryLaunchSelection
 from .config import Config
 from .config_paths import MODES_DIR, require_engine_launch_config_path
-from .hooks._python_path import (
-    ORCHESTRATOR_PYTHON_ENV,
-    shell_quote_issue_orchestrator_python,
+from .hooks._python_path import ORCHESTRATOR_PYTHON_ENV
+from .hooks.durable_python import (
+    DurableOrchestratorPython,
+    UnstableInterpreterError,
+    resolve_durable_orchestrator_python,
 )
+from .hooks.pre_push_refs import DELETE_ONLY_SKIP_REASON, pre_push_refs_shell
 from .hooks.hooks import (
     UnsupportedAiAgentError,
     detect_agents_from_config,
@@ -61,10 +65,16 @@ class RepoGuardrailsStatus:
     pre_push_executable: bool
     pre_push_managed: bool
     pre_push_calls_verify: bool
+    # False when a managed wrapper predates the current template, so a repair
+    # (setup-guardrails) is what delivers a regenerated hook to the install.
+    pre_push_current: bool
     verify_exists: bool
     verify_executable: bool
     verify_managed: bool
     verify_selected_config: str | None
+    # The absolute interpreter a managed verify-pr.sh tries before the repo's
+    # own .venv; None for the machine-neutral (portable) script.
+    verify_preferred_python: Path | None
     helper_exists: bool
     helper_executable: bool
     helper_managed: bool
@@ -142,10 +152,13 @@ def inspect_repo_guardrails(
             pre_push_content, MANAGED_PRE_PUSH_MARKERS
         ),
         pre_push_calls_verify="scripts/verify-pr.sh" in pre_push_content,
+        pre_push_current=pre_push_content
+        == _render_repo_pre_push_hook(verify_script, repo_root),
         verify_exists=verify_script.exists(),
         verify_executable=_is_executable(verify_script),
         verify_managed=_contains_managed_marker(verify_content, MANAGED_VERIFY_MARKERS),
         verify_selected_config=_managed_verify_selection(verify_content),
+        verify_preferred_python=managed_verify_preferred_python(verify_content),
         helper_exists=helper_script.exists(),
         helper_executable=_is_executable(helper_script),
         helper_managed=_contains_managed_marker(helper_content, MANAGED_HELPER_MARKERS),
@@ -159,8 +172,15 @@ def setup_repo_guardrails(
     target_root: Path | None = None,
     validation_cmd: str | None = None,
     hooks_path: str | None = None,
+    python: Path | None = None,
 ) -> RepoGuardrailsInstallResult:
-    """Install repo-level guardrails and agent hooks for a target repository."""
+    """Install repo-level guardrails and agent hooks for a target repository.
+
+    *python* is the interpreter to bake into ``scripts/verify-pr.sh``; when
+    None it comes from ``ISSUE_ORCHESTRATOR_PYTHON`` or the running
+    interpreter. It is resolved before anything is written, so a refused
+    (unstable) interpreter leaves the repository untouched.
+    """
     repo_root = (target_root or config.repo_root).resolve()
     selected_config_name = _selected_config_name(config, repo_root)
     git = _new_git_cli()
@@ -177,6 +197,7 @@ def setup_repo_guardrails(
         validate_hook_installation_targets(config, repo_root)
     except (OSError, RuntimeError, UnsupportedAiAgentError, ValueError) as exc:
         raise RepoGuardrailsError(str(exc)) from exc
+    baked_python = _durable_verify_python(repo_root, python)
 
     hooks_path_value, hooks_dir = _resolve_repo_hooks_dir(
         repo_root,
@@ -201,6 +222,7 @@ def setup_repo_guardrails(
         result.verify_script,
         resolved_validation_cmd,
         selected_config_name=selected_config_name,
+        baked_python=baked_python,
         result=result,
     )
     _install_helper_script(result.helper_script, result)
@@ -335,20 +357,37 @@ def _set_local_hooks_path(
         )
 
 
+def _durable_verify_python(
+    repo_root: Path,
+    explicit: Path | None,
+) -> DurableOrchestratorPython | None:
+    """Return the interpreter verify-pr.sh will prefer, or None when portable."""
+    if _should_render_portable_verify_script(repo_root):
+        if explicit is not None:
+            raise RepoGuardrailsError(
+                "--python does not apply here: this repository's scripts/verify-pr.sh "
+                "is machine-neutral and names no interpreter."
+            )
+        return None
+    try:
+        return resolve_durable_orchestrator_python(explicit)
+    except UnstableInterpreterError as exc:
+        raise RepoGuardrailsError(str(exc)) from exc
+
+
 def _install_verify_script(
     verify_script: Path,
     validation_cmd: str,
     *,
     selected_config_name: str | None,
+    baked_python: DurableOrchestratorPython | None,
     result: RepoGuardrailsInstallResult,
 ) -> None:
     verify_script.parent.mkdir(parents=True, exist_ok=True)
     rendered = _render_verify_pr_script(
         validation_cmd,
         selected_config_name=selected_config_name,
-        baked_python=None
-        if _should_render_portable_verify_script(result.repo_root)
-        else shell_quote_issue_orchestrator_python(),
+        baked_python=None if baked_python is None else baked_python.shell_literal(),
     )
     _write_executable_file(verify_script, rendered, result)
 
@@ -553,6 +592,31 @@ echo "verify-pr: running cache-aware pre-push validation"
 """
 
 
+_PREFERRED_PYTHON_LINE = re.compile(r"^elif \[ -x (?P<literal>.+) \]; then$")
+
+
+def managed_verify_preferred_python(content: str) -> Path | None:
+    """Read the interpreter a managed verify script prefers, if it bakes one.
+
+    Mirrors the ``baked_python_branch`` that ``_render_verify_pr_script``
+    writes: the first ``elif [ -x <literal> ]`` whose literal is an absolute
+    path (the repo-relative ``.venv/bin/python`` branch follows it).
+    """
+    if not _contains_managed_marker(content, MANAGED_VERIFY_MARKERS):
+        return None
+    for line in content.splitlines():
+        match = _PREFERRED_PYTHON_LINE.match(line)
+        if match is None:
+            continue
+        try:
+            words = shlex.split(match.group("literal"))
+        except ValueError:
+            continue
+        if len(words) == 1 and Path(words[0]).is_absolute():
+            return Path(words[0])
+    return None
+
+
 def _managed_verify_selection(content: str) -> str | None:
     """Read the baked human-push selection from a managed verify script."""
     for line in content.splitlines():
@@ -608,7 +672,7 @@ run_post_verify_hook() {
   fi
 
   log "post-verify-starting"
-  if "$POST_VERIFY_HOOK" "$@"; then
+  if "$POST_VERIFY_HOOK" "$@" < "$PUSH_REFS_FILE"; then
     log "post-verify exit=0"
   else
     local post_verify_exit=$?
@@ -617,8 +681,9 @@ run_post_verify_hook() {
   fi
 }
 """
-        post_verify_call = '\nrun_post_verify_hook "$@"\n'
+        post_verify_call = '  run_post_verify_hook "$@"\n'
 
+    refs_shell = pre_push_refs_shell().rstrip()
     return f"""#!/usr/bin/env bash
 set -euo pipefail
 
@@ -637,6 +702,8 @@ log() {{
   printf "%s %s\\n" "$(date -Iseconds)" "$1" >> "$LOG_FILE"
 }}
 
+{refs_shell}
+capture_push_refs
 log "repo-pre-push-started"
 
 is_managed_wrapper() {{
@@ -659,7 +726,7 @@ if [ -x "$PROJECT_HOOK" ] && is_managed_wrapper "$PROJECT_HOOK"; then
   echo "pre-push: refusing to exec managed wrapper as project hook: $PROJECT_HOOK" >&2
 elif [ -x "$PROJECT_HOOK" ]; then
   log "project-hook-starting"
-  if "$PROJECT_HOOK" "$@"; then
+  if "$PROJECT_HOOK" "$@" < "$PUSH_REFS_FILE"; then
     log "project-hook exit=0"
   else
     project_exit=$?
@@ -676,15 +743,27 @@ if [ ! -x "$VERIFY_SCRIPT" ]; then
   exit 1
 fi
 
-log "verify-pr-starting"
-if "$VERIFY_SCRIPT"; then
-  log "verify-pr exit=0"
-else
-  verify_exit=$?
-  log "verify-pr exit=$verify_exit"
-  exit "$verify_exit"
-fi
+run_verify_pr() {{
+  log "verify-pr-starting"
+  if "$VERIFY_SCRIPT" < "$PUSH_REFS_FILE"; then
+    log "verify-pr exit=0"
+  else
+    verify_exit=$?
+    log "verify-pr exit=$verify_exit"
+    exit "$verify_exit"
+  fi
 {post_verify_call.rstrip()}
+}}
+
+# A push that only deletes remote refs pushes no code: there is nothing for
+# verify-pr to validate. push_is_delete_only fails closed (see
+# infra/hooks/pre_push_refs.py), so any update, or no ref lines at all, runs it.
+if push_is_delete_only "$PUSH_REFS_FILE"; then
+  log "verify-pr-skipped reason={DELETE_ONLY_SKIP_REASON}"
+  echo "pre-push: delete-only push; skipping verify-pr" >&2
+else
+  run_verify_pr "$@"
+fi
 
 log "repo-pre-push-completed"
 """

@@ -12,6 +12,8 @@ import pytest
 from issue_orchestrator.control.completion_handler import CleanupDecision
 from issue_orchestrator.domain.claim import ClaimResult, ClaimState
 from issue_orchestrator.domain.coder_prompt import PreparedCoderPromptAddendum
+from issue_orchestrator.control.launch_prompt import IssueLaunchPrompt
+from issue_orchestrator.ports.standing_rulings import NO_STANDING_RULINGS
 from issue_orchestrator.domain.lease_config import LeaseConfig
 from issue_orchestrator.domain.models import Session, SessionStatus
 from tests.callback_endpoint_helpers import ready_callback_endpoint
@@ -242,7 +244,7 @@ class TestSessionLauncherClaimAcquisition:
                     claim_manager=mock_claim_manager,
                     board_snapshot_provider=NullBoardSnapshotProvider(),
                     agent_callback_endpoint=ready_callback_endpoint(),
-                    coder_prompt_addendum=prompt_provider,
+                    launch_prompt=IssueLaunchPrompt(prompt_provider, NO_STANDING_RULINGS),
                 )
 
                 issue = MockIssue()

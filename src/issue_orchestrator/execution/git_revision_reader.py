@@ -65,6 +65,21 @@ class GitRevisionReader:
             return None
         return self.resolve_commit(worktree, tracking)
 
+    def fetch_pull_request_head(
+        self, repository: Path, number: int, remote: str = "origin"
+    ) -> str | None:
+        """PR ``number``'s head as the remote keeps it, fetched now, or None."""
+        if type(number) is not int or number <= 0:
+            raise ValueError("pull request number must be positive")
+        tracking = f"refs/remotes/{remote}/pull/{number}/head"
+        fetched = self._run_git(
+            repository, ["fetch", "--quiet", remote, f"+refs/pull/{number}/head:{tracking}"], check=False
+        )
+        if fetched.returncode != 0:
+            logger.warning("Could not fetch %s pull/%d in %s: %s", remote, number, repository, fetched.stderr.strip())
+            return None
+        return self.resolve_commit(repository, tracking)
+
     def verify_historical_selection(
         self, repo_root: Path, branch_name: str, head_sha: str
     ) -> bool:

@@ -52,7 +52,7 @@ def test_gate_rechecks_current_pair_and_accepts_repair(tmp_path: Path) -> None:
         config=Config(),
     )
 
-    rejection = gate.rejection_reason()
+    rejection = gate.rejection_reason(upheld_rulings=())
 
     assert rejection is not None
     assert "contract_violation" in rejection
@@ -60,4 +60,4 @@ def test_gate_rechecks_current_pair_and_accepts_repair(tmp_path: Path) -> None:
 
     _write_pair(run_dir, title="Concise health-review finding")
 
-    assert gate.rejection_reason() is None
+    assert gate.rejection_reason(upheld_rulings=()) is None

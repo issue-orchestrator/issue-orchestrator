@@ -1,17 +1,26 @@
 """Cost-bounded validation cadence and deterministic regression narrowing."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
+from typing import Literal
+
+from .engine_activity import EngineActivityCadence, EngineActivityObservation
 
 
 PENDING_DIAGNOSIS = "Confirmed failure; diagnosis is pending or was interrupted."
 
 
+CODE_CHANGE_KIND = "code_change"
+
+
 @dataclass(frozen=True, slots=True)
 class ValidationCadence:
+    """Due when io's code changed: tests that grade CODE (the exam, live agents)."""
+
     max_merges_since_success: int = 10
     max_delay_hours: int = 24
+    kind: Literal["code_change"] = field(default=CODE_CHANGE_KIND, init=False)
 
     def __post_init__(self) -> None:
         if type(self.max_merges_since_success) is not int or self.max_merges_since_success <= 0:
@@ -38,7 +47,9 @@ class BudgetedValidationSuite:
     name: str
     command: tuple[str, ...]
     setup_command: tuple[str, ...]
-    cadence: ValidationCadence
+    #: Code-change suites test io's code; engine-activity suites grade engine
+    #: behaviour (the improver) and are never bisected over io commits.
+    cadence: ValidationCadence | EngineActivityCadence
     timeout_seconds: int
     setup_timeout_seconds: int
     branch: str
@@ -134,6 +145,10 @@ class BudgetedValidationRun:
     probe: BudgetedValidationProbe
     purpose: str
     suite: BudgetedValidationSuite
+    #: An engine-activity suite's scheduled run: the activity it was started
+    #: for. A successful run's watermark is what later activity is measured
+    #: against.
+    activity: EngineActivityObservation | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +201,13 @@ class BudgetedValidationHistory:
     diagnosis: str = ""
 
     regression: BudgetedValidationRegression | None = None
+    #: An engine-activity suite's last look at the engines (due or not).
+    last_activity_probe: EngineActivityObservation | None = None
+
+    @property
+    def activity_baseline(self) -> EngineActivityObservation | None:
+        """The engines' activity as of the last successful scheduled run."""
+        return None if self.last_success is None else self.last_success.activity
 
     @property
     def recovery_pending(self) -> bool:

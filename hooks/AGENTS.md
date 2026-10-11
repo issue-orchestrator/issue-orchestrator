@@ -7,7 +7,7 @@ This directory contains git hook templates for local development.
 | File | Purpose |
 |------|---------|
 | `pre-commit` | Runs import-linter + AST guardrails before commit |
-| `pre-push` | Runs `scripts/verify-pr.sh` to reuse or seed the cache-aware publish validation record |
+| `pre-push` | Runs `scripts/verify-pr.sh` to reuse or seed the cache-aware publish validation record; skips it for a push that only deletes remote refs (shared rule in `src/issue_orchestrator/infra/hooks/pre_push_refs.py`, copied verbatim and test-guarded) |
 
 ## Installation
 

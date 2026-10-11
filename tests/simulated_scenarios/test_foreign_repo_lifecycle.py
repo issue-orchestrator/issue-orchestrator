@@ -7,7 +7,8 @@ Tests use the **real** ``GitWorktreeManager`` adapter so worktrees are created
 via ``git worktree add``, and verify:
 - Orchestrator-internal setup (hooks, Claude settings, coding-done, worktree-id)
 - PATH resolution uses the orchestrator's own package, not the target repo
-- sync_cli_tools copies from the orchestrator package, not repo_root
+- io places none of its tooling in the target's tree (#7566); completion
+  commands resolve from the session environment instead
 - setup_worktree defaults to empty (no orchestrator-specific commands)
 - The full lifecycle (coder -> completion -> review -> PR) succeeds
 """
@@ -24,12 +25,13 @@ from pathlib import Path
 
 import pytest
 
-from issue_orchestrator.adapters.worktree.api import sync_cli_tools
 from issue_orchestrator.domain.models import Issue
 from issue_orchestrator.events import EventName
 from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
+from issue_orchestrator.control.session_env import build_session_env_exports
+from issue_orchestrator.infra.agent_callback_endpoint import RuntimeAgentCallbackEndpoint
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.env import ENV_PREFIX
 from tests.git_push_authorization import authorized_local_fixture_git_env
@@ -229,21 +231,52 @@ def coder_session_contract(tmp_path, monkeypatch):
 
 
 def _build_session_exports(contract: ForeignSessionContract) -> str:
-    """Build the env-export string that session_launcher produces."""
-    orch_bin = Path(sys.executable).parent
+    """Build the env-export string production hands an agent session.
+
+    The common exports come from the production builder itself, so these
+    tests resolve ``coding-done`` exactly the way a launched agent does. The
+    callback token and completion capability are added by other launcher
+    steps in production; the intake fixture supplies them here.
+    """
+    exports = build_session_env_exports(
+        config=Config(control_api_port=contract.api_port),
+        completion_path=contract.completion_rel,
+        session_id=contract.session_name,
+        agent_label="agent:coder",
+        issue_number=contract.issue_number,
+        run_dir=contract.run_dir,
+        worktree_path=contract.worktree_path,
+        callback_endpoint=RuntimeAgentCallbackEndpoint(),
+    )
     return (
-        f"export {ENV_PREFIX}COMPLETION_PATH='{contract.completion_rel}'"
-        f" {ENV_PREFIX}API_PORT='{contract.api_port}'"
+        f"{exports}"
         f" {ENV_PREFIX}AGENT_CALLBACK_TOKEN='{TEST_CALLBACK_TOKEN}'"
         f" {ENV_PREFIX}COMPLETION_CAPABILITY='{contract.capability}'"
-        f" {ENV_PREFIX}SESSION_ID='{contract.session_name}'"
-        f" {ENV_PREFIX}AGENT_LABEL='agent:coder'"
-        f" {ENV_PREFIX}ISSUE_NUMBER='{contract.issue_number}'"
-        f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{contract.run_dir}'"
-        f" {ENV_PREFIX}RUN_DIR='{contract.run_dir}'"
-        f" {ENV_PREFIX}WORKTREE='{contract.worktree_path}'"
-        f' PATH="{orch_bin}:$PATH"'
     )
+
+
+def _run_in_session(contract: ForeignSessionContract, command: str) -> subprocess.CompletedProcess[str]:
+    """Run ``command`` in the worktree under the production session env."""
+    full_cmd = SubprocessPlugin()._build_process_command(  # noqa: SLF001
+        f"{_build_session_exports(contract)} && {command}", contract.worktree_path
+    )
+    return subprocess.run(
+        full_cmd, shell=True, capture_output=True, text=True,
+        executable="/bin/bash", timeout=60,
+    )
+
+
+def _io_paths_visible_to_target_tooling(worktree: Path) -> list[str]:
+    """io paths git knows of in the worktree, ignored files included.
+
+    ``--ignored`` is the point: ``info/exclude`` hides a file from
+    ``git status`` but not from a target validator that walks the tree.
+    """
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--ignored", "--untracked-files=all"],
+        cwd=worktree, check=True, capture_output=True, text=True,
+    ).stdout
+    return [line for line in status.splitlines() if "issue_orchestrator" in line]
 
 
 # ---------------------------------------------------------------------------
@@ -352,21 +385,84 @@ def test_foreign_repo_full_lifecycle(foreign_repo: Path, tmp_path: Path) -> None
 
 
 @pytest.mark.integration
-def test_foreign_repo_sync_cli_tools_from_package(make_worktree, foreign_repo: Path) -> None:
-    """sync_cli_tools copies from the orchestrator package, not repo_root."""
-    handle = make_worktree(99, "sync-test")
+def test_foreign_repo_worktree_holds_no_io_tooling_yet_coding_done_resolves(
+    make_worktree, coder_session_contract
+) -> None:
+    """#7566: io tooling stays out of the target's tree; completion still works.
+
+    porchpin's architecture audit failed on the ``src/issue_orchestrator/``
+    tree io used to plant in every worktree. The completion commands must
+    resolve from the orchestrator's own install via the session environment.
+    """
+    handle = make_worktree(99, "no-io-tooling")
     wt = handle.path
 
-    # The foreign repo has no src/issue_orchestrator/ at all
-    assert not (foreign_repo / "src" / "issue_orchestrator").exists()
+    assert not (wt / "src").exists()
+    assert _io_paths_visible_to_target_tooling(wt) == []
 
-    # But sync_cli_tools should still work (finds source from package)
-    sync_cli_tools(wt)
+    contract = coder_session_contract(99, wt)
+    for command in ("coding-done", "reviewer-done"):
+        result = _run_in_session(contract, f"command -v {command} && {command} --help")
+        assert result.returncode == 0, (
+            f"{command} did not resolve in a foreign worktree.\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+        resolved = Path(result.stdout.splitlines()[0])
+        assert not resolved.is_relative_to(wt), resolved
 
-    # CLI tools were synced
-    cli_tools = wt / "src" / "issue_orchestrator" / "entrypoints" / "cli_tools"
-    assert cli_tools.exists(), "CLI tools dir should be created"
-    assert (cli_tools / "agent_done.py").exists(), "agent_done.py should be synced"
+
+def _commit_and_push(repo: Path, files: dict[str, str]) -> None:
+    for relative, content in files.items():
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@test.com",
+         "commit", "-m", "io-shaped source"],
+        cwd=repo, check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "push", "origin", "main"], cwd=repo, check=True,
+        capture_output=True, env=authorized_local_fixture_git_env(),
+    )
+
+
+@pytest.mark.integration
+def test_io_shaped_repo_completion_runs_engine_code_not_branch_copy(
+    foreign_repo: Path, make_worktree, coder_session_contract
+) -> None:
+    """In io's own repo, ``src/issue_orchestrator`` is the project under review.
+
+    The branch's copy of the completion tooling may be stale or broken; the
+    session must still run the engine's ``coding-done``. That guarantee comes
+    from the session environment (engine ``bin`` first on ``PATH``, engine
+    ``src`` first on ``PYTHONPATH``), not from overwriting the branch's files —
+    which runtime setup must now leave exactly as committed.
+    """
+    broken = 'raise SystemExit("BRANCH COPY OF CODING-DONE RAN")\n'
+    _commit_and_push(foreign_repo, {
+        "src/issue_orchestrator/__init__.py": "",
+        "src/issue_orchestrator/entrypoints/__init__.py": "",
+        "src/issue_orchestrator/entrypoints/cli_tools/__init__.py": "",
+        "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py": broken,
+    })
+    handle = make_worktree(98, "io-shaped")
+    wt = handle.path
+    branch_tool = wt / "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py"
+
+    assert branch_tool.read_text() == broken
+    tags = subprocess.run(
+        ["git", "ls-files", "-v", "--", "src"], cwd=wt,
+        check=True, capture_output=True, text=True,
+    ).stdout.splitlines()
+    assert tags and all(tag.startswith("H ") for tag in tags), tags
+
+    result = _run_in_session(coder_session_contract(98, wt), "coding-done --help")
+    assert result.returncode == 0, (
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "BRANCH COPY" not in result.stdout + result.stderr
 
 
 @pytest.mark.integration
@@ -503,19 +599,11 @@ def test_foreign_repo_real_path_chain_finds_coding_done(make_worktree, coder_ses
     assert not (wt / "src" / "issue_orchestrator" / "domain").exists()
     assert not (wt / ".venv").exists()
 
-    plugin = SubprocessPlugin()
-    exports = _build_session_exports(coder_session_contract(77, wt))
-    full_cmd = plugin._build_process_command(  # noqa: SLF001
-        f"{exports} && which coding-done", wt
-    )
-
-    result = subprocess.run(
-        full_cmd, shell=True, capture_output=True, text=True, executable="/bin/bash",
-    )
+    result = _run_in_session(coder_session_contract(77, wt), "which coding-done")
 
     assert result.returncode == 0, (
         f"coding-done not found via real PATH chain in foreign repo worktree.\n"
-        f"stdout: {result.stdout}\nstderr: {result.stderr}\ncommand: {full_cmd}"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
     )
     assert "coding-done" in result.stdout, (
         f"Expected 'coding-done' in which output, got: {result.stdout!r}"
@@ -528,19 +616,11 @@ def test_foreign_repo_real_path_chain_coding_done_executes(make_worktree, coder_
     handle = make_worktree(78, "coding-done-exec-test")
     wt = handle.path
 
-    plugin = SubprocessPlugin()
-    exports = _build_session_exports(coder_session_contract(78, wt))
-    full_cmd = plugin._build_process_command(  # noqa: SLF001
-        f"{exports} && coding-done --help", wt
-    )
-
-    result = subprocess.run(
-        full_cmd, shell=True, capture_output=True, text=True, executable="/bin/bash",
-    )
+    result = _run_in_session(coder_session_contract(78, wt), "coding-done --help")
 
     assert result.returncode == 0, (
         f"coding-done --help failed in foreign repo worktree.\n"
-        f"stdout: {result.stdout}\nstderr: {result.stderr}\ncommand: {full_cmd}"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
     )
     assert "completed" in result.stdout.lower() or "usage" in result.stdout.lower(), (
         f"Expected coding-done help output, got: {result.stdout!r}"
@@ -557,15 +637,7 @@ def test_foreign_repo_real_path_chain_validation_runs(make_worktree, coder_sessi
     val_script.write_text("#!/bin/bash\necho VALIDATION_OK\nexit 0\n")
     val_script.chmod(0o755)
 
-    plugin = SubprocessPlugin()
-    exports = _build_session_exports(coder_session_contract(79, wt))
-    full_cmd = plugin._build_process_command(  # noqa: SLF001
-        f"{exports} && ./validate.sh", wt
-    )
-
-    result = subprocess.run(
-        full_cmd, shell=True, capture_output=True, text=True, executable="/bin/bash",
-    )
+    result = _run_in_session(coder_session_contract(79, wt), "./validate.sh")
 
     assert result.returncode == 0, (
         f"Validation command failed in foreign repo worktree.\n"
@@ -595,26 +667,16 @@ def test_foreign_repo_coding_done_writes_completion(make_worktree, coder_session
          "commit", "-m", "worktree setup", "--allow-empty"], cwd=wt, capture_output=True, check=True,
     )
 
-    exports = _build_session_exports(coder_session_contract(80, wt, completion_rel))
-    agent_cmd = (
+    result = _run_in_session(
+        coder_session_contract(80, wt, completion_rel),
         "coding-done completed"
         " --implementation 'Foreign repo test implementation'"
-        " --problems 'None'"
-    )
-
-    plugin = SubprocessPlugin()
-    full_cmd = plugin._build_process_command(  # noqa: SLF001
-        f"{exports} && {agent_cmd}", wt
-    )
-
-    result = subprocess.run(
-        full_cmd, shell=True, capture_output=True, text=True,
-        executable="/bin/bash", timeout=30,
+        " --problems 'None'",
     )
 
     assert result.returncode == 0, (
         f"coding-done completed failed in foreign repo worktree.\n"
-        f"stdout: {result.stdout}\nstderr: {result.stderr}\ncommand: {full_cmd}"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
     )
 
     completion_file = wt / completion_rel
@@ -727,6 +789,8 @@ def test_foreign_repo_claude_code_agent_done(make_worktree, coder_session_contra
     handle = make_worktree(90, "claude-foreign-test")
     wt = handle.path
     completion_rel = ".issue-orchestrator/completion.json"
+    # The agent works in a tree holding none of io's tooling (#7566).
+    assert _io_paths_visible_to_target_tooling(wt) == []
 
     # coding-done enforces clean working tree — commit setup files first
     subprocess.run(["git", "add", "."], cwd=wt, capture_output=True, check=True)
@@ -788,6 +852,8 @@ def test_foreign_repo_codex_agent_done(make_worktree, coder_session_contract) ->
     handle = make_worktree(91, "codex-foreign-test")
     wt = handle.path
     completion_rel = ".issue-orchestrator/completion.json"
+    # The agent works in a tree holding none of io's tooling (#7566).
+    assert _io_paths_visible_to_target_tooling(wt) == []
 
     # coding-done enforces clean working tree — commit setup files first
     subprocess.run(["git", "add", "."], cwd=wt, capture_output=True, check=True)

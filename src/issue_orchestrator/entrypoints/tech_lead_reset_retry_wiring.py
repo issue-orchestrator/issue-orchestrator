@@ -27,6 +27,11 @@ from ..control.issue_work_claims import claims_on_issue
 from ..control.session_history import SessionHistoryOwner
 from ..infra.repo_scope import require_repo
 from ..control.tech_lead_review_release import TechLeadReviewReleaseExecutor
+from ..control.tech_lead_decision_steps import DecisionStepsOwner
+from ..control.tech_lead_operator_decision import OperatorDecisionExecutor
+from ..control.tech_lead_block_resolution import TechLeadBlockResolutionExecutor
+from ..control.blocked_item_triage import agent_questions_in
+from ..domain.block_resolution import RESOLUTION_MARKER_PREFIX
 from ..control.queue_cache import QueueCache
 from ..control.tech_lead_kill_session import (
     KillSessionRunOutcome,
@@ -82,6 +87,7 @@ def build_tech_lead_review_release_executor(
         events=deps.events,
         config=orchestrator.config,
         labels=labels,
+        gates=deps.human_gates,
         read_issue=host.get_issue,
         list_open_prs=host.list_open_prs_complete,
         read_pr=host.get_pr,
@@ -98,6 +104,102 @@ def build_tech_lead_review_release_executor(
             review_label=orchestrator.config.code_review_label or "",
         ),
         repo_slug=require_repo(orchestrator.config),
+    )
+
+
+def build_tech_lead_operator_decision_executor(
+    orchestrator: "Orchestrator", host: "RepositoryHost"
+) -> OperatorDecisionExecutor:
+    """Bind an approved ``propose_decision`` (#7593) to the operator's own retry.
+
+    Approving a decision is the operator saying "go ahead", so the item is
+    retried through the very command the dashboard's Retry runs, under the
+    facade's state lock; the follow-ups and the decision comment are
+    create-once writes on the repository host.
+    """
+    deps = orchestrator.deps
+    return OperatorDecisionExecutor(
+        events=deps.events,
+        labels=deps.label_manager,
+        read_issue=host.get_issue,
+        retry_issue=orchestrator.operator_issue_commands.retry,
+        unsettleable_holders=lambda number: tuple(
+            cause.value for cause in deps.needs_human_block.unsettleable_holders(number)
+        ),
+        find_issue_by_marker=host.find_issue_by_marker,
+        create_issue=host.create_issue,
+        comment_marker_present=host.issue_comment_marker_present,
+        apply_action=deps.action_applier.apply,
+        require_authority=deps.action_applier.require_mutation_authority,
+        retries=deps.tech_lead_authority,
+        rulings=deps.standing_rulings,
+        steps=build_decision_steps_owner(orchestrator, host),
+    )
+
+
+def build_decision_steps_owner(orchestrator: "Orchestrator", host: "RepositoryHost") -> DecisionStepsOwner:
+    """Bind a decision's steps beyond its item (#8691) to the owner of each write:
+    the guarded applier (comments, closes, PR rework), the standing-rulings
+    owner (body blocks), and fresh repository reads and writes behind the
+    applier's mutation-authority check."""
+    deps = orchestrator.deps
+    return DecisionStepsOwner(
+        read_issue=host.get_issue,
+        read_pr=host.get_pr,
+        list_milestones=host.list_milestones,
+        set_milestone=host.update_issue_milestone,
+        write_body=host.update_issue_body,
+        comment_marker_present=host.issue_comment_marker_present,
+        apply_action=deps.action_applier.apply,
+        require_authority=deps.action_applier.require_mutation_authority,
+        rulings=deps.standing_rulings,
+        block=deps.needs_human_block,
+        repo_slug=require_repo(orchestrator.config),
+    )
+
+
+def build_tech_lead_block_resolution_executor(
+    orchestrator: "Orchestrator", host: "RepositoryHost"
+) -> TechLeadBlockResolutionExecutor:
+    """Bind ``resolve_block`` (#7658) to the owner of each precondition and write.
+
+    The shared block's owner discharges the causes; the runtime probe, claim
+    ledger and session history answer whether anything runs or failed since;
+    the item's comments carry the durable resolution markers; the timeline
+    holds the agent's question the human-only screen reads; and the operator
+    commands' requeue makes the item eligible again without a label sweep.
+    """
+    deps = orchestrator.deps
+    history = SessionHistoryOwner(lambda: orchestrator.state.session_history)
+    return TechLeadBlockResolutionExecutor(
+        events=deps.events,
+        labels=deps.label_manager,
+        block=deps.needs_human_block,
+        gates=deps.human_gates,
+        read_issue=host.get_issue,
+        read_comment_bodies=lambda number: host.issue_comment_bodies_containing(
+            number, RESOLUTION_MARKER_PREFIX
+        ),
+        # The WHOLE timeline: a person's task asked once is never screened out
+        # by later events (the triage agenda's bounded read is for display).
+        agent_questions=lambda number: agent_questions_in(deps.timeline_store.read(number)),
+        runtime_activity=deps.runtime_lifecycle.probe,
+        claims_on_issue=lambda number: claims_on_issue(deps.pending_work_claims, number),
+        # The tech lead's own run on a focus issue proposed the decision; it
+        # never raises the block the decision is about.
+        sessions_not_before=lambda number, instant: history.sessions_not_before(
+            number, instant, excluding_agent=orchestrator.config.tech_lead_review_agent
+        ),
+        published_review=deps.runtime_lifecycle.published_review,
+        find_issue_by_marker=host.find_issue_by_marker,
+        create_issue=host.create_issue,
+        apply_action=deps.action_applier.apply,
+        require_authority=deps.action_applier.require_mutation_authority,
+        requeue=orchestrator.operator_issue_commands.requeue_resolved,
+        discharges=deps.tech_lead_authority,
+        index_proposals=deps.tech_lead_authority.proposal_index.index_proposals,
+        rulings=deps.standing_rulings,
+        steps=build_decision_steps_owner(orchestrator, host),
     )
 
 
@@ -171,6 +273,7 @@ def build_tech_lead_reset_retry_executor(
             config=orchestrator.config,
             reset_issue_fn=reset_issue,
             current_labels=list(current_labels),
+            run_locked=orchestrator.run_locked,
             source=TECH_LEAD_RESET_RETRY_EVENT_SOURCE,
         )
         if success_payload is not None:

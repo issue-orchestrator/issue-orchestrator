@@ -43,6 +43,7 @@ from ..domain.models import (
     session_history_status_from_session_status,
 )
 from ..domain.session_event_identity import SessionEventIdentity
+from ..domain.human_block import NeedsHumanCause
 from ..domain.session_kind import SessionKind
 from ..ports import (
     EventSink,
@@ -560,6 +561,9 @@ class CompletionHandler:
             worktree_path=session.worktree_path,
             completed_at=datetime.now(timezone.utc),
             issue_labels=tuple(session.issue.labels),
+            # A failure investigation reads its focus item as evidence in a
+            # scratch worktree (#6823): it is not the item's work (#7658).
+            holds_issue=not session.scratch_worktree,
         )
 
     def finalize_terminal_outcome(
@@ -806,18 +810,53 @@ class CompletionHandler:
                         session.issue.number,
                         issue_machine.get_state().value,
                     )
-            elif status == SessionStatus.BLOCKED:
-                logger.info(f"[STATE_MACHINE] Issue #{session.issue.number}: IN_PROGRESS -> BLOCKED")
-                issue_machine.block()  # type: ignore[attr-defined]
-            elif status == SessionStatus.NEEDS_HUMAN:
-                logger.info(
-                    f"[STATE_MACHINE] Issue #{session.issue.number}: IN_PROGRESS -> NEEDS_HUMAN"
-                )
-                issue_machine.needs_human()  # type: ignore[attr-defined]
+            elif status in (SessionStatus.BLOCKED, SessionStatus.NEEDS_HUMAN):
+                self._hold_issue_machine(session, status, issue_machine)
         else:
             logger.debug(
                 f"[STATE_MACHINE] No issue machine found for issue #{session.issue.number} (may be restored session)"
             )
+
+    def _hold_issue_machine(
+        self, session: Session, status: SessionStatus, issue_machine: "IssueStateMachine"
+    ) -> None:
+        """An agent's block or needs_human, on the issue's cached lifecycle (#8693).
+
+        Only a kind that holds the issue's custody moves it - the capability
+        that also decides the issue's blocking labels in the action planner. A
+        rework, a review or a retrospective review runs beside the issue's open
+        PR, and the PR holds the issue, so its hold is a deliberate no-op here:
+        its needs_human is recorded by the shared block owner as the agent's own
+        cause, which :class:`~.human_gates.HumanGates` reads as a WORK hold, and
+        its block leaves the issue's labels to the PR/review workflow. Treating
+        it as an IN_PROGRESS hold raised on the PR_PENDING issue and aborted the
+        whole tick on porchpin (#8693).
+        """
+        before = issue_machine.get_state().value
+        if not session.key.kind.capabilities.holds_issue_custody:
+            cause = NeedsHumanCause.AGENT_COMPLETION
+            owner = (
+                f"the shared block's {cause.value} cause ({cause.scope.value} hold)"
+                if status is SessionStatus.NEEDS_HUMAN
+                else "the PR/review workflow"
+            )
+            logger.info(
+                "[STATE_MACHINE] Issue #%d stays %s: a %s session's %s does not move"
+                " the issue it does not hold; it is %s",
+                session.issue.number, before, session.key.kind.value, status.value, owner,
+            )
+            return
+        # The session was working the issue; a cache behind that fact (a
+        # restored session, a relaunch after a cleared hold) is brought up first.
+        issue_machine.custody_work_started()
+        if status is SessionStatus.BLOCKED:
+            issue_machine.block()
+        else:
+            issue_machine.needs_human()
+        logger.info(
+            "[STATE_MACHINE] Issue #%d: %s -> %s", session.issue.number, before,
+            issue_machine.get_state().value,
+        )
 
     def _update_review_machine(self, session: Session) -> None:
         """Update the review state machine for a completed review session."""
@@ -840,9 +879,12 @@ class CompletionHandler:
                     issue_key=session.key.issue.stable_id(),
                     issue_number=session.issue.number,
                 )
+                before = review_machine.last_transition
                 self._process_review_outcome(pr_info, pr_number_review, review_machine)
-                # Publish review outcome events from state machine transitions
-                self._publish_review_outcome(review_machine, session, pr_number_review)
+                # Publish only an outcome THIS review produced: a stale earlier
+                # approval must never be reported as this review's verdict.
+                if review_machine.last_transition is not before:
+                    self._publish_review_outcome(review_machine, session, pr_number_review)
         except Exception as e:
             logger.warning(f"Failed to check PR labels for review outcome: {e}")
             self.events.publish(
@@ -912,12 +954,22 @@ class CompletionHandler:
         self.events.publish(make_trace_event(EventName(tr.event_name), payload))
 
     def _process_review_outcome(self, pr_info: Any, pr_number: int, review_machine: Any) -> None:
-        """Process review outcome based on PR labels."""
+        """Process review outcome based on PR labels.
+
+        Rework wins over a ``code-reviewed`` left from an earlier approval: a
+        changes-requested verdict does not take that label off. A re-review of
+        an approved PR reopens the review only once its outcome is known
+        (#8141), so a review with no outcome label leaves the approval as is.
+        """
         labels = pr_info.labels
-        if self.config.code_reviewed_label and self.config.code_reviewed_label in labels:
-            self._handle_review_approved(pr_info, pr_number, review_machine)
-        elif self._lm.needs_rework in labels:
+        rework = self._lm.needs_rework in labels
+        approved = bool(self.config.code_reviewed_label) and self.config.code_reviewed_label in labels
+        if (rework or approved) and review_machine.can_transition("reopen_review"):
+            review_machine.reopen_review()
+        if rework:
             self._handle_changes_requested(pr_number, review_machine)
+        elif approved:
+            self._handle_review_approved(pr_info, pr_number, review_machine)
 
     def _handle_review_approved(self, pr_info: Any, pr_number: int, review_machine: Any) -> None:
         """Handle approved review outcome."""

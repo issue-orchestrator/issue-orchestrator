@@ -50,7 +50,9 @@ from ..domain.tech_lead_session import (
     TechLeadSessionFlavor,
 )
 from .actions import CreateTechLeadIssueAction, SupportsApplyAction
+from .blocked_item_triage import label_blocked_work_items
 from .board_review_fingerprint import board_review_fingerprint
+from .reconciliation import without_paused_subjects
 from .tech_lead_issue_policy import (
     apply_tech_lead_priority_prefix,
     health_review_issue_labels,
@@ -111,7 +113,11 @@ class HealthReviewDecision:
 
 
 def health_review_decision(
-    config: "Config", state: "OrchestratorState", now: float
+    config: "Config",
+    state: "OrchestratorState",
+    now: float,
+    *,
+    triage_owed: Callable[[], bool] = lambda: False,
 ) -> HealthReviewDecision:
     """Decide whether the periodic review fires, and on which board.
 
@@ -133,7 +139,9 @@ def health_review_decision(
     ``interval_minutes=0``, where it is the only trigger) and must record the
     board it walked.
     """
-    fingerprint = board_review_fingerprint(state, now)
+    fingerprint = board_review_fingerprint(
+        state, now, label_blocked=label_blocked_work_items(config, state)
+    )
     interval_minutes = health_review_interval_minutes(config)
     if interval_minutes <= 0:
         return HealthReviewDecision(due=False, fingerprint=fingerprint)
@@ -142,7 +150,10 @@ def health_review_decision(
     if not fingerprint:
         return HealthReviewDecision(due=False, fingerprint=fingerprint)
     return HealthReviewDecision(
-        due=fingerprint != state.last_reviewed_board_fingerprint,
+        # A blocked item still owed a triage keeps a review due on an unchanged
+        # board (#7593): one deferred by the per-run cap, or whose triage did
+        # not take effect, would otherwise wait for an unrelated change.
+        due=fingerprint != state.last_reviewed_board_fingerprint or triage_owed(),
         fingerprint=fingerprint,
     )
 
@@ -242,8 +253,29 @@ def discover_open_health_review_anchor(
     Callers invoke this only while a creation decision is actually pending
     (GitHub API discipline — see ``FactGatherer.gather_tech_lead_facts``).
     """
-    scoped = health_review_anchor_issues(repository_host, config, state="open")
+    scoped = runnable_tech_lead_anchors(
+        health_review_anchor_issues(repository_host, config, state="open")
+    )
     return scoped[0].number if scoped else None
+
+
+def runnable_tech_lead_anchors(issues: Iterable["Issue"]) -> list["Issue"]:
+    """The open anchors a tech-lead run may still use: none paused for reconciliation.
+
+    Every output of a run reconciles against its anchor — the anchor's own
+    labels and close, its comments, and the issues and case files it files
+    (#6957) — and the mutation gate refuses all of them while the anchor
+    carries the reconciliation pause. porchpin #410 held that pause for two
+    days, was still treated as THE open health anchor, and was relaunched until
+    two reviews had run 92 minutes between them with every output dropped.
+
+    A paused anchor is therefore not an anchor: it is not requeued at startup,
+    not reused on demand, and does not dedup a due review, so the next review
+    gets a fresh anchor while the paused one waits for the human who lifts it.
+    The one rule for startup recovery, the tick's anchor classification and
+    the on-demand path.
+    """
+    return without_paused_subjects(issues)
 
 
 def health_review_anchor_issues(
@@ -275,7 +307,7 @@ def classify_tech_lead_anchor_issues(
     """
     batch: Optional[int] = None
     health: Optional[int] = None
-    for issue in _scoped_issues(issues, filter_label):
+    for issue in runnable_tech_lead_anchors(_scoped_issues(issues, filter_label)):
         if has_health_review_marker(issue.labels):
             health = issue.number if health is None else health
             continue
@@ -725,9 +757,9 @@ def recover_pending_tech_lead_anchors(
     """Requeue open tech_lead anchors on startup (crash-safe label recovery).
 
     Gated tech_lead proposals share the tech lead agent label (#6778) but are
-    never anchors: gate-labeled issues await operator approval, and
-    op-backed issues without the gate label are approved ops the planner
-    executes from the fact scan. Requeuing either as a batch anchor would
+    never anchors: unapproved proposals await a maintainer (#7763), and
+    approved op-backed issues are ops the planner executes from the fact
+    scan (anchor recovery needs no verdicts, so it passes none). Requeuing either as a batch anchor would
     launch a tech_lead session on a proposal issue — the same
     ``reconcile_tech_lead_proposals`` owner the fact gatherer uses excludes
     them here, over an EXHAUSTIVE open scan (#6779 R4) so a proposal backlog
@@ -757,9 +789,12 @@ def recover_pending_tech_lead_anchors(
         if tech_lead_authority is not None
         else {}
     )
-    reconciled = reconcile_tech_lead_proposals(issues, ops=ops,
+    index = tech_lead_authority.proposal_index if tech_lead_authority is not None else None
+    reconciled = reconcile_tech_lead_proposals(issues, ops=ops, verdicts={},
         pending_markers=tuple(item.marker for item in tech_lead_authority.list_pending_proposals())
-        if tech_lead_authority is not None else ())
+        if tech_lead_authority is not None else (),
+        # Known proposals stay proposals whatever was stripped (#7763 r15 F1).
+        known=index.known_proposals() if index is not None else frozenset())
     proposal_skipped = len(issues) - len(reconciled.anchor_candidate_issues)
     anchors, case_files = split_tech_lead_case_file_issues(
         reconciled.anchor_candidate_issues
@@ -770,7 +805,15 @@ def recover_pending_tech_lead_anchors(
         )
     if case_files:
         print(f"  Skipped {len(case_files)} pattern case file(s) (#6781)")
+    runnable = runnable_tech_lead_anchors(anchors)
+    runnable_numbers = {issue.number for issue in runnable}
     for issue in anchors:
+        if issue.number not in runnable_numbers:
+            print(
+                f"  tech_lead issue #{issue.number}: Paused for reconciliation;"
+                " left for a human, not requeued"
+            )
+    for issue in runnable:
         # Every lane a tech-lead run may hold, the pre-#7347 ``issue-N`` too.
         if any(map(session_exists, SessionKind.TECH_LEAD.conflicting_terminal_names(issue.number))):
             print(f"  tech_lead issue #{issue.number}: Already running")

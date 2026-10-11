@@ -195,7 +195,7 @@ def build_scripted_review_runner(
                     getting_closer = False
 
                 if response_type == "ok" and approval_gate is not None:
-                    rejection_reason = approval_gate.rejection_reason()
+                    rejection_reason = approval_gate.rejection_reason(upheld_rulings=())
                     if rejection_reason is not None:
                         response_type = "changes_requested"
                         response_text = f"{rejection_reason} Address it and continue."

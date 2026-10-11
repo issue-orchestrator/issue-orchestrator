@@ -33,6 +33,9 @@ from issue_orchestrator.infra.repo_guardrails import (
     _render_verify_pr_script,
 )
 
+# setup-guardrails needs a stable interpreter to bake (#8087).
+pytestmark = pytest.mark.usefixtures("durable_orchestrator_python")
+
 
 def _init_repo(repo: Path) -> None:
     subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)

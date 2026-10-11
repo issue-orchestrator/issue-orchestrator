@@ -28,9 +28,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from collections.abc import Mapping
+from enum import Enum
+from typing import Any, Literal, cast
 
+from .block_resolution import BlockResolution, ParentDisposition
+from .decision_steps import DecisionFollowThrough, DecisionStepKind
 from .tech_lead_findings import VALID_FINDING_FIX_CLASSES
+from .validated_work_release_intent import ValidatedWorkReleaseIntent
 
 
 TechLeadActionType = Literal[
@@ -43,7 +48,10 @@ TechLeadActionType = Literal[
     "kill_hung_session",
     "request_rework",
     "recover_validated_work",
+    "release_validated_work",
     "release_withheld_review",
+    "propose_decision",
+    "resolve_block",
 ]
 TechLeadFindingClassification = Literal["infra", "task", "agent", "systemic"]
 TechLeadAuthorityMode = Literal["execute", "propose"]
@@ -64,7 +72,10 @@ VALID_TECH_LEAD_ACTION_TYPES: frozenset[str] = frozenset(
         "kill_hung_session",
         "request_rework",
         "recover_validated_work",
+        "release_validated_work",
         "release_withheld_review",
+        "propose_decision",
+        "resolve_block",
     )
 )
 _VALID_CLASSIFICATIONS = frozenset(("infra", "task", "agent", "systemic"))
@@ -79,7 +90,14 @@ ACT_LEVEL_TECH_LEAD_ACTIONS: frozenset[str] = frozenset(
         "kill_hung_session",
         "request_rework",
         "recover_validated_work",
+        # Releases records whose work was rebuilt elsewhere with rewritten
+        # history (#9092); destructive, so it only ever runs on approval.
+        "release_validated_work",
         "release_withheld_review",
+        # Always a gated proposal: approving it is the operator's decision (#7593).
+        "propose_decision",
+        # Decides a needs-human work block in the operator's stead (#7658).
+        "resolve_block",
     )
 )
 UNWIRED_ACT_LEVEL_TECH_LEAD_ACTIONS: frozenset[str] = frozenset()
@@ -113,6 +131,97 @@ MAX_LABEL_CHARS = 100
 MAX_PATTERN_SIGNATURE_CHARS = 200
 MAX_AREA_CHARS = 50
 
+#: Drafted follow-up issues one ``propose_decision`` may file on approval.
+MAX_DECISION_FOLLOW_UPS = 3
+
+
+class TriageClass(str, Enum):
+    """The one disposition a health review gives a blocked item (#7593).
+
+    See :mod:`.blocked_item_triage` for the policy; the class lives here
+    because it is part of the decision artifact's contract.
+    """
+
+    OPERATOR_DECISION = "operator_decision"
+    HUMAN_HAND_OVER = "human_hand_over"
+    EXPLAINED = "explained"
+    REMEDY = "remedy"
+
+
+#: The action types that carry each class. A diagnosis (a comment on the
+#: anchor), a pattern case file or a new issue alone is not a disposition of an
+#: item, so ``flag_pattern`` and ``create_issue`` carry none.
+TRIAGE_CLASS_ACTION_TYPES: Mapping[TriageClass, frozenset[str]] = {
+    TriageClass.OPERATOR_DECISION: frozenset({"propose_decision"}),
+    TriageClass.HUMAN_HAND_OVER: frozenset({"escalate_to_human"}),
+    TriageClass.EXPLAINED: frozenset({"post_comment"}),
+    # defer_to_tracker is a failure investigation's disposition only, and a
+    # triage is a health review's: it cannot carry one. request_rework targets
+    # a PR, never the blocked issue, and the engine refuses a blocked issue's
+    # rework anyway, so it does not move the item (#7593 review r3).
+    TriageClass.REMEDY: ACT_LEVEL_TECH_LEAD_ACTIONS - {"propose_decision", "request_rework"},
+}
+
+
+@dataclass(frozen=True)
+class DecisionFollowUp:
+    """An issue a ``propose_decision`` drafts, filed only if the operator approves."""
+
+    title: str
+    body: str
+
+    def __post_init__(self) -> None:
+        title = cast(object, self.title)
+        body = cast(object, self.body)
+        _require(
+            isinstance(title, str) and bool(title.strip()) and len(title) <= MAX_TITLE_CHARS,
+            f"follow-up title must be non-empty and at most {MAX_TITLE_CHARS} characters",
+        )
+        _require(
+            isinstance(body, str) and bool(body.strip()) and len(body) <= MAX_ACTION_BODY_CHARS,
+            f"follow-up body must be non-empty and at most {MAX_ACTION_BODY_CHARS} characters",
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"title": self.title, "body": self.body}
+
+    @classmethod
+    def from_mapping(cls, data: Any, *, context: str) -> "DecisionFollowUp":
+        if not isinstance(data, dict):
+            raise ValueError(f"{context} must be an object, got {type(data).__name__}")
+        return cls(
+            title=_required_str(data, "title", context),
+            body=_required_str(data, "body", context),
+        )
+
+
+def _follow_ups(value: Any, *, context: str) -> tuple[DecisionFollowUp, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ValueError(f"{context} follow_up_issues must be a list")
+    if len(value) > MAX_DECISION_FOLLOW_UPS:
+        raise ValueError(
+            f"{context} has {len(value)} follow_up_issues (max {MAX_DECISION_FOLLOW_UPS})"
+        )
+    return tuple(
+        DecisionFollowUp.from_mapping(item, context=f"{context} follow-up #{index}")
+        for index, item in enumerate(value, start=1)
+    )
+
+
+def _triage_class(value: Any, *, context: str) -> TriageClass | None:
+    if value is None:
+        return None
+    try:
+        return TriageClass(value)
+    except ValueError:
+        raise ValueError(
+            f"{context} triage_class must be one of"
+            f" {sorted(item.value for item in TriageClass)}, got {value!r}"
+        ) from None
+
+
 # Optional action fields that are meaningful on exactly ONE action type, as
 # (field name, owning action type, issue reference). One table so a new
 # type-scoped field cannot be added without declaring where it belongs, and so
@@ -122,6 +231,11 @@ _TYPE_SCOPED_ACTION_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("duplicate_of", "create_issue", "#6878"),
     ("fix_class", "flag_pattern", "#6957"),
     ("tracker_number", "defer_to_tracker", "#6971"),
+    ("follow_up_issues", "propose_decision", "#7593"),
+    ("resolution", "resolve_block", "#7658"),
+    ("release", "release_validated_work", "#9092"),
+    # A decision's steps beyond its item (#8691): either decision type.
+    ("follow_through", "propose_decision|resolve_block", "#8691"),
 )
 
 
@@ -223,6 +337,16 @@ class ProposedTechLeadAction:
       issue's open, CI-green PR when the issue's own ``blocked-failed`` is the
       only thing withholding it. The orchestrator re-verifies every
       precondition when it applies the release and refuses a stale one.
+    * ``resolve_block`` — ``target_number`` (the ISSUE) + ``body`` (the
+      rationale) + ``resolution`` (#7658): decides a ``needs-human`` WORK
+      block in the operator's stead (answer the agent's question, decide a
+      split, or lift a stale block), discharging only the causes it names.
+      See :mod:`.block_resolution` for the typed rules it cannot bypass.
+    * ``release_validated_work`` — ``target_number`` (the ISSUE) + ``body``
+      (the rationale) + ``release`` (#9092): the record ids, from
+      ``validated-work-release-targets.json``, whose work was rebuilt in
+      ``superseding_pr_number`` (a merged PR of the same issue) with rewritten
+      history. Destructive: it runs only once the operator approves it.
     """
 
     id: str
@@ -249,8 +373,8 @@ class ProposedTechLeadAction:
     # action. Only meaningful for ``create_issue`` — ``validate()`` rejects it
     # on any other action type. It composes with the ADR-0031 authority gate:
     # under ``execute`` the created issue jumps the worker lane immediately;
-    # under ``propose`` it jumps only once the ``proposed-tech-lead`` gate is
-    # removed. The orchestrator (never the agent) performs the queue write.
+    # under ``propose`` it jumps only once a verified approval admits it
+    # (#7763). The orchestrator (never the agent) performs the queue write.
     expedite: bool = False
     # Dedup intent (#6878): when the tech lead recognizes that its proposed
     # ``create_issue`` follow-up already exists as an open issue, it sets
@@ -266,6 +390,22 @@ class ProposedTechLeadAction:
     # moment the tracker closes with the issue still blocked. Only meaningful for
     # ``defer_to_tracker``; ``validate()`` rejects it on any other action type.
     tracker_number: int | None = None
+    # The blocked-item triage this action is (#7593): set on exactly one action
+    # per item a health review was granted to triage. Valid only on the action
+    # types :data:`TRIAGE_CLASS_ACTION_TYPES` lists for the class.
+    triage_class: TriageClass | None = None
+    # Issues a ``propose_decision`` drafts; the orchestrator files them only
+    # when the operator approves the decision (a split names the remainder).
+    follow_up_issues: tuple[DecisionFollowUp, ...] = ()
+    # What a ``resolve_block`` decides (#7658): the work-block causes it
+    # discharges, the decision and its evidence, and a split's children.
+    resolution: BlockResolution | None = None
+    # What a ``release_validated_work`` proposes releasing (#9092): untrusted
+    # record ids plus the PR that rebuilt their work; bound at planning.
+    release: ValidatedWorkReleaseIntent | None = None
+    # What approving a decision executes beyond its item, and the operator's
+    # checklist of what io cannot do (#8691): ``steps`` and ``operator_steps``.
+    follow_through: DecisionFollowThrough = field(default_factory=DecisionFollowThrough)
 
     @classmethod
     def from_mapping(cls, data: Any, *, index: int) -> "ProposedTechLeadAction":
@@ -347,6 +487,30 @@ class ProposedTechLeadAction:
             ),
             duplicate_of=duplicate_of,
             tracker_number=tracker_number,
+            triage_class=_triage_class(
+                data.get("triage_class"), context=f"proposed action {action_id}"
+            ),
+            follow_up_issues=_follow_ups(
+                data.get("follow_up_issues"), context=f"proposed action {action_id}"
+            ),
+            resolution=(
+                BlockResolution.from_mapping(
+                    data["resolution"], context=f"proposed action {action_id}"
+                )
+                if data.get("resolution") is not None
+                else None
+            ),
+            release=(
+                ValidatedWorkReleaseIntent.from_mapping(
+                    data["release"], context=f"proposed action {action_id}"
+                )
+                if data.get("release") is not None
+                else None
+            ),
+            follow_through=DecisionFollowThrough.from_agent(
+                data.get("steps"), data.get("operator_steps"),
+                context=f"proposed action {action_id}",
+            ),
         )
         action.validate()
         return action
@@ -361,6 +525,19 @@ class ProposedTechLeadAction:
         self._validate_type_scoped_fields(context)
         self._validate_optional_field_shapes(context)
         self._validate_required_fields(context)
+        self._validate_follow_through(context)
+
+    def _validate_follow_through(self, context: str) -> None:
+        """A decision's steps beyond its item (#8691): typed, and never closing its own item."""
+        _require(isinstance(cast(object, self.follow_through), DecisionFollowThrough),
+                 f"{context} follow_through must be a DecisionFollowThrough")
+        if self.follow_through and self.target_number is not None:
+            self.follow_through.validate_for(self.target_number)
+        reworks = any(step.kind is DecisionStepKind.REQUEST_PR_REWORK for step in self.follow_through.steps)
+        closes = self.resolution is not None and self.resolution.parent is ParentDisposition.CLOSE
+        _require(not (reworks and closes),
+                 f"{context} closes its item (a closing split) and reworks its PR: the rework"
+                 " of a closed issue's PR never launches")
 
     def _validate_type_scoped_fields(self, context: str) -> None:
         """Reject optional fields set on an action type that cannot use them.
@@ -376,9 +553,9 @@ class ProposedTechLeadAction:
             if not getattr(self, name):
                 continue
             _require(
-                self.action_type == owner_type,
+                self.action_type in owner_type.split("|"),
                 f"{context} sets {name}, which is only valid on"
-                f" {owner_type} actions ({reference})",
+                f" {owner_type.replace('|', ' or ')} actions ({reference})",
             )
 
     def _validate_optional_field_shapes(self, context: str) -> None:
@@ -421,6 +598,30 @@ class ProposedTechLeadAction:
                 f"{context} fix_class must be one of"
                 f" {sorted(VALID_FINDING_FIX_CLASSES)}, got {self.fix_class!r}",
             )
+        if self.triage_class is not None:
+            triage = cast(object, self.triage_class)
+            _require(
+                isinstance(triage, TriageClass),
+                f"{context} triage_class must be a TriageClass",
+            )
+            _require(
+                self.action_type in TRIAGE_CLASS_ACTION_TYPES[self.triage_class],
+                f"{context} cannot carry triage_class {self.triage_class.value}:"
+                " that class is disposed of only by"
+                f" {sorted(TRIAGE_CLASS_ACTION_TYPES[self.triage_class])}",
+            )
+            _require(
+                not self.target_is_pr,
+                f"{context} triages an issue, so it cannot target a PR",
+            )
+        follow_ups = cast(object, self.follow_up_issues)
+        _require(
+            isinstance(follow_ups, tuple)
+            and len(follow_ups) <= MAX_DECISION_FOLLOW_UPS
+            and all(isinstance(item, DecisionFollowUp) for item in cast(tuple[object, ...], follow_ups)),
+            f"{context} follow_up_issues must be at most {MAX_DECISION_FOLLOW_UPS}"
+            " DecisionFollowUp items",
+        )
 
     def _validate_required_fields(self, context: str) -> None:
         """Per-action-type required fields (see the class docstring)."""
@@ -463,13 +664,32 @@ class ProposedTechLeadAction:
                 " ledger key, #6781)",
             )
         elif self.action_type in ACT_LEVEL_TECH_LEAD_ACTIONS:
+            self._validate_act_level_fields(context)
+
+    def _validate_act_level_fields(self, context: str) -> None:
+        """Act-level intents name their target and rationale, plus their own payload."""
+        _require(
+            self.target_number is not None, f"{context} requires target_number"
+        )
+        _require(bool(self.body), f"{context} requires body (rationale)")
+        if self.action_type == "request_rework":
+            _require(self.target_is_pr, f"{context} requires target_is_pr=true")
+            _require(bool(self.finding_ids), f"{context} requires finding_ids")
+        if self.action_type == "propose_decision":
+            _require(bool(self.title), f"{context} requires title (the decision)")
+            _require(not self.target_is_pr, f"{context} targets an issue, not a PR")
+        if self.action_type == "resolve_block":
             _require(
-                self.target_number is not None, f"{context} requires target_number"
+                isinstance(cast(object, self.resolution), BlockResolution),
+                f"{context} requires resolution (the decision it makes, #7658)",
             )
-            _require(bool(self.body), f"{context} requires body (rationale)")
-            if self.action_type == "request_rework":
-                _require(self.target_is_pr, f"{context} requires target_is_pr=true")
-                _require(bool(self.finding_ids), f"{context} requires finding_ids")
+            _require(not self.target_is_pr, f"{context} resolves an issue's block, not a PR's")
+        if self.action_type == "release_validated_work":
+            _require(
+                isinstance(cast(object, self.release), ValidatedWorkReleaseIntent),
+                f"{context} requires release (the record ids and the superseding PR, #9092)",
+            )
+            _require(not self.target_is_pr, f"{context} releases an issue's records, not a PR's")
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -493,6 +713,12 @@ class ProposedTechLeadAction:
             ("expedite", self.expedite),
             ("duplicate_of", self.duplicate_of),
             ("tracker_number", self.tracker_number),
+            ("triage_class", self.triage_class.value if self.triage_class else None),
+            ("follow_up_issues", [item.to_dict() for item in self.follow_up_issues]),
+            ("resolution", self.resolution.to_dict() if self.resolution else None),
+            ("release", self.release.to_dict() if self.release else None),
+            ("steps", [step.to_dict() for step in self.follow_through.steps]),
+            ("operator_steps", list(self.follow_through.operator_steps)),
         )
         for key, value in optional:
             if value:

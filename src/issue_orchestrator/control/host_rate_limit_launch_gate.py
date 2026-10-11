@@ -305,12 +305,16 @@ def rate_limited_launch_skips(
     named with the reset it waits for, so "waiting for GitHub" is visible per
     item instead of reading as a launch that silently never happened.
     """
-    from .planner_types import SkippedItem
-
-    reason = (
+    return queued_launch_skips(snapshot, (
         f"{RATE_LIMIT_DEFER_REASON}: GitHub {hold.limit.kind} rate limit"
         f" resets at {hold.limit.resets_at.isoformat()}"
-    )
+    ))
+
+
+def queued_launch_skips(snapshot: "OrchestratorSnapshot", reason: str) -> list["SkippedItem"]:
+    """Every queued launch request, named as waiting for *reason* this tick."""
+    from .planner_types import SkippedItem
+
     items: list[tuple[str, int | None]] = [
         *(("review", review.pr_number) for review in snapshot.pending_reviews),
         *(
@@ -365,6 +369,11 @@ def plan_launches_or_wait(
     and a refusal it meets is counted against the queue's budget - which is how
     a limit that never lifts reaches the escalation.
     """
+    missing = snapshot.integration_branch_missing
+    if missing is not None:
+        # Every worktree is based on the integration branch (#8144): nothing
+        # launches until the upkeep has seen it exist.
+        return [], queued_launch_skips(snapshot, f"waiting for the integration branch {missing!r} to exist")
     hold = snapshot.host_rate_limit_hold
     if hold is None or hold.bound_exceeded:
         return plan_launches()
@@ -387,5 +396,6 @@ __all__ = [
     "converge_claim",
     "live_episode_keys",
     "plan_launches_or_wait",
+    "queued_launch_skips",
     "rate_limited_launch_skips",
 ]

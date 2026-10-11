@@ -643,3 +643,107 @@ def test_a_withdrawal_never_takes_off_a_block_landed_while_it_decided(tmp_path) 
     assert "needs-human" in labels.live[229], "the second park's block stands"
     row = SQLiteActionLivenessStore(tmp_path / "action_liveness.sqlite").row(second)
     assert row is not None and row.parked and row.escalated
+
+
+# --- A park decided under old code is re-tried once by new code (#7592) -------
+
+
+def _park_under(path, clock, engine, outcome):
+    owner = liveness_owner(
+        store=SQLiteActionLivenessStore(path), clock=clock, policy=POLICY,
+        engine_commit=engine,
+    )
+    for _ in range(POLICY.max_attempts):
+        if owner.admit(KEY).admission is Admission.PARKED:
+            break
+        owner.record(KEY, outcome)
+        clock.advance(timedelta(hours=1))
+    assert owner.admit(KEY).admission is Admission.PARKED
+    return owner
+
+
+def test_a_new_engine_retries_a_park_once_and_its_success_releases_the_block(tmp_path) -> None:
+    """porchpin #364: a recovery parked on a refusal that a later commit fixed.
+    Its facts never change, so only the engine's code can re-admit it."""
+    path = tmp_path / "action_liveness.sqlite"
+    clock = ManualClock()
+    _park_under(path, clock, "old0000", ActionOutcome.transient("refused by a bug"))
+    escalation = RecordingEscalation()
+    fixed = liveness_owner(
+        store=SQLiteActionLivenessStore(path), escalation=escalation, clock=clock,
+        policy=POLICY, engine_commit="new1111",
+    )
+
+    assert fixed.admit(KEY).admitted
+    fixed.record(KEY, ActionOutcome.done())
+
+    assert fixed.admit(KEY).admission is Admission.ADMIT
+    assert SQLiteActionLivenessStore(path).row(KEY) is None
+    assert escalation.unblocks == [(229, True)]
+
+
+def test_a_retry_that_fails_again_stays_parked_until_the_next_commit(tmp_path) -> None:
+    path = tmp_path / "action_liveness.sqlite"
+    clock = ManualClock()
+    _park_under(path, clock, "old0000", ActionOutcome.transient("still broken"))
+    escalation = RecordingEscalation()
+
+    def engine(commit):
+        return liveness_owner(
+            store=SQLiteActionLivenessStore(path), escalation=escalation, clock=clock,
+            policy=POLICY, engine_commit=commit,
+        )
+
+    retry = engine("new1111")
+    assert retry.admit(KEY).admitted
+    # A second asker under the same commit (the drain's next pass, or a
+    # restart) is held: the commit's one re-try is already taken.
+    assert retry.admit(KEY).admission is Admission.PARKED
+    assert engine("new1111").admit(KEY).admission is Admission.PARKED
+    retry.record(KEY, ActionOutcome.transient("still broken"))
+
+    row = SQLiteActionLivenessStore(path).row(KEY)
+    assert row.parked and row.parked_on_engine == "new1111"
+    assert row.escalated
+    assert escalation.parked == [] and escalation.blocks == []  # not re-escalated
+    assert engine("new1111").admit(KEY).admission is Admission.PARKED
+    assert engine("next2222").admit(KEY).admitted
+
+
+def test_a_park_from_before_engines_were_recorded_is_retried_once(tmp_path) -> None:
+    """The rows already parked when this ships carry no engine: the first
+    engine that knows its own commit re-tries each of them once."""
+    path = tmp_path / "action_liveness.sqlite"
+    clock = ManualClock()
+    _park_under(path, clock, None, ActionOutcome.transient("refused by a bug"))
+    assert SQLiteActionLivenessStore(path).row(KEY).parked_on_engine is None
+
+    first = liveness_owner(
+        store=SQLiteActionLivenessStore(path), clock=clock, policy=POLICY,
+        engine_commit="new1111",
+    )
+    assert first.admit(KEY).admitted
+    assert first.admit(KEY).admission is Admission.PARKED
+
+
+def test_no_source_identity_and_the_same_commit_never_retry(tmp_path) -> None:
+    path = tmp_path / "action_liveness.sqlite"
+    clock = ManualClock()
+    _park_under(path, clock, "same000", ActionOutcome.permanent("refused"))
+    for commit in ("same000", None):
+        restarted = liveness_owner(
+            store=SQLiteActionLivenessStore(path), clock=clock, policy=POLICY,
+            engine_commit=commit,
+        )
+        assert restarted.admit(KEY).admission is Admission.PARKED
+
+
+def test_a_park_that_needs_a_person_is_never_retried_by_new_code(tmp_path) -> None:
+    path = tmp_path / "action_liveness.sqlite"
+    clock = ManualClock()
+    _park_under(path, clock, "old0000", ActionOutcome.needs_human("the issue is paused"))
+    new = liveness_owner(
+        store=SQLiteActionLivenessStore(path), clock=clock, policy=POLICY,
+        engine_commit="new1111",
+    )
+    assert new.admit(KEY).admission is Admission.PARKED

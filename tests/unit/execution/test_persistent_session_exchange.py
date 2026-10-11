@@ -1014,7 +1014,7 @@ class TestPersistentSessionExchangeHappyPath:
             def __init__(self) -> None:
                 self.calls = 0
 
-            def rejection_reason(self) -> str | None:
+            def rejection_reason(self, *, upheld_rulings: tuple[str, ...]) -> str | None:
                 self.calls += 1
                 if self.calls == 1:
                     return (
@@ -1022,6 +1022,9 @@ class TestPersistentSessionExchangeHappyPath:
                         "(contract_violation): finding T2 title exceeds "
                         "300 characters (459)."
                     )
+                return None
+
+            def cached_approval_reason(self, *, upheld_rulings: tuple[str, ...]) -> str | None:
                 return None
 
         gate = _RejectOnce()
@@ -1092,6 +1095,91 @@ class TestPersistentSessionExchangeHappyPath:
         )
         assert "Orchestrator acceptance gate" in coder_prompt
         assert "finding T2 title exceeds 300 characters (459)" in coder_prompt
+
+    def test_standing_rulings_bind_both_roles_and_reach_the_approval_gate(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """#8141: every exchange turn carries the issue's rulings, first; the
+        reviewer's ``decision.upheld_rulings`` is what the approval gate judges."""
+        from issue_orchestrator.domain.review_exchange_turn import ExchangeStandingRulings
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        class _Recording:
+            def __init__(self) -> None:
+                self.seen: list[tuple[str, ...]] = []
+
+            def rejection_reason(self, *, upheld_rulings: tuple[str, ...]) -> str | None:
+                self.seen.append(upheld_rulings)
+                return None if upheld_rulings else "Implementation-required: ruling `m-0123456789ab`."
+
+            def cached_approval_reason(self, *, upheld_rulings: tuple[str, ...]) -> str | None:
+                return None
+
+        gate = _Recording()
+        reads: list[str] = []
+
+        def read_rulings(role) -> str:
+            # Read before EVERY turn: a ruling recorded mid-exchange binds the next turn.
+            reads.append(role.value)
+            return f"{role.value.upper()}-RULINGS-34-READ-{len(reads)}"
+
+        approve = {
+            "verdict": "approved", "risk": "low", "blocking_findings": [], "nits": [],
+            "abstraction_review": {"status": "no_issues", "findings": []}, "nit_policy": "surface",
+        }
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    {"response_type": "ok", "response_text": "Looks good", "getting_closer": True,
+                     "decision": approve},
+                    {"response_type": "ok", "response_text": "Upheld", "getting_closer": True,
+                     "decision": {**approve, "upheld_rulings": ["m-0123456789ab"]}},
+                ],
+                "coder": [{"response_type": "ok", "response_text": "Built to the ruling", "getting_closer": True}],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            completion_intake=state["intake"],
+            completion_capability="test-run-capability",
+            exchange_run=_start_exchange_run(
+                session_output=session_output, coder_worktree_path=coder_wt, issue_number=34,
+                coder_label="agent:coder",
+            ),
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=34,
+            issue_title="Ruled issue",
+            coder_label="agent:coder",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+            approval_gate=gate,
+            standing_rulings=ExchangeStandingRulings(for_role=read_rulings),
+        )
+
+        assert outcome.status == "ok" and outcome.rounds == 2
+        assert gate.seen == [(), ("m-0123456789ab",)]
+        assert reads == ["reviewer", "coder", "reviewer"]
+        prompts = [(role, prompt) for role, prompt, _notice in state["prompt_inboxes_seen"]]
+        assert [prompt.split("\n", 1)[0] for _role, prompt in prompts] == [
+            "REVIEWER-RULINGS-34-READ-1", "CODER-RULINGS-34-READ-2", "REVIEWER-RULINGS-34-READ-3",
+        ]
+        assert "ruling `m-0123456789ab`" in prompts[1][1]
 
     def test_codex_reviewer_respawns_before_followup_prompt(
         self,

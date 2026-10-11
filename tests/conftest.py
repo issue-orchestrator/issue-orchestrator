@@ -1,6 +1,7 @@
 """Shared fixtures and configuration for tests."""
 
 import os
+import sys
 
 # Rich's rendering must be pinned BEFORE anything imports the CLI (#7155).
 #
@@ -49,17 +50,27 @@ from issue_orchestrator.domain.models import AgentConfig, Issue, Session
 from issue_orchestrator.infra.config import Config, DangerousConfig
 from issue_orchestrator.infra.hooks.hookspec import hookimpl
 from issue_orchestrator.ports.pull_request_tracker import (
+    CheckRunAttempt,
+    FailedChecksRead,
     MergeQueueEntry,
     MergeQueueRead,
     PRInfo,
     PRRef,
     StatusCheckRollupRead,
 )
-from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
+from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot, RepositoryHostError
+from issue_orchestrator.domain.integration_branch import (
+    BranchComparison,
+    BranchMergeOutcome,
+    MergedIntoBranch,
+    MergedIntoBranchListing,
+    OpenPullRequestRef,
+)
 from issue_orchestrator.domain.issue_key import FakeIssueKey, GitHubIssueKey, IssueKey
 from issue_orchestrator.domain.session_key import SessionKey
 from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+from tests.label_application_helpers import standing_while_present
 
 TEST_ADMIN_TOKEN = "test-admin-token"
 TEST_AGENT_CALLBACK_TOKEN = "test-agent-callback-token"
@@ -175,6 +186,21 @@ def isolate_orchestrator_env(monkeypatch, tmp_path):
     safe_repo = tmp_path / "isolated-repo-root"
     safe_repo.mkdir(exist_ok=True)
     monkeypatch.setenv("ISSUE_ORCHESTRATOR_REPO_ROOT", str(safe_repo))
+
+
+@pytest.fixture
+def durable_orchestrator_python(monkeypatch) -> Path:
+    """Name a stable interpreter for setup-guardrails to bake into verify-pr.sh.
+
+    setup-guardrails refuses an interpreter inside a linked git worktree or a
+    temp dir (#8087), and the suite usually runs from a linked worktree's
+    venv. The venv's ``python`` resolves to the base installation, which is
+    neither, so tests that install guardrails without exercising the
+    interpreter choice export that one.
+    """
+    stable = Path(sys.executable).resolve()
+    monkeypatch.setenv("ISSUE_ORCHESTRATOR_PYTHON", str(stable))
+    return stable
 
 
 @pytest.fixture(autouse=True)
@@ -362,6 +388,29 @@ class MockGitHubAdapter:
         self.get_prs_calls: list[dict] = []
         self.search_pr_refs_calls: list[int] = []
         self.enqueue_merge_queue_calls: list[int] = []
+        # CI-failure triage (#8692): pr_number -> failed checks, job_id -> log
+        self.failed_checks: dict[int, FailedChecksRead] = {}
+        self.job_logs: dict[int, str] = {}
+        self.job_log_reads: list[int] = []
+        self.run_attempts: dict[int, CheckRunAttempt] = {}
+        self.rerun_calls: list[int] = []
+        # Integration-branch mode (#8144): an in-memory fake of the port.
+        self.branches: dict[str, str] = {}  # branch -> head SHA
+        self.comparisons: dict[tuple[str, str], BranchComparison] = {}  # (base, head)
+        self.branch_merge_outcomes: dict[tuple[str, str], BranchMergeOutcome] = {}
+        self.open_pr_refs: dict[tuple[str, str], OpenPullRequestRef] = {}  # (head, base)
+        self.merged_into: dict[str, tuple[MergedIntoBranch, ...]] = {}
+        self.merged_listing_truncated: set[str] = set()  # bases whose listing hit its page cap
+        # Seed a method name -> error to make that port call fail.
+        self.integration_failures: dict[str, RepositoryHostError] = {}
+        self.created_branches: list[tuple[str, str]] = []
+        self.fast_forwards: list[tuple[str, str]] = []
+        self.branch_merges: list[tuple[str, str, str]] = []
+        self.pr_branch_updates: list[tuple[int, str]] = []
+        self.pr_merges: list[dict] = []
+        self.pr_body_updates: list[tuple[int, str]] = []
+        self.compare_calls: list[tuple[str, str]] = []
+        self.default_branch = "main"
 
     # IssueRepository methods
     def list_issues(
@@ -429,6 +478,16 @@ class MockGitHubAdapter:
     def get_issue_labels_fresh(self, issue_number: int) -> list[str]:
         """Get fresh labels for an issue."""
         return self.get_issue_labels(issue_number)
+
+    def own_write_verdict(self, event) -> bool | None:
+        """A personal-token engine's answer: it cannot tell its own writes."""
+        del event
+        return None
+
+    def label_application(self, issue_number: int, label: str):
+        """GitHub's standing application of ``label``: one event per number
+        while it stands (no test of this fake re-applies a label by hand)."""
+        return standing_while_present(self.get_issue_labels_fresh)(issue_number, label)
 
     # LabelManager methods
     def add_label(self, issue_number: int, label: str) -> None:
@@ -516,6 +575,20 @@ class MockGitHubAdapter:
             if pr.state.lower() == "merged"
         )
 
+    def merged_pr_history(self, issue_number: int):
+        """The merged PRs keyed under ``issue_number``, with body and merge time (#8689)."""
+        from datetime import datetime
+
+        from issue_orchestrator.domain.issue_delivery import MergedPullRequest
+
+        merged = [pr for pr in self.prs.get(issue_number, []) if pr.state.lower() == "merged"]
+        if any(not pr.merged_at for pr in merged):
+            raise ValueError("a merged PR in the fake needs merged_at, as GitHub always gives it")
+        return tuple(
+            MergedPullRequest(pr.number, pr.body, datetime.fromisoformat(pr.merged_at.replace("Z", "+00:00")))
+            for pr in merged
+        )
+
     def list_open_prs_complete(self) -> list[PRInfo]:
         """Every open PR, as the complete listing contract promises."""
         return [
@@ -551,6 +624,124 @@ class MockGitHubAdapter:
         self.enqueue_merge_queue_calls.append(pr_number)
         self.merge_queue_entries[pr_number] = MergeQueueEntry(state="QUEUED")
 
+    def get_default_branch(self) -> str:
+        """The repository's default branch (mock)."""
+        return self.default_branch
+
+    def issue_comment_marker_present(self, issue_number: int, marker: str) -> bool:
+        """Whether a recorded comment on the issue/PR carries ``marker`` (mock)."""
+        return any(c["number"] == issue_number and marker in c["body"] for c in self.comments)
+
+    # IntegrationBranchHost (#8144) -------------------------------------------
+
+    def _integration_failure(self, method: str) -> None:
+        if method in self.integration_failures:
+            raise self.integration_failures[method]
+
+    def branch_head(self, branch: str) -> str | None:
+        """The seeded branch head (mock); None when absent."""
+        self._integration_failure("branch_head")
+        return self.branches.get(branch)
+
+    def create_branch(self, branch: str, sha: str) -> None:
+        self._integration_failure("create_branch")
+        if branch in self.branches:
+            raise RepositoryHostError(f"branch {branch} already exists")
+        self.created_branches.append((branch, sha))
+        self.branches[branch] = sha
+
+    def fast_forward_branch(self, branch: str, sha: str) -> None:
+        self._integration_failure("fast_forward_branch")
+        if branch not in self.branches:
+            raise RepositoryHostError(f"branch {branch} does not exist")
+        self.fast_forwards.append((branch, sha))
+        self.branches[branch] = sha
+
+    def compare_commits(self, base: str, head: str) -> BranchComparison:
+        """The comparison seeded for (base, head) (mock); unseeded raises."""
+        self._integration_failure("compare_commits")
+        self.compare_calls.append((base, head))
+        key = (base, head)
+        if key not in self.comparisons:
+            raise RepositoryHostError(f"no comparison seeded for {base}...{head}")
+        return self.comparisons[key]
+
+    def merge_branch(self, *, base: str, head: str, message: str) -> BranchMergeOutcome:
+        self._integration_failure("merge_branch")
+        self.branch_merges.append((base, head, message))
+        return self.branch_merge_outcomes.get((base, head), BranchMergeOutcome.MERGED)
+
+    def update_pull_request_branch(self, pr_number: int, *, expected_head_sha: str) -> None:
+        self._integration_failure("update_pull_request_branch")
+        self.pr_branch_updates.append((pr_number, expected_head_sha))
+
+    def merge_head_onto(self, branch: str, *, tip_sha: str, head_sha: str, message: str) -> str:
+        """Record the merge, move the branch only from *tip_sha*, mark the PR merged (mock)."""
+        self._integration_failure("merge_head_onto")
+        if self.branches.get(branch) != tip_sha:
+            raise RepositoryHostError(f"{branch} moved: not a fast-forward from {tip_sha}")
+        merged = f"{len(self.pr_merges) + 1:040x}"
+        self.pr_merges.append({"branch": branch, "tip_sha": tip_sha, "head_sha": head_sha, "message": message})
+        self.branches[branch] = merged
+        for prs in self.prs.values():
+            for pr in prs:
+                if pr.head_sha == head_sha and pr.base_branch == branch:
+                    pr.state = "merged"
+        return merged
+
+    def read_commit_check_rollup(self, sha: str) -> StatusCheckRollupRead:
+        """The checks of the PR whose head is *sha* (mock): its fixture rollup."""
+        self._integration_failure("read_commit_check_rollup")
+        states = [pr.status_check_rollup for prs in self.prs.values() for pr in prs if pr.head_sha == sha]
+        return StatusCheckRollupRead(state=states[0] if states else None, capability="ok")
+
+    def find_open_pull_request(self, *, head: str, base: str) -> OpenPullRequestRef | None:
+        self._integration_failure("find_open_pull_request")
+        return self.open_pr_refs.get((head, base))
+
+    def open_pull_request(self, *, head: str, base: str, title: str, body: str) -> OpenPullRequestRef:
+        """Open a PR from head into exactly base (mock): never reuses another base's."""
+        self._integration_failure("open_pull_request")
+        pr = self.create_pr(title, body, head, base)
+        return OpenPullRequestRef(number=pr.number, url=pr.url, body=body)
+
+    def update_pull_request_body(self, pr_number: int, body: str) -> None:
+        self._integration_failure("update_pull_request_body")
+        self.pr_body_updates.append((pr_number, body))
+        for key, ref in list(self.open_pr_refs.items()):
+            if ref.number == pr_number:
+                self.open_pr_refs[key] = OpenPullRequestRef(number=ref.number, url=ref.url, body=body)
+
+    def merged_pull_requests_into(self, base: str) -> MergedIntoBranchListing:
+        self._integration_failure("merged_pull_requests_into")
+        return MergedIntoBranchListing(
+            pulls=self.merged_into.get(base, ()), complete=base not in self.merged_listing_truncated,
+        )
+
+    def read_failed_checks(self, pr_number: int) -> FailedChecksRead:
+        """The PR's seeded failed checks (mock)."""
+        return self.failed_checks[pr_number]
+
+    def read_check_job_log_tail(self, job_id: int, *, max_bytes: int) -> str:
+        """The seeded job log's tail (mock); records the read."""
+        self.job_log_reads.append(job_id)
+        return self.job_logs[job_id][-max_bytes:]
+
+    def read_check_run_latest_attempt(self, run_id: int) -> CheckRunAttempt:
+        """The seeded run attempt (mock)."""
+        return self.run_attempts[run_id]
+
+    def rerun_failed_check_jobs(self, run_id: int) -> None:
+        """Record a re-run request (mock)."""
+        self.rerun_calls.append(run_id)
+
+    def issue_comment_bodies_containing(self, issue_number: int, needle: str) -> tuple[str, ...]:
+        """Every recorded comment body on the issue/PR containing ``needle`` (mock)."""
+        return tuple(
+            c["body"] for c in self.comments
+            if c["number"] == issue_number and needle in c["body"]
+        )
+
     def read_merge_queue_entry(self, pr_number: int) -> MergeQueueRead:
         """Return the PR's typed merge queue read (mock).
 
@@ -575,8 +766,10 @@ class MockGitHubAdapter:
             state="open",
             labels=[],
             draft=draft,
+            base_branch=base,
         )
         self.prs.setdefault(head, []).append(pr)
+        self.open_pr_refs[(head, base)] = OpenPullRequestRef(number=pr.number, url=pr.url, body=body)
         return pr
 
     def add_comment(self, issue_or_pr_number: int, body: str) -> str:
@@ -642,6 +835,12 @@ class MockGitHubAdapter:
         milestones.append(milestone)
         self.milestones = milestones
         return milestone
+
+    def update_issue_body(self, issue_number: int, body: str) -> None:
+        issue = self.get_issue(issue_number)
+        if issue is None:
+            return
+        issue.body = body
 
     def update_issue_milestone(self, issue_number: int, milestone: int | None) -> None:
         issue = self.get_issue(issue_number)
@@ -1267,6 +1466,7 @@ def build_test_orchestrator_deps(
         # The RAW writer: the owner is the one holder that may write this label.
         labels=repo_host,
         read_labels=repo_host.get_issue_labels_fresh,
+        label_application=repo_host.label_application,
         quarantined_issue_numbers=pending_work_claims.quarantined_issue_numbers,
         causes=pending_work_claims,
     )
@@ -1305,6 +1505,7 @@ def build_test_orchestrator_deps(
         publish_recovery=publish_recovery, events=events, pull_requests=repo_host, stuck_sweep=None,
         base_branch=lambda _issue, _worktree: "main",
         pending_work_claims=pending_work_claims,
+        repository=config.repo_root,
     )
     _action_applier.runtime_lifecycle = runtime_lifecycle
     from issue_orchestrator.entrypoints.bootstrap_action_liveness import build_action_liveness
@@ -1318,6 +1519,16 @@ def build_test_orchestrator_deps(
     )
     from issue_orchestrator.ports.validated_work_recovery_authority import (
         NoValidatedWorkRecoveryAuthority,
+    )
+
+    from issue_orchestrator.control.launch_prompt import IssueLaunchPrompt
+    from issue_orchestrator.control.standing_rulings import StandingRulingsOwner
+    from issue_orchestrator.infra.standing_rulings_store import SqliteStandingRulingsIndex
+    from issue_orchestrator.ports.coder_prompt import NO_CODER_PROMPT_ADDENDUM
+
+    standing_rulings = StandingRulingsOwner(
+        read_issue=repo_host.get_issue, write_body=repo_host.update_issue_body,
+        index=SqliteStandingRulingsIndex.for_repo(config.repo_root),
     )
 
     return OrchestratorDeps(
@@ -1338,6 +1549,8 @@ def build_test_orchestrator_deps(
             needs_human_block=needs_human_block,
         ),
         needs_human_block=needs_human_block,
+        standing_rulings=standing_rulings,
+        launch_prompt=IssueLaunchPrompt(NO_CODER_PROMPT_ADDENDUM, standing_rulings),
         # The same endpoint the completion processor got, mirroring how
         # bootstrap shares one instance. Nothing binds a port in tests, so
         # it honestly resolves to "no endpoint yet".

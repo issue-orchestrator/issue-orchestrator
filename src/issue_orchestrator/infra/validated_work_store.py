@@ -23,6 +23,7 @@ from ..domain.recovery_entry import RecoveryRecordRequest
 from ..domain.validated_work import (
     ResolutionKind,
     ValidatedWorkFailure,
+    ValidatedWorkKey,
     ValidatedWorkState,
     require_positive,
 )
@@ -32,6 +33,7 @@ from ..domain.validated_work_claim import (
     ValidatedWorkClaim,
 )
 from ..domain.validated_work_commands import (
+    AbandonAllOutcome,
     AbandonValidatedWorkCommand,
     AbandonValidatedWorkOutcome,
     ValidatedWorkAuthoritySnapshot,
@@ -48,12 +50,15 @@ from ..domain.validated_work_store import (
     FinalizationPhase,
     LineagePublication,
     LineageResolutionRefusal,
+    PrPublicationStatus,
     PublicationResolution,
     PublishAttempt,
     PublishValidatedHeadStatus,
     ValidatedWorkRecord,
 )
 from ..domain.validated_work_remote_authority import (
+    CarriedByIssuePullRequest,
+    PullRequestPublication,
     RemoteAuthorityDecision,
     RemoteAuthorityRefreshRequest,
 )
@@ -71,6 +76,7 @@ from .validated_work_recovery_blocks import RecoveryBlockPersistence
 from .validated_work_attempts import PublishAttemptWriter
 from .validated_work_claims import ClaimAuthority, owner_identity
 from .validated_work_lineage import LineageClassifier
+from .validated_work_pr_publication import record_pr_publication
 from .validated_work_resolution import PublicationResolver
 from .validated_work_rows import (
     DispositionDatabase,
@@ -113,11 +119,21 @@ class SqliteValidatedWorkStore:
         self._attempts = PublishAttemptWriter(self._claims, self._lineage)
         self._resolution = PublicationResolver(self._claims, self._lineage)
 
-    def admit(self, admission: EvidenceAdmission) -> AdmissionOutcome:
+    def admit(
+        self, admission: EvidenceAdmission, *, carried: CarriedByIssuePullRequest | None = None,
+    ) -> AdmissionOutcome:
         with self._db.transaction(write=True) as conn:
-            status = self._admission.admit(conn, admission)
+            status = self._admission.admit(conn, admission, carried=carried)
             return AdmissionOutcome(
                 status, disposition(conn, admission.evidence.record_id)
+            )
+
+    def record_pr_publication(
+        self, key: ValidatedWorkKey, *, published: PullRequestPublication, observed_at: str,
+    ) -> PrPublicationStatus:
+        with self._db.transaction(write=True) as conn:
+            return record_pr_publication(
+                conn, self._lineage, key=key, published=published, observed_at=observed_at,
             )
 
     def admit_selected(
@@ -125,11 +141,13 @@ class SqliteValidatedWorkStore:
         admission: EvidenceAdmission,
         expected_current: str | None,
         selection: EvidenceAdmissionSelection,
+        *,
+        carried: CarriedByIssuePullRequest | None = None,
     ) -> AdmissionOutcome | None:
         """Apply the receipt owner's selection in the claim store transaction."""
         with self._db.transaction(write=True) as conn:
             status = self._admission.admit_selected(
-                conn, admission, expected_current, selection
+                conn, admission, expected_current, selection, carried=carried,
             )
             return (
                 None
@@ -161,6 +179,16 @@ class SqliteValidatedWorkStore:
         self, command: AbandonValidatedWorkCommand
     ) -> AbandonValidatedWorkOutcome:
         return self._abandonment.abandon_if_current(command)
+
+    def abandon_all_if_current(
+        self, commands: tuple[AbandonValidatedWorkCommand, ...]
+    ) -> AbandonAllOutcome:
+        return self._abandonment.abandon_all_if_current(commands)
+
+    def already_abandoned_by(
+        self, commands: tuple[AbandonValidatedWorkCommand, ...]
+    ) -> bool:
+        return self._abandonment.already_abandoned_by(commands)
 
     def retire_outside_scope(
         self,

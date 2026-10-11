@@ -1714,7 +1714,7 @@ class TestResetRetryExecutionPipeline:
         from issue_orchestrator.control.actions import (
             CreateTechLeadProposalIssueAction,
         )
-        from issue_orchestrator.domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
+        from issue_orchestrator.domain.tech_lead_approval import AWAITING_APPROVAL_LABEL
 
         config, session = self._armed_investigation(tmp_path, authority_mode="propose")
 
@@ -1736,7 +1736,7 @@ class TestResetRetryExecutionPipeline:
         assert proposal.op.source_action_id == "A2"
         assert proposal.op.source_run_id == session.run_assets.run_id
         assert proposal.op.source_session_name == session.run_assets.session_name
-        assert PROPOSED_TECH_LEAD_LABEL in proposal.labels
+        assert AWAITING_APPROVAL_LABEL in proposal.labels
 
 
 class TestCharterDecisionsArePersisted:
@@ -1853,6 +1853,40 @@ class TestLaunchScopeTamperResistance:
             "tech_lead_authority: scope_tampered"
         )
         assert "missing" in error
+
+    @pytest.mark.parametrize(("planted_links", "tampered"), [((365,), False), ((999,), True)])
+    def test_a_manifest_must_keep_the_pr_issue_links_recorded_at_launch(
+        self, tmp_path: Path, planted_links: tuple[int, ...], tampered: bool
+    ) -> None:
+        """#8347 (codex r5 F1): the links name whose standing rulings bind each
+        PR; the agent-visible copy must mirror the launch authority's record."""
+        config = make_tech_lead_config(tmp_path)
+        session = make_tech_lead_session(tmp_path)
+        plant_tech_lead_assignment(session, TechLeadAssignment(flavor=TechLeadSessionFlavor.BATCH_REVIEW))
+        manifest_path = session.run_dir / TECH_LEAD_DATA_DIRNAME / "manifest.json"
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        TechLeadManifest(prs=[
+            PRToReview(number=101, title="PR 101", url="https://example/pr/101", branch="b1",
+                       issue_numbers=planted_links),
+        ]).write(manifest_path)
+        record_authority(config, session, TechLeadLaunchAuthority(
+            flavor=TechLeadSessionFlavor.BATCH_REVIEW, anchor_issue_number=session.issue.number,
+            manifest_pr_numbers=(101,), covered_work=((365, (101,)),),
+        ))
+
+        error = tech_lead_decision_processing_error(
+            config,
+            tech_lead_authority=SqliteTechLeadAuthorityStore.for_repo(config.repo_root),
+            run_dir=session.run_dir,
+            run_id=session.run_assets.run_id,
+            session_name=session.run_assets.session_name,
+        )
+
+        if tampered:
+            assert error is not None and error.startswith("tech_lead_authority: scope_tampered")
+            assert "issue links [(999, (101,))]" in error
+        else:
+            assert error is None or "scope_tampered" not in error
 
     def test_tampered_manifest_prs_never_get_labels(self, tmp_path: Path) -> None:
         """Substituted PR numbers in the worktree manifest must not be
@@ -2236,10 +2270,10 @@ class TestMilestoneResolutionBoundary:
     ) -> None:
         """Propose-authority create_issue is a GATED creation now (#6778):
         it still plans milestone INTENT with zero GitHub reads, and the
-        planned issue carries the proposed-tech-lead gate label."""
+        planned issue carries the approval model's waiting label (#7763)."""
         from unittest.mock import MagicMock
 
-        from issue_orchestrator.domain.tech_lead_session import PROPOSED_TECH_LEAD_LABEL
+        from issue_orchestrator.domain.tech_lead_approval import AWAITING_APPROVAL_LABEL
 
         config = make_tech_lead_config(tmp_path)
         config.tech_lead.milestone_strategy.explicit = "M5"
@@ -2263,7 +2297,7 @@ class TestMilestoneResolutionBoundary:
             for action in actions
             if isinstance(action, CreateTechLeadIssueAction)
         ]
-        assert PROPOSED_TECH_LEAD_LABEL in create.labels
+        assert AWAITING_APPROVAL_LABEL in create.labels
 
     def test_execute_create_issue_plans_name_intent_without_reads(
         self, tmp_path: Path
@@ -2345,7 +2379,7 @@ def test_provider_blocked_issue_session_adds_no_rework_trigger(
     assert "in-progress" in removed_labels(actions)
 
 
-def test_planned_investigation_kill_that_becomes_stale_withholds_success_effects(tmp_path):
+def test_planned_investigation_kill_that_becomes_stale_withholds_success_effects_not_observations(tmp_path):
     from unittest.mock import MagicMock
     from issue_orchestrator.control.action_applier import ActionApplier
     from issue_orchestrator.control.actions import KillHungSessionAction
@@ -2361,11 +2395,17 @@ def test_planned_investigation_kill_that_becomes_stale_withholds_success_effects
         {"id": "A2", "action_type": "kill_hung_session", "target_number": 1, "body": "Hung worker.", "finding_ids": ["T1"]},
         {"id": "A3", "action_type": "create_issue", "title": "Harden the worker watchdog",
          "body": "Follow-up for the hung worker.", "finding_ids": ["T1"]},
+        {"id": "A4", "action_type": "flag_pattern", "body": "Workers hang on the same lock.",
+         "pattern_signature": "worker-lock-hang", "area": "worker", "finding_ids": ["T1"]},
     ])
     actions = make_planner(config).generate_completion_actions(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
     [kill] = [action for action in actions if isinstance(action, KillHungSessionAction)]
     assert kill.requires_effective_disposition and kill.target_session_id == "worker-run"
     host = MagicMock()
+    host.find_issue_by_marker.return_value = None  # a first-seen pattern signature
+    filed = iter(range(501, 510))
+    host.create_issue.side_effect = lambda *_a, **_k: (
+        lambda n: {"number": n, "html_url": f"https://example/issues/{n}"})(next(filed))
     run_kill = MagicMock(return_value=KillSessionRunOutcome(success=False, stale_reason="observed generation disappeared"))
     applier = ActionApplier(labels=MagicMock(), sessions=MagicMock(), events=MagicMock(), repository_host=host)
     applier.tech_lead_kill_session = TechLeadKillSessionExecutor(events=MagicMock(), run_kill=run_kill)
@@ -2381,16 +2421,82 @@ def test_planned_investigation_kill_that_becomes_stale_withholds_success_effects
     run_kill.assert_called_once()
     # ...so a withheld completion still leaves its decisions on the record.
     records = {row.action_id: row for row in store.charter_ledger.list_recent()}
-    assert set(records) == {"A1", "A2", "A3"}
+    assert set(records) == {"A1", "A2", "A3", "A4"}
     # #7362: and each record says what really happened: the kill was refused
-    # at apply time, the follow-up it gated was never filed, the diagnosis ran.
+    # at apply time and the diagnosis ran. The create_issue follow-up and the
+    # flag_pattern case file are independent observations, not success claims:
+    # they land whatever the kill did (porchpin #410), where they used to be
+    # withheld behind it.
     from issue_orchestrator.domain.tech_lead_charter_decisions import CharterExecutionResult
     assert {action_id: row.execution for action_id, row in records.items()} == {
         "A1": CharterExecutionResult.APPLIED,
         "A2": CharterExecutionResult.REFUSED,
-        "A3": CharterExecutionResult.WITHHELD,
+        "A3": CharterExecutionResult.APPLIED,
+        "A4": CharterExecutionResult.APPLIED,
     }
-    assert not records["A2"].took_effect and not records["A3"].took_effect
+    assert not records["A2"].took_effect
+    assert records["A3"].took_effect and records["A4"].took_effect
+    # The follow-up issue and the pattern's case file were both filed.
+    assert host.create_issue.call_count == 2
+
+
+def test_a_paused_anchors_completion_records_why_not_a_phantom_mandated_action(tmp_path):
+    """porchpin #410 (2026-09-28): a health review completed on an anchor paused
+    behind ``io:needs-reconcile``. Its success-only ``in-progress`` removal was
+    refused and the one batch aborted, so all seven decisions (post_comment,
+    create_issue, five flag_pattern) were recorded "withheld: a mandated
+    tech-lead action in the same completion did not commit" -- and the
+    completion had NO mandated action. Every record must say what really
+    stopped it: the anchor's reconciliation pause."""
+    from unittest.mock import MagicMock
+    from issue_orchestrator.control.action_applier import ActionApplier
+    from issue_orchestrator.control.reconciliation import RECONCILE_PAUSE_LABEL, ReconciliationRequired
+    from issue_orchestrator.control.tech_lead_completion_gate import partition_completion_effects
+    from issue_orchestrator.control.tech_lead_reset_retry import apply_completion_actions_gated
+    from issue_orchestrator.domain.tech_lead_charter_decisions import CharterExecutionResult
+    config = make_tech_lead_config(tmp_path)
+    session = make_tech_lead_session(tmp_path)
+    arm_health_review_session(config, session)
+    _plant_decision_with_actions(session, [
+        {"id": "A1", "action_type": "post_comment", "target_number": 1, "body": "Walked the floor.",
+         "finding_ids": ["T1"]},
+        {"id": "A2", "action_type": "create_issue", "title": "Harden CI retries",
+         "body": "Follow-up for the flaky CI.", "finding_ids": ["T1"]},
+        {"id": "A3", "action_type": "flag_pattern", "body": "CI flakes on the same runner.",
+         "pattern_signature": "ci-runner-flake", "area": "ci", "finding_ids": ["T1"]},
+        {"id": "A4", "action_type": "flag_pattern", "body": "Reviews stall on the same gate.",
+         "pattern_signature": "review-gate-stall", "area": "review", "finding_ids": ["T1"]},
+    ])
+    actions = make_planner(config).generate_completion_actions(session, SessionStatus.COMPLETED, processing_policy=CompletionProcessingPolicy.for_unprocessed_session(session.issue.agent_type, config.tech_lead_review_agent))
+    # The observed shape: nothing mandated, the tech lead's findings, and the
+    # anchor's own success-only bookkeeping.
+    effects = partition_completion_effects(actions)
+    assert effects.mandated == () and effects.observations and effects.success_only
+    anchor_labels = ["agent:tech-lead", "tech_lead:health-review", "in-progress", RECONCILE_PAUSE_LABEL]
+    labels = MagicMock()
+    labels.get_labels.return_value = anchor_labels
+    fresh = MagicMock()
+    fresh.read_issue_labels.return_value = anchor_labels
+    host = MagicMock()
+    applier = ActionApplier(labels=labels, sessions=MagicMock(), events=MagicMock(), repository_host=host,
+                            reconcile=True, fresh_issue_reader=fresh)
+    store = InMemoryTechLeadAuthorityStore()
+    applier.tech_lead_ops = store
+
+    _results, error = apply_completion_actions_gated(applier, actions, issue_number=1)
+
+    assert isinstance(error, ReconciliationRequired)
+    host.add_comment.assert_not_called()
+    host.create_issue.assert_not_called()
+    host.close_issue.assert_not_called()
+    records = {row.action_id: row for row in store.charter_ledger.list_recent()}
+    assert set(records) == {"A1", "A2", "A3", "A4"}
+    for action_id, row in records.items():
+        assert not row.took_effect, action_id
+        assert row.execution in (CharterExecutionResult.FAILED, CharterExecutionResult.WITHHELD), action_id
+        reason = row.execution_reason or ""
+        assert "mandated" not in reason, (action_id, reason)
+        assert RECONCILE_PAUSE_LABEL in reason or "#1 was refused" in reason, (action_id, reason)
 
 
 def _refusing_release_executor(claimed_by: str):
@@ -2403,7 +2509,7 @@ def _refusing_release_executor(claimed_by: str):
                            started_at="2026-09-27T13:00:00+00:00", readable=True, work="rework")
     writes = MagicMock()
     executor = TechLeadReviewReleaseExecutor(
-        events=MagicMock(), config=Config(), labels=MagicMock(), read_issue=MagicMock(),
+        events=MagicMock(), config=Config(), labels=MagicMock(), gates=MagicMock(), read_issue=MagicMock(),
         list_open_prs=MagicMock(), read_pr=MagicMock(), issue_branches=MagicMock(),
         review_admission=MagicMock(), read_checks=MagicMock(),
         runtime_activity=lambda _n: IssueRuntimeActivity(frozenset(), frozenset()),
@@ -2475,8 +2581,10 @@ def test_an_executed_release_refused_at_apply_time_never_reads_as_a_remedy(tmp_p
 
 def test_a_batch_that_raises_keeps_what_landed_before_the_raise():
     """#7362 review r1: apply_all raising mid-batch must not deny an effect that
-    committed before it: that one is applied, the raising one failed, the rest
-    withheld."""
+    committed before it: that one is applied and the raising one failed. The
+    raise is a lost claim on #6 alone, so only #6 is withheld for the rest of
+    the completion: #7's observation still lands (#7349's subject isolation,
+    which the tick's plan applier already applies)."""
     from unittest.mock import MagicMock
     from issue_orchestrator.control.action_applier import ActionApplier
     from issue_orchestrator.control.claim_gate import ClaimLostError
@@ -2502,16 +2610,61 @@ def test_a_batch_that_raises_keeps_what_landed_before_the_raise():
     _results, error = apply_completion_actions_gated(applier, actions, issue_number=1)
 
     assert error is refused
-    # #5's comment committed before the raise; #7's was never attempted.
-    assert [call.args[0] for call in host.add_comment.call_args_list] == [5]
+    # #5's comment committed before the raise; #6's claim was lost; #7 is
+    # another subject, so its observation still ran.
+    assert [call.args[0] for call in host.add_comment.call_args_list] == [5, 7]
     rows = {row.action_id: row for row in store.charter_ledger.list_recent()}
     assert {a: r.execution for a, r in rows.items()} == {
         "A5": CharterExecutionResult.APPLIED,
         "A6": CharterExecutionResult.FAILED,
-        "A7": CharterExecutionResult.WITHHELD,
+        "A7": CharterExecutionResult.APPLIED,
     }
     assert rows["A5"].took_effect and not rows["A6"].took_effect
     assert "ClaimLostError" in (rows["A6"].execution_reason or "")
+
+
+def test_a_raise_with_no_subject_withholds_the_rest_and_says_why():
+    """A raise that names no subject (anything but a reconciliation refusal or a
+    lost claim) has no known blast radius, so nothing after it is attempted, and
+    every withheld record names the raise rather than a mandated action that
+    does not exist (porchpin #410)."""
+    from issue_orchestrator.control.action_results import ActionResult
+    from issue_orchestrator.control.tech_lead_reset_retry import apply_completion_actions_gated
+    from issue_orchestrator.domain.tech_lead_charter_decisions import CharterExecutionResult
+    from tests.unit.test_tech_lead_charter_ledger import _decision
+    decisions = [_decision(f"A{n}", "post_comment", target=n) for n in (5, 6, 7)]
+    store = InMemoryTechLeadAuthorityStore()
+    store.charter_ledger.record_decisions(decisions)
+    fault = RuntimeError("adapter fault")
+    attempted: list[int] = []
+
+    class _Applier:
+        tech_lead_ops = store
+
+        def apply_all(self, actions, on_result=None):
+            results = []
+            for action in actions:
+                attempted.append(action.number)
+                if action.number == 6:
+                    raise fault
+                results.append(ActionResult.ok(action))
+                if on_result is not None:
+                    on_result(results[-1])
+            return results
+
+    actions = [AddCommentAction(number=n, comment=f"c{n}", charter_decisions=(d.decision_id,))
+               for n, d in zip((5, 6, 7), decisions)]
+
+    _results, error = apply_completion_actions_gated(_Applier(), actions, issue_number=1)  # type: ignore[arg-type]
+
+    assert error is fault
+    assert attempted == [5, 6]
+    rows = {row.action_id: row for row in store.charter_ledger.list_recent()}
+    assert rows["A5"].execution is CharterExecutionResult.APPLIED
+    assert rows["A6"].execution is CharterExecutionResult.FAILED
+    assert rows["A7"].execution is CharterExecutionResult.WITHHELD
+    assert "adapter fault" in (rows["A7"].execution_reason or "")
+    assert "mandated" not in (rows["A7"].execution_reason or "")
 
 
 def test_a_batch_that_raises_after_every_result_landed_still_links_them():

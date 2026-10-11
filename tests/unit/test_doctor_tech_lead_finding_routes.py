@@ -77,7 +77,7 @@ def test_the_probe_carries_the_labels_filing_will_require():
     # what a promotion filed into that route carries.
     assert "agent:backend" in contract.labels
     assert "area:cp" in contract.labels
-    assert "proposed-tech-lead" in contract.labels
+    assert {"tech-lead-proposal", "awaiting-approval"} <= set(contract.labels)
     # An explicitly routed area is enumerable, so filing needs no label it
     # cannot name up front.
     assert not contract.provisions_unknown_labels

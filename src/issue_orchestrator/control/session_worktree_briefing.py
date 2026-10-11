@@ -9,29 +9,44 @@ from ..ports import WorkingCopy
 
 logger = logging.getLogger(__name__)
 
-_REBASE_CONFLICT_WARNING = (
-    "WARNING: This branch could not be rebased onto main due to merge conflicts. "
-    "The code is out of date. You should resolve the conflicts by running: "
-    "git fetch origin main && git rebase origin/main. "
-    "If conflicts occur, resolve them and continue with: git rebase --continue. "
-    "This is critical to ensure tests pass with the latest code."
-)
+def rebase_conflict_warning(base_branch: str | None, *, subject: str = "This branch") -> str:
+    """The one warning an agent gets when its worktree could not be rebased.
+
+    Names the branch the worktree is based on - the stack predecessor, the
+    configured base (integration mode's branch, #8144), or the default - never
+    a hard-coded ``main``: rebasing an integration-based branch onto main would
+    replay integration's commits into the PR.
+    """
+    if not base_branch:
+        raise ValueError("a rebase-conflict warning needs the branch the rebase targeted")
+    return (
+        f"WARNING: {subject} could not be rebased onto {base_branch} due to merge conflicts. "
+        "The code is out of date. You should resolve the conflicts by running: "
+        f"git fetch origin {base_branch} && git rebase origin/{base_branch}. "
+        "If conflicts occur, resolve them and continue with: git rebase --continue. "
+        "This is critical to ensure tests pass with the latest code."
+    )
 
 
 def detect_existing_work(
     worktree_path: Path,
     working_copy: WorkingCopy,
     *,
+    base_branch: str,
     seed_ref: str | None = None,
 ) -> str | None:
-    """Check if a worktree has commits ahead of main and describe them."""
+    """Check if a worktree has commits ahead of its base branch and describe them.
+
+    Against the worktree's OWN base (#8144): an integration-based worktree is
+    ahead of main by every commit on integration, none of them this agent's.
+    """
     try:
         if seed_ref:
             head_sha = working_copy.get_head_sha(worktree_path)
             if head_sha and head_sha == seed_ref:
                 return None
 
-        commits = working_copy.get_commits_ahead_of_main(worktree_path)
+        commits = working_copy.get_commits_ahead_of(worktree_path, base_branch)
         if not commits:
             return None
 
@@ -58,11 +73,15 @@ def describe_worktree_state(
     *,
     seed_ref: str | None = None,
     rebase_failed: bool = False,
+    base_branch: str | None = None,
 ) -> str | None:
     """Build the one workspace briefing a coder needs at launch."""
+    if not base_branch:
+        raise ValueError("the worktree's base branch is unknown; its existing work cannot be judged")
     existing_work = detect_existing_work(
         worktree_path,
         working_copy,
+        base_branch=base_branch,
         seed_ref=seed_ref,
     )
     if existing_work:
@@ -74,6 +93,7 @@ def describe_worktree_state(
     logger.warning(
         "[launch] Rebase failed - agent will need to resolve merge conflicts"
     )
+    warning = rebase_conflict_warning(base_branch)
     if existing_work:
-        return f"{existing_work}\n\n{_REBASE_CONFLICT_WARNING}"
-    return _REBASE_CONFLICT_WARNING
+        return f"{existing_work}\n\n{warning}"
+    return warning

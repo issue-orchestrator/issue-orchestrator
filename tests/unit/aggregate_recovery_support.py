@@ -31,6 +31,7 @@ from issue_orchestrator.ports.event_sink import InMemoryEventSink
 from tests.unit.staged_finalization_support import Crash, FinalizationRig
 from tests.unit.validated_work_support import AT
 from tests.process_group_run import run_in_process_group
+from tests.label_application_helpers import standing_while_present
 
 
 @dataclass
@@ -102,6 +103,7 @@ class AggregateRig:
             self.remote.read_issue_labels,
             frozenset,
             self.causes,
+            label_application=standing_while_present(self.remote.read_issue_labels),
         )
         self.aggregate = AggregateRecoveryBlocks(
             repo_slug="owner/repo",
@@ -187,7 +189,7 @@ class NoLabels:
 
 causes = SqlitePendingWorkClaimStore(Path(sys.argv[1]) / 'causes.sqlite')
 owner = NeedsHumanBlock('needs-human', 'tech-lead-needs-human', NoLabels(),
-                       forbidden, forbidden, causes)
+                       forbidden, forbidden, causes, forbidden)
 result = owner.acquire(HumanBlockRequest(6914, NeedsHumanCause.SESSION_LIFECYCLE, 'new failure'))
 assert result is BlockOutcome.FAILED
 print('busy')

@@ -30,6 +30,7 @@ from issue_orchestrator.infra.tech_lead_authority_store import (
 )
 from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
 from issue_orchestrator.ports.provider_resilience import ProviderErrorType
+from issue_orchestrator.control.scoped_rework_receipt_status import rework_receipt_status
 from tests.unit.control.test_scoped_rework import lane as lane, approved_action
 from tests.unit.control.test_scoped_rework_repair import dispatcher
 
@@ -145,11 +146,10 @@ def test_deferred_successor_proof_governs_reuse_projection_and_launch(
     )
     assert result.success is (condition == "exact")
     assert (host.add_comment.call_count > before) is (condition == "exact")
-    view = executor.proposal_views()[0]
-    assert view.status == ("queued" if condition == "exact" else "unavailable")
-    assert not view.can_approve and not view.can_decline
+    status, detail = rework_receipt_status(executor, executor.receipts.load_rework_receipt(request.key))
+    assert status == ("queued" if condition == "exact" else "unavailable")
     if condition == "exact":
-        assert "exact durable request" in view.detail
+        assert "exact durable request" in detail
         executor.validate_proposal_reuse(501, request)
     else:
         with pytest.raises(ValueError):
@@ -161,7 +161,7 @@ def test_receipt_projection_keeps_known_proposal_identity(lane):
 
     executor, store, _, _, _, proposal, request, _, _ = lane
     store.save_rework_receipt(ReworkReceipt(request, "queued"))
-    view = executor.proposal_views()[0]
-    assert view.proposal_issue_number == proposal.number
-    assert view.status == "queued"
-    assert not view.can_approve and not view.can_decline
+    assert rework_receipt_status(executor, store.load_rework_receipt(request.key)) == ("queued", "Queued")
+    executor.is_active = lambda number: number == request.target.issue_number
+    status, detail = rework_receipt_status(executor, store.load_rework_receipt(request.key))
+    assert status == "queued" and "Queued behind existing work" in detail

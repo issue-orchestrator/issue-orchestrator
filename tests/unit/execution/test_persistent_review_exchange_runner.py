@@ -31,7 +31,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -51,6 +51,8 @@ from issue_orchestrator.execution.persistent_exchange_pair_registry_inmemory imp
 )
 from issue_orchestrator.execution import persistent_review_exchange_runner as prer
 from issue_orchestrator.domain.coder_prompt import PreparedCoderPromptAddendum
+from issue_orchestrator.control.launch_prompt import IssueLaunchPrompt
+from issue_orchestrator.ports.standing_rulings import NO_STANDING_RULINGS
 from issue_orchestrator.domain.session_kind import SessionKind
 
 
@@ -351,12 +353,14 @@ def test_run_resolves_coder_addendum_for_coder_worktree_only(
         MagicMock(name="session_output"),
         MagicMock(name="pair_registry"),
         completion_intake=MagicMock(),
-        coder_prompt_addendum=provider,
+        launch_prompt=IssueLaunchPrompt(provider, NO_STANDING_RULINGS),
     )
 
     _run(runner, tmp_path)
 
-    provider.prepare.assert_called_once_with(kind=SessionKind.REWORK)
+    # Only the coder turn is asked for the coder's addendum (#8141 asks the
+    # reviewer turn's launch prompt too, for its rulings alone).
+    assert provider.prepare.call_args_list == [call(kind=SessionKind.REWORK)]
     assert captured["coder_prompt_addendum"] == "INTERNAL-CODER-ONLY"
 
 

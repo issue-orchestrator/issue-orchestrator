@@ -7,7 +7,8 @@ typed decision artifact, board-snapshot observation surface, periodic + storm
 health-review triggers, and per-action graduated authority are live, with the
 ``reset_retry`` executor wired (#6764) and act-level ``execute`` startup-guarded;
 amended 2026-08-19: direct ``kill_hung_session`` authority wired with exact
-session-generation revalidation; amended 2026-09-26: §2a per-role charter, #7330)
+session-generation revalidation; amended 2026-09-26: §2a per-role charter, #7330;
+amended 2026-10-02: §2b blocked-item triage and operator decisions, #7593)
 **Milestone:** P1
 **Tracks:** Issues #6760, #6761, #6762, #6763, #6764, #6778, #6780
 
@@ -151,13 +152,34 @@ Semantics:
   most once — the op row is discarded after terminal handling (outcome
   comment + close on execution, or stale-downgrade comment + close).
   Per-instance approval and config-level trust coexist.
+  **Positive approval (amended by #7763).** Approval is no longer the
+  REMOVAL of a label — anything that strips labels (a retry clearing every
+  blocking label, a reconcile, a bulk edit, an agent) used to approve. The
+  gate is now three labels with one meaning each, owned by
+  `control/tech_lead_approval.py`: `tech-lead-proposal` (provenance,
+  permanent), `awaiting-approval` (state, blocking-class) and `approved`
+  (the approval). An `approved` label counts only when EVERY `labeled`
+  event of its standing run (since it was last absent, closed or reopened)
+  vouches: a person with the `admin` or `maintain` repository role, or the
+  exact event the engine's own write produced for an operator's Approve in
+  the Control Center (recorded orchestrator-side). Not just the newest one
+  (#8346): GitHub emits a filed issue's labeled events asynchronously and
+  attributes every label present at that moment — a bot's `approved` added
+  seconds after filing included — to the issue's author.
+  Bot/App identities and agent sessions never approve; an `approved` that
+  does not count is removed with a comment. A proposal is schedulable only
+  when the engine has verified its approval in this process (it then removes
+  `awaiting-approval`); labels alone never admit. Decline is closing the
+  issue. The `proposed-tech-lead` label below is retired: startup migrates
+  open legacy proposals, honouring an old-model removal only when a
+  maintainer made it.
   **Backlog visibility (amended by #7014).** The op ledger is not the approval
   backlog: only act-level proposals leave a row, while `create_issue`
   proposals and promoted findings (#6957) carry the same gate with none. The
   local tech lead board therefore projects the backlog from the **gate label**
   observed on the tick's open issues, unioned with the ledger for the
   operation an approval will execute. "Open proposals: None." must never be
-  printable while a `proposed-tech-lead` issue is open.
+  printable while an unapproved proposal is open.
 - **Durable pattern case files (amended by #6781).** `flag_pattern` under
   `execute` is no longer event-only. Each flag_pattern action carries a
   required `pattern_signature` (a short stable slug; a decision without one is
@@ -281,6 +303,67 @@ authority: propose|execute}`.
 
 This subsumes #6877's class × magnitude matrix for tech-lead actions: the
 decision class is the action kind, and magnitude is its required depth.
+
+### 2b. Blocked-item triage and operator decisions (#7593 amendment)
+
+A diagnosis is not a disposition. On porchpin the tech lead diagnosed every
+blocked item and acted on none, because a health review could only address its
+own anchor and nothing asked it to dispose of each item. Now:
+
+- **Every blocked item is owed one triage.** At launch, a health review is
+  granted (in its launch authority) every open blocked work item in scope whose
+  block has no triage in force, oldest first, capped per run. One owner,
+  `control/blocked_item_triage.py`, builds that agenda and checks the decision
+  against it: each granted item gets exactly ONE action carrying a
+  `triage_class` (`operator_decision`, `human_hand_over`, `explained`,
+  `remedy`), each class only on its own action types, or the decision is
+  rejected. The engine appends the duty to the session's prompt itself, since
+  every repository runs its own tech-lead prompt.
+- **The record is the watermark.** The charter record of a triaging action
+  carries its class and the item's block fingerprint at launch. An unchanged
+  item whose triage took effect, was answered, or whose proposal is filed and
+  awaiting the operator is not triaged again.
+- **`propose_decision`** turns an open question (an agent asking whether to
+  split, a scope call) into one decision with optional drafted follow-up
+  issues. Its charter binding, `operator_decision`, is always proposed: never
+  executed by the tech lead, never restricted by role or depth. Approval
+  retries the item through the operator's own retry, files the follow-ups
+  create-once, and posts the decision on the item for the session that resumes
+  it; a cause the retry may not override closes it stale with no writes.
+- **`resolve_block`** (#7658) lets the tech lead decide a `needs-human` WORK
+  block itself, so an operator can hand it these decisions through config
+  alone: `tech_lead.authority.resolve_block` is `propose` by default (an
+  approvable proposal carrying the exact decision) and may be `execute`. Its
+  charter row is FLOW / `fix` / `approvable`: it removes the block's cause
+  rather than routing around it, files a split's children at `create_issue`'s
+  depth, and destroys nothing. Three kinds: answer the agent's question from
+  the issue's own spec, ADRs and CUJs; decide a split (children filed with
+  `Depends-on:`/`Stack-after:` edges, verified by the engine's own parser
+  before they get their agent label, and the parent narrowed or closed); lift a
+  block shown stale or false. The rules are typed, not prompt prose
+  (`domain/block_resolution.py`): only `agent_completion` and
+  `session_lifecycle` are resolvable, and the shared block's owner refuses any
+  other cause; the tech lead's own hand-over marker, a cause not on record (an
+  operator's own label) and human-only work (credentials, external accounts,
+  provisioning, money, legal, screened in the item, the agent's question and
+  the decision) are refused at apply time. Each decision is a charter record
+  carrying its evidence and effect, and is posted on the item with one durable
+  marker per cause it discharged. A cause that comes back after a resolve is
+  the operator's: the tech lead never clears it on that item again.
+- **`release_validated_work`** (#9092) releases retained validated-work
+  records whose work a merged PR of the same issue rebuilt with rewritten
+  history, so no ancestry proof can release them (porchpin #262). Its charter
+  row is FLOW / `workaround` / `destructive`, and it has no authority key: a
+  wrong release loses work for good, so it only ever runs on approval. The
+  tech lead names record ids from the launch's
+  `validated-work-release-targets.json` and the superseding PR; the engine
+  binds every record to the authority snapshot observed at launch and shows
+  them all on the proposal. On approval it re-verifies that the PR is a merged
+  PR of the issue in this repository and that every record is unchanged, then
+  abandons all of them or none in one store transaction, recording the
+  verified approving maintainer and the PR as the resolution.
+- The health-review trigger counts label-blocked items as board content, so a
+  board of only parked items is still reviewed.
 
 ### 3. Observation surface: the board-snapshot manifest
 
@@ -419,10 +502,12 @@ booleans do not prove App installation write access.
 
 On the tick a signature crosses `min_evidence`, has no promotion row, fits its
 routed target's cap, and is classified `fix:code`, the orchestrator files ONE
-issue in the routed repo carrying `proposed-tech-lead` plus the route's full
-scheduling contract (worker agent + scope label) and the area label. Removing
-the gate label is the operator's whole approval — the issue is then discoverable
-by the target's unchanged pipeline with nothing else missing. Closing the issue
+issue in the routed repo carrying the approval labels (`tech-lead-proposal`,
+`awaiting-approval`; #7763) plus the route's full scheduling contract (worker
+agent + scope label) and the area label. A maintainer's `approved` in the
+target repo is the operator's whole approval — once the target engine verifies
+it, the issue is discoverable by the target's unchanged pipeline with nothing
+else missing. Closing the issue
 is a decline, recorded permanently so it is never re-filed. When a promoted
 issue closes and the pull request GitHub records as its CLOSER is merged, the
 source orchestrator writes the `tech_lead_shipped_fixes` row, comments the fix

@@ -544,6 +544,39 @@ class TestBuildCompletionRecord:
         assert RequestedAction.PUSH_BRANCH in record.requested_actions
         assert RequestedAction.CREATE_PR in record.requested_actions
 
+    def test_an_approval_attests_its_standing_rulings_through_the_record(self):
+        """#8141: ``reviewer-done approved --upholds-ruling ID`` reaches the
+        orchestrator, which validates the record as untrusted input."""
+        from issue_orchestrator.domain.models import CompletionRecord as DomainRecord
+        from issue_orchestrator.entrypoints.cli_tools.reviewer_done import build_parser
+
+        args = build_parser().parse_args([
+            "approved", "--summary", "Implements the ruling", "--risk", "low",
+            "--upholds-ruling", "m-0123456789ab", "--upholds-ruling", "pd-456", "--upholds-ruling", "pd-456",
+        ])
+        with patch("issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id", return_value="s"):
+            record = build_completion_record(AgentStatus.APPROVED, args)
+
+        assert record.upheld_rulings == ["m-0123456789ab", "pd-456"]
+        assert "**Upholds standing rulings:** `m-0123456789ab`, `pd-456`" in (record.comment_body or "")
+        assert DomainRecord.from_dict(record.to_dict()).upheld_rulings == ["m-0123456789ab", "pd-456"]
+
+    def test_only_an_approval_may_attest_rulings(self):
+        from issue_orchestrator.domain.models import CompletionRecord as DomainRecord
+        from issue_orchestrator.entrypoints.cli_tools.reviewer_done import build_parser
+
+        args = build_parser().parse_args([
+            "changes_requested", "--issues", "x", "--risk", "low", "--upholds-ruling", "m-0123456789ab",
+        ])
+        with pytest.raises(SystemExit):
+            validate_fields(AgentStatus.CHANGES_REQUESTED, args)
+        forged = {"session_id": "s", "timestamp": "t", "outcome": "review_changes_requested",
+                  "summary": "x", "upheld_rulings": ["m-0123456789ab"]}
+        with pytest.raises(ValueError, match="only valid for an approval"):
+            DomainRecord.from_dict(forged)
+        with pytest.raises(ValueError):
+            DomainRecord.from_dict({**forged, "outcome": "review_approved", "upheld_rulings": ["Bad Id"]})
+
     def test_build_completed_record_with_follow_up_file(self, tmp_path: Path):
         follow_up_path = tmp_path / "followups.jsonl"
         follow_up_path.write_text(
@@ -727,15 +760,9 @@ class TestWriteMarkerFile:
 class TestCheckDirtyFiles:
     """Test check_dirty_files excludes orchestrator runtime artifacts.
 
-    Two filter categories apply:
-
-    - Runtime metadata (``.issue-orchestrator/`` sessions/backups,
-      ``.claude/``): always filtered regardless of tracked/untracked.
-    - Orchestrator-planted source
-      (``src/issue_orchestrator/entrypoints/cli_tools/``): filtered **only**
-      when git reports the path as untracked (status ``??``). A tracked
-      modification in the orchestrator's own repo is a legitimate
-      developer edit and must still fire the guard.
+    Runtime metadata (``.issue-orchestrator/`` sessions/backups,
+    ``.claude/``) is always filtered regardless of tracked/untracked. Nothing
+    else is: io places none of its own source in a worktree (#7566).
     """
 
     def test_excludes_runtime_metadata(self):
@@ -757,34 +784,33 @@ class TestCheckDirtyFiles:
             result = check_dirty_files()
         assert len(result) == 2
 
-    def test_excludes_untracked_planted_cli_tools(self):
-        """Untracked sync_cli_tools plantings must not block coding-done."""
+    def test_untracked_io_cli_tools_paths_count_as_dirty(self):
+        """io plants nothing in a worktree (#7566), so an untracked file under
+        io's own ``cli_tools/`` is an agent's new module. Excusing it would
+        let coding-done pass while the file never reaches the PR.
+        """
         porcelain = (
-            "?? src/issue_orchestrator/entrypoints/cli_tools/coding_done.py\n"
-            "?? src/issue_orchestrator/entrypoints/cli_tools/reviewer_done.py\n"
+            "?? src/issue_orchestrator/entrypoints/cli_tools/new_tool.py\n"
             " M src/app.py\n"
         )
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = Mock(returncode=0, stdout=porcelain)
             result = check_dirty_files()
-        assert result == ["M src/app.py"]
+        assert result == [
+            "?? src/issue_orchestrator/entrypoints/cli_tools/new_tool.py",
+            "M src/app.py",
+        ]
 
-    def test_excludes_untracked_summary_src_dir(self):
-        """``?? src/`` is the porcelain summary form git emits when an
-        entire untracked subtree is collapsed to its topmost dir. In a
-        foreign repo this is exactly how the planted ``cli_tools/`` tree
-        shows up — the prior substring-based filter silently missed it.
-        """
+    def test_untracked_summary_src_dir_counts_as_dirty(self):
         porcelain = "?? src/\n"
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = Mock(returncode=0, stdout=porcelain)
             result = check_dirty_files()
-        assert result == []
+        assert result == ["?? src/"]
 
-    def test_keeps_tracked_modified_planted_cli_tools(self):
-        """Tracked modifications to the same cli_tools files are legitimate
-        developer edits in the orchestrator's own repo and must still fire
-        the dirty-tree guard.
+    def test_keeps_tracked_modified_cli_tools(self):
+        """Tracked modifications to cli_tools files are legitimate developer
+        edits in the orchestrator's own repo and must fire the dirty-tree guard.
         """
         porcelain = (
             " M src/issue_orchestrator/entrypoints/cli_tools/coding_done.py\n"
@@ -799,9 +825,9 @@ class TestCheckDirtyFiles:
         ]
 
     def test_uses_untracked_files_all_flag(self):
-        """Porcelain must request per-file untracked listing so the planted
-        subtree doesn't get collapsed to ``?? src/`` and evade per-file
-        filters elsewhere.
+        """Porcelain must request per-file untracked listing so an untracked
+        subtree is not collapsed to its topmost directory, which the
+        per-path runtime filter cannot classify.
         """
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = Mock(returncode=0, stdout="")

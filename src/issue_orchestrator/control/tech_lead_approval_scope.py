@@ -13,13 +13,15 @@ policy about the approval scope, not about gathering facts or reconciling ops.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ..domain.tech_lead_session import (
-    GatedTechLeadProposal,
-    PROPOSED_TECH_LEAD_LABEL,
+from ..domain.tech_lead_approval import (
+    AWAITING_APPROVAL_LABEL,
+    TECH_LEAD_PROPOSAL_LABEL,
 )
+from ..domain.tech_lead_session import GatedTechLeadProposal
 from .tech_lead_proposals import (
     TECH_LEAD_PROPOSAL_SCAN_LIMIT,
     observe_gated_tech_lead_proposals,
@@ -30,6 +32,7 @@ if TYPE_CHECKING:
     from ..infra.config import Config
     from ..ports import RepositoryHost
     from ..ports.issue import Issue
+    from .tech_lead_approval import TechLeadApprovals
 
 # How often the approval scope is re-observed when nothing else arms the tick.
 # One labelled, exhaustive read per interval rather than per tick, while still
@@ -62,13 +65,19 @@ def approval_refresh_due(
 
 
 def discover_open_gated_proposals(
-    repository_host: "RepositoryHost", config: "Config"
-) -> list["Issue"]:
-    """AUTHORITATIVE observation of the approval backlog, in its own scope.
+    repository_host: "RepositoryHost",
+    config: "Config",
+    indexed: Collection[int] = frozenset(),
+) -> tuple[list["Issue"], tuple[int, ...]]:
+    """AUTHORITATIVE observation of every open proposal, in its own scope.
 
-    The backlog is defined by a LABEL, so the only complete observation of it
-    is a query for that label. Everything the tick already holds is a query
-    for something else that merely overlaps:
+    Proposals are defined by their approval LABELS (#7763), so the only
+    complete observation of them is a query for each: the provenance label
+    (the unapproved backlog AND the approved items the approval owner must
+    verify — a claimed approval, or an admitted follow-up still being worked)
+    and the waiting label (a proposal whose provenance label was stripped).
+    The two answers are unioned by issue number. Everything the tick already
+    holds is a query for something else that merely overlaps:
 
     - the worker board is narrowed by configured agents, milestones, exclusion
       filters and a fetch limit — it fetches runnable work, not approvals;
@@ -88,20 +97,56 @@ def discover_open_gated_proposals(
     ``exhaustive`` for the same reason the anchor scan is (#6779 R17): a
     dropped page must RAISE rather than return a silently partial set a caller
     would read as "fewer approvals pending".
+
+    Labels alone are not the whole scope (#7763 review r6 F2): a bulk edit can
+    strip every approval label from a proposal whose body marker still blocks
+    it. The *indexed* proposals (every one this engine filed or migrated) that
+    neither label query returned are read one by one — normally none, since
+    a proposal carries its labels — and returned with the scope when still an
+    open, in-scope proposal. The second element names the indexed numbers
+    found closed, gone or no longer a proposal, for the index to retire.
     """
     from .health_review_trigger import _scoped_issues
 
-    issues = repository_host.list_issues(
-        labels=[
-            value
-            for value in (PROPOSED_TECH_LEAD_LABEL, config.filtering.label)
-            if value
-        ],
-        state="open",
-        limit=TECH_LEAD_PROPOSAL_SCAN_LIMIT,
-        exhaustive=True,
-    )
-    return _scoped_issues(issues, config.filtering.label)
+    found: dict[int, "Issue"] = {}
+    for gate_label in (TECH_LEAD_PROPOSAL_LABEL, AWAITING_APPROVAL_LABEL):
+        for issue in repository_host.list_issues(
+            labels=[value for value in (gate_label, config.filtering.label) if value],
+            state="open",
+            limit=TECH_LEAD_PROPOSAL_SCAN_LIMIT,
+            exhaustive=True,
+        ):
+            # The later query's snapshot wins (#7763 review r21 F1): it is
+            # the newer read of the same issue.
+            found[issue.number] = issue
+    retired: list[int] = []
+    for number in sorted(set(indexed) - set(found)):
+        issue = repository_host.get_issue(number)
+        # An open indexed issue stays in scope whatever its labels and body
+        # say now (#7763 review r15 F1): only closing it retires it.
+        if issue is None or issue.state != "open":
+            retired.append(number)
+        else:
+            found[number] = issue
+    scoped = _scoped_issues([found[number] for number in sorted(found)], config.filtering.label)
+    return scoped, tuple(retired)
+
+
+@dataclass(frozen=True)
+class ApprovalScopeObservation:
+    """One observation of the approval scope (#7763).
+
+    ``backlog`` is what the board publishes (unapproved proposals);
+    ``issues`` is the authoritative scope itself — every open proposal,
+    approved or not — which the approval owner verifies and settles.
+    """
+
+    backlog: tuple[GatedTechLeadProposal, ...]
+    issues: tuple["Issue", ...]
+    retired: tuple[int, ...] = ()
+    #: False when this tick reused the owner's last complete observation
+    #: instead of querying GitHub (:func:`approval_scope_for_tick`).
+    refreshed: bool = True
 
 
 def observe_approval_backlog(
@@ -109,6 +154,16 @@ def observe_approval_backlog(
     config: "Config",
     *partial: Sequence["Issue"],
 ) -> tuple[GatedTechLeadProposal, ...]:
+    """The unapproved backlog alone; see :func:`observe_approval_scope`."""
+    return observe_approval_scope(repository_host, config, *partial).backlog
+
+
+def observe_approval_scope(
+    repository_host: "RepositoryHost",
+    config: "Config",
+    *partial: Sequence["Issue"],
+    indexed: Collection[int] = frozenset(),
+) -> ApprovalScopeObservation:
     """The backlog as the board should publish it: complete, and this tick's.
 
     Composes the two halves so no caller has to remember to do both. The sets
@@ -123,7 +178,7 @@ def observe_approval_backlog(
     the operator already approved, which is the failure ``_build_view``'s
     docstring warns about and #7014's own symptom.
     """
-    authoritative = discover_open_gated_proposals(repository_host, config)
+    authoritative, retired = discover_open_gated_proposals(repository_host, config, indexed)
     # MEMBERSHIP comes from the authoritative query; the partial sets may only
     # enrich what it already contains.
     #
@@ -136,18 +191,23 @@ def observe_approval_backlog(
     # ungated or closed OBJECT arriving later, which the observer already
     # handles by resolving the latest observation per issue.)
     in_scope = {issue.number for issue in authoritative}
-    observed = observe_gated_tech_lead_proposals(*partial, authoritative)
-    return tuple(
-        proposal for proposal in observed if proposal.issue_number in in_scope
+    observed = observe_gated_tech_lead_proposals(*partial, authoritative, known=indexed)
+    return ApprovalScopeObservation(
+        backlog=tuple(
+            proposal for proposal in observed if proposal.issue_number in in_scope
+        ),
+        issues=tuple(authoritative),
+        retired=retired,
     )
 
 
-def observe_approval_backlog_or_none(
+def observe_approval_scope_or_none(
     repository_host: "RepositoryHost",
     config: "Config",
     *partial: Sequence["Issue"],
     decline_on_failure: bool = True,
-) -> tuple[GatedTechLeadProposal, ...] | None:
+    indexed: Collection[int] = frozenset(),
+) -> ApprovalScopeObservation | None:
     """The backlog, or None when this tick could not observe its scope.
 
     ``decline_on_failure`` must be False whenever the tick has ALREADY gathered
@@ -172,7 +232,7 @@ def observe_approval_backlog_or_none(
     from ..ports.repository_host import RepositoryHostError
 
     try:
-        return observe_approval_backlog(repository_host, config, *partial)
+        return observe_approval_scope(repository_host, config, *partial, indexed=indexed)
     except RepositoryHostError as error:
         if not decline_on_failure:
             raise
@@ -182,3 +242,44 @@ def observe_approval_backlog_or_none(
             error,
         )
         return None
+
+
+def approval_scope_for_tick(
+    repository_host: "RepositoryHost",
+    config: "Config",
+    approvals: "TechLeadApprovals | None",
+    *partial: Sequence["Issue"],
+    due: bool,
+    decline_on_failure: bool,
+) -> ApprovalScopeObservation | None:
+    """This tick's approval scope: queried only when the cadence (or an
+    operator's command) says so (#7763 review r21 F2).
+
+    Other triggers (a pending op, say) arm fact production every tick; they
+    reuse the approval owner's last COMPLETE observation, refreshed with the
+    fresher sets this tick holds, instead of re-running the exhaustive gate
+    queries. A refresh marks the scope unavailable first, so a failed one is
+    never served as current (#7763 review r16 F2).
+    """
+    if not due and approvals is not None and approvals.scope_observed:
+        kept = {issue.number: issue for issue, _verdict in approvals.observed_scope()}
+        # This tick's own reads of the same issues are newer (#7763 r22 F2).
+        newer = {issue.number: issue for issues in partial for issue in issues}
+        current = kept | {number: issue for number, issue in newer.items() if number in kept}
+        retained = tuple(current[number] for number in sorted(current))
+        in_scope = set(current)
+        observed = observe_gated_tech_lead_proposals(
+            retained, *partial, known=approvals.indexed_proposals()
+        )
+        return ApprovalScopeObservation(
+            backlog=tuple(item for item in observed if item.issue_number in in_scope),
+            issues=retained,
+            refreshed=False,
+        )
+    if approvals is not None:
+        approvals.mark_scope_unavailable()
+    return observe_approval_scope_or_none(
+        repository_host, config, *partial,
+        decline_on_failure=decline_on_failure,
+        indexed=approvals.indexed_proposals() if approvals is not None else frozenset(),
+    )

@@ -11,13 +11,18 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Literal, Optional, TYPE_CHECKING, TypeAlias
 from unittest.mock import Mock
 
+from collections import OrderedDict
+
 from .blocked_open_pr import BlockedOpenPRLedger
+from .ci_failure import CiJobAssessment
+from .integration_branch import IntegrationDeliveryView, IntegrationStep
 from .dependency_gates import DependencyGateSnapshot
 from .host_rate_limit import HostRateLimitWindow
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from .session_key import SessionKey  # re-exported for callers
 from .issue_run_evidence import ReworkTarget
 from .session_kind import CompletionProtocol, SessionKind
+from .standing_ruling import parse_upheld_rulings
 from .sandbox_scope import (
     SandboxScope,
     SandboxScopeContext,
@@ -26,6 +31,7 @@ from .sandbox_scope import (
 )
 from .pause_state import PauseState
 from .session_run import SessionRunAssets, SessionRunIdentity
+from .tech_lead_approval import ApprovalSettlement
 from .tech_lead_findings import PromotionUpdate, PromotableFinding, SettledPromotion
 from .tech_lead_session import (
     ApprovedTechLeadOp,
@@ -142,6 +148,9 @@ class RequestedAction(Enum):
     REMOVE_CODE_REVIEW_LABEL = "remove_code_review_label"
     POST_COMMENT = "post_comment"
     PUSH_BRANCH = "push_branch"
+    #: A person must decide before the PR merges (#7678): the agent's question
+    #: is about its published work, so it holds the PR's merge, not the issue.
+    HOLD_MERGE_FOR_HUMAN = "hold_merge_for_human"
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +285,29 @@ def _check_partial_pr(value: Any, outcome: "CompletionOutcome") -> bool:
             f"partial_pr is only valid for a completed outcome, not {outcome.value}"
         )
     return value
+
+
+def _check_finishes_issue(value: Any, outcome: "CompletionOutcome", *, partial_pr: bool) -> bool:
+    """A finishing declaration (#8689) is a strict bool, only a completion
+    makes it, and it contradicts a partial claim."""
+    if type(value) is not bool:
+        raise ValueError("finishes_issue must be a boolean")
+    if value and outcome is not CompletionOutcome.COMPLETED:
+        raise ValueError(
+            f"finishes_issue is only valid for a completed outcome, not {outcome.value}"
+        )
+    if value and partial_pr:
+        raise ValueError("finishes_issue contradicts partial_pr: a PR cannot both finish and continue an issue")
+    return value
+
+
+def _check_upheld_rulings(value: Any, outcome: "CompletionOutcome") -> list[str] | None:
+    """An approval's ruling attestations (#8141): ruling ids, and only on an approval."""
+    if value is None:
+        return None
+    if outcome is not CompletionOutcome.REVIEW_APPROVED:
+        raise ValueError(f"upheld_rulings is only valid for an approval, not {outcome.value}")
+    return list(parse_upheld_rulings(value))
 
 
 def _check_pr_labels(value: Any) -> list[str] | None:
@@ -480,6 +512,21 @@ class CompletionRecord:
     # leaves the issue open for the next PR (#7288). COMPLETED only.
     partial_pr: bool = False
 
+    # The PR finishes an issue that earlier PRs delivered in part
+    # (``coding-done completed --finishes-issue``, #8689). Without it, a
+    # completion on an issue whose latest merged PR only refs it is published
+    # as partial too. COMPLETED only; never with ``partial_pr``.
+    finishes_issue: bool = False
+
+    # The standing rulings (#8141) an approving review attests the diff
+    # upholds (``reviewer-done approved --upholds-ruling ID``). REVIEW_APPROVED only.
+    upheld_rulings: Optional[list[str]] = None
+
+    @property
+    def approves(self) -> bool:
+        """Whether this record is a reviewer's approval."""
+        return self.outcome is CompletionOutcome.REVIEW_APPROVED
+
     @property
     def requests_publication(self) -> bool:
         """Whether this intent requires publication prerequisites, before shaping."""
@@ -518,6 +565,8 @@ class CompletionRecord:
                 issue.to_dict() for issue in self.follow_up_issues
             ] if self.follow_up_issues else None,
             "partial_pr": self.partial_pr,
+            "finishes_issue": self.finishes_issue,
+            "upheld_rulings": self.upheld_rulings,
         }
 
     @classmethod
@@ -622,7 +671,11 @@ class CompletionRecord:
                 ProposedFollowUpIssue.from_dict(item)
                 for item in follow_up_raw
             ] if follow_up_raw is not None else None,
-            partial_pr=_check_partial_pr(data.get("partial_pr", False), outcome),
+            partial_pr=(partial := _check_partial_pr(data.get("partial_pr", False), outcome)),
+            finishes_issue=_check_finishes_issue(
+                data.get("finishes_issue", False), outcome, partial_pr=partial
+            ),
+            upheld_rulings=_check_upheld_rulings(data.get("upheld_rulings"), outcome),
         )
 
 
@@ -1355,6 +1408,11 @@ class SessionHistoryEntry:
     # Set when this entry's PR merged as a partial delivery ("Refs #N", #7288).
     # The issue still has work, so this entry does not hold it out of the run.
     partial_pr_merged: bool = False
+    # False for a run that was not the issue's own work: a tech lead's failure
+    # investigation of a FOCUS item (its scratch worktree, #6823). Its entry
+    # never holds the item out of the run, or an item unblocked meanwhile (a
+    # resolve_block, #7658) would never launch again until a restart.
+    holds_issue: bool = True
 
 
     @property
@@ -1537,8 +1595,8 @@ class TechLeadFacts:
     health_review_fingerprint: str = ""
     existing_health_review_issue: Optional[int] = None  # Open marker-labeled anchor issue
     # Approved gated tech_lead proposals (#6778): open issues that carry a
-    # StoredTechLeadOp but no longer carry the proposed-tech-lead gate label,
-    # classified from the SAME anchor scan. The planner turns each into the
+    # StoredTechLeadOp and a maintainer-applied ``approved`` label the approval
+    # owner verified (#7763), classified from the SAME anchor scan. The planner turns each into the
     # stored op's execution action.
     approved_tech_lead_ops: tuple["ApprovedTechLeadOp", ...] = field(default_factory=tuple)
     # Ledger rows whose proposal issue was ABSENT from the exhaustive scan
@@ -1549,12 +1607,16 @@ class TechLeadFacts:
     # fact gathering read-only (#6779 R10).
     absent_proposal_op_candidates: tuple[int, ...] = field(default_factory=tuple)
     # The operator-approval backlog as LABEL truth (#7014): every OPEN issue the
-    # tick observed carrying the proposed-tech-lead gate, whether or not an op
+    # tick observed as an unapproved tech-lead proposal, whether or not an op
     # ledger row backs it. Promoted findings and plain follow-up proposals carry
     # the same gate with no ledger row, so this is the only fact that can say
     # how many approvals are actually pending. Projected onto the operator board
     # beside the ledger rows; no planning reads it (approval is a human act).
     gated_proposals: tuple["GatedTechLeadProposal", ...] = field(default_factory=tuple)
+    # Approval-label transitions the approval owner's verdicts call for (#7763):
+    # admit a verified approval, reject one that does not count, restore a
+    # stripped waiting label. Planned into SettleProposalApprovalAction.
+    approval_settlements: tuple["ApprovalSettlement", ...] = field(default_factory=tuple)
     # Open pattern case files (#6781): observation-labeled issues classified
     # from the SAME anchor scan. Projected into the board snapshot so health
     # reviews mine accumulated evidence, and into the tech_lead board file.
@@ -1611,6 +1673,27 @@ class DiscoveredRework:
     # rework itself is still queued (idempotency is owned by labels/pending
     # state, not the comment).
     feedback_comment_already_posted: bool = False
+    # True when a required/blocking check FAILED on the approved PR's head
+    # (post-publish REWORK_CHECK_FAILED). Only such a rework passes through the
+    # CI-failure triage, which may re-run a transient failure instead (#8692).
+    failed_check: bool = False
+
+
+@dataclass(frozen=True)
+class DiscoveredCiRerun:
+    """A PR's failed CI jobs read as transient; re-run them once (#8692).
+
+    A "fact" from the CI-failure triage. The planner turns it into a
+    ``RerunFailedChecksAction``; the applier records the re-run on the PR
+    (the durable once-per-head marker) and then asks GitHub to re-run.
+    """
+    issue_number: int
+    pr_number: int
+    head_sha: str
+    run_ids: tuple[int, ...]
+    job_ids: tuple[int, ...]
+    #: The PR comment recording the re-run: marker, jobs and signatures.
+    comment: str
 
 
 @dataclass(frozen=True)
@@ -1632,6 +1715,8 @@ PostPublishEscalationKind = Literal[
     "branch_protection_blocked",  # mergeable_state=blocked but rollup=SUCCESS
     "status_rollup_permission_denied",  # token cannot read check status to decide
     "merge_queue_failed",  # GitHub merge queue rejected the PR; failure_action=needs_human
+    "ci_rerun_unconfirmed",  # io asked GitHub to re-run a transient CI failure; it never restarted
+    "integration_ruling_check",  # integration mode: the issue has standing rulings; a person checks before it merges (#8144)
 ]
 
 
@@ -2082,8 +2167,8 @@ class OrchestratorState:
     # silently-wrong). ``tech_lead_expedited`` records which priority_queue
     # entries the tech lead placed, so the cap counts only tech-lead-expedited
     # issues (not operator/retry ones). ``tech_lead_expedite_pending`` holds
-    # gated (propose-authority) create_issue follow-ups awaiting the
-    # proposed-tech-lead gate removal, promoted to the front once un-gated.
+    # gated (propose-authority) create_issue follow-ups awaiting a verified
+    # approval, promoted to the front once admitted (#7763).
     # #7014 F1: did the LAST tick observe a gated approval backlog? A board
     # showing pending approvals must be refreshed when the last one clears,
     # and clearing it is precisely the moment nothing else arms fact
@@ -2162,6 +2247,22 @@ class OrchestratorState:
     discovered_escalations: list[DiscoveredEscalation] = field(default_factory=list)  # Escalations from scans
     discovered_awaiting_merge_escalations: list[DiscoveredAwaitingMergeEscalation] = field(default_factory=list)  # Post-publish stuck-or-blocked escalations
     discovered_merge_queue_enqueues: list[DiscoveredMergeQueueEnqueue] = field(default_factory=list)  # Approved PRs eligible for the merge queue
+    discovered_ci_reruns: list[DiscoveredCiRerun] = field(default_factory=list)  # Transient CI failures to re-run once (#8692)
+    # Integration-branch mode (#8144): the owner's discovered steps (a merge into
+    # integration, a mechanical PR update, branch upkeep, the delivery PR) ...
+    discovered_integration_steps: list[IntegrationStep] = field(default_factory=list)
+    # ... the delivery PR as last observed, for the Tech lead page ...
+    integration_delivery: IntegrationDeliveryView | None = None
+    # ... when the branch upkeep last ran, and the integration branch the upkeep
+    # last SAW exist: until then no session launches, since every worktree is
+    # based on it (review r2 F4).
+    integration_upkeep_at: float = 0.0
+    integration_branch_confirmed: str | None = None
+    # Each failed Actions job's assessment, by job id: a job's log is read once
+    # (#8692). Job ids are per attempt, so a re-run's new failure is read anew.
+    ci_job_assessments: OrderedDict[int, CiJobAssessment] = field(default_factory=OrderedDict)
+    # PR number -> scans a failed CI-triage read has been retried (#8692)
+    ci_triage_deferrals: dict[int, int] = field(default_factory=dict)
     discovered_failures: list["DiscoveredFailure"] = field(default_factory=list)  # Failures for tech_lead
     # Immediate cleanups - sessions that need cleanup now (not deferred until review)
     immediate_cleanups: list["ImmediateCleanup"] = field(default_factory=list)

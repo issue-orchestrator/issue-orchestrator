@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from issue_orchestrator.control.human_gates import HumanGates
 from issue_orchestrator.control.actions import (
     ActionResultType,
     ResetRetryIssueAction,
@@ -154,6 +155,7 @@ def _build(
         config=Config(),
         state=state,
         repository_host=repository_host,
+        run_locked=lambda fn: fn(),
     )
     # Spy the reused reset pipeline: if it is ever called, the reset boundary
     # (and thus every termination/abandon) ran. A stale downgrade must not call
@@ -275,6 +277,7 @@ def _build_release(*, job_supervisor=None, history=(), unreadable=()):
     applier.apply.side_effect = ActionResult.ok
     deps = SimpleNamespace(
         label_manager=LabelManager(config), events=MagicMock(), action_applier=applier,
+        human_gates=HumanGates.unrecorded(LabelManager(config)),
         # The real scanner: its discovery gate and branch map are what the
         # release asks.
         pr_scanner=PRScanner(config=config, repository=host, events=MagicMock()),

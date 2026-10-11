@@ -19,7 +19,7 @@ only (tamper evidence when they diverge).
 
 import json
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
@@ -27,11 +27,15 @@ from typing import TYPE_CHECKING, Any, Collection, cast
 
 from .session_kind import SessionKind
 from .session_run import SessionRunIdentity, canonical_run_dir_name
-from .tech_lead_artifacts import ACT_LEVEL_TECH_LEAD_ACTIONS
+from .blocked_item_triage import TriageGrant
+from .tech_lead_artifacts import ACT_LEVEL_TECH_LEAD_ACTIONS, DecisionFollowUp
+from .block_resolution import RESOLVE_BLOCK_ACTION, BlockResolution
+from .decision_steps import DecisionFollowThrough
 from .scoped_rework import ReworkRequest, ReworkTarget
 
 if TYPE_CHECKING:
     from .validated_work_commands import ValidatedWorkAuthoritySnapshot
+    from .validated_work_release import ValidatedWorkRelease, ValidatedWorkReleaseIntent
 
 TECH_LEAD_ASSIGNMENT_FILENAME = "tech-lead-assignment.json"
 
@@ -101,31 +105,8 @@ def health_review_flavor_if_anchored(
         return TechLeadSessionFlavor.HEALTH_REVIEW
     return None
 
-# Gate label carried by gated tech_lead proposal issues (#6778, ADR-0031 §2
-# amendment). Orchestrator-attached at creation; REMOVING it is per-instance
-# operator approval. The scheduler's blocking-label classification excludes
-# gate-labeled issues from pickup, and the agent-label allowlist rejects it
-# as a protected workflow label. Raw (never prefixed), like the marker label:
-# the tech_lead subsystem manages its labels without the orchestrator prefix.
-PROPOSED_TECH_LEAD_LABEL = "proposed-tech-lead"
-
-
-def is_proposed_tech_lead_gate(name: str) -> bool:
-    """True iff *name* is the owned proposal gate, case-insensitively (#6779 R15).
-
-    GitHub folds label names, so a repository whose canonical spelling is
-    ``Proposed-Tech-Lead`` still carries the gate. This is the SINGLE owner of the
-    gate comparison: reconciliation classification, scheduler blocking, and the
-    apply-time consent re-check all fold case through here so they can never
-    diverge — e.g. classify a canonical-cased gate as "approved" while blocking
-    treats it as absent (or vice versa).
-    """
-    return name.casefold() == PROPOSED_TECH_LEAD_LABEL.casefold()
-
-
-# Observation label carried by pattern case-file issues (#6781). Mirrors
-# PROPOSED_TECH_LEAD_LABEL's treatment exactly: orchestrator-attached at
-# creation, blocking-class (excluded from agent pickup by the scheduler),
+# Observation label carried by pattern case-file issues (#6781).
+# Orchestrator-attached at creation, blocking-class (excluded from agent pickup by the scheduler),
 # rejected as a protected workflow label when agent-proposed, and raw
 # (never prefixed). Case files are durable flag_pattern evidence ledgers —
 # never work items and never tech_lead anchors.
@@ -534,7 +515,23 @@ class TechLeadLaunchAuthority:
     observed_validated_work_authorities: tuple[
         ValidatedWorkAuthoritySnapshot, ...
     ] = ()
+    # Every unresolved retained record a release may name (#9092), sorted by
+    # (issue, record id). An issue may hold several; the agent names record
+    # ids and this trusted tuple binds each to the snapshot observed here.
+    observed_validated_work_releases: tuple[
+        ValidatedWorkAuthoritySnapshot, ...
+    ] = ()
     recovery_tracker_numbers: tuple[int, ...] = ()
+    # The blocked items this health review must triage (#7593), each with its
+    # blocking state as observed at launch. Recorded, never inferred: the
+    # decision must cover exactly these, and the charter record of each
+    # triage carries the observed fingerprint as the re-triage watermark.
+    triage_grants: tuple[TriageGrant, ...] = ()
+    # The other issues whose work this run covers, each with its PRs in the
+    # run (#8347), sorted by issue: whose standing rulings bind it. Recorded
+    # at launch, so a retry reads the same issues' rulings fresh even when a
+    # PR's links change meanwhile.
+    covered_work: tuple[tuple[int, tuple[int, ...]], ...] = ()
     schema_version: int = _SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -542,6 +539,8 @@ class TechLeadLaunchAuthority:
             raise ValueError(
                 f"Unsupported tech_lead authority schema_version: {self.schema_version!r}"
             )
+        _validate_triage_grants(self)
+        _validate_covered_work(self)
         if (
             self.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION
             and self.focus_issue_number is None
@@ -582,6 +581,7 @@ class TechLeadLaunchAuthority:
             )
         _validate_rework_targets(self)
         _validate_validated_work_authorities(self)
+        _validate_validated_work_releases(self)
         _validate_recovery_tracker_grants(self)
         if self.observed_session_generations != tuple(
             sorted(
@@ -618,8 +618,18 @@ class TechLeadLaunchAuthority:
             assert self.focus_issue_number is not None  # __post_init__
             return frozenset((self.focus_issue_number,))
         if self.flavor is TechLeadSessionFlavor.HEALTH_REVIEW:
-            return frozenset((self.anchor_issue_number,))
+            return frozenset((self.anchor_issue_number, *self.triage_issue_numbers()))
         return frozenset((*self.manifest_pr_numbers, self.anchor_issue_number))
+
+    def triage_issue_numbers(self) -> frozenset[int]:
+        """The blocked items this run was granted to triage (#7593)."""
+        return frozenset(grant.issue_number for grant in self.triage_grants)
+
+    def triage_grant(self, issue_number: int) -> TriageGrant | None:
+        return next(
+            (grant for grant in self.triage_grants if grant.issue_number == issue_number),
+            None,
+        )
 
     def allowed_act_level_targets(self) -> frozenset[int]:
         """Issue numbers an ACT-LEVEL proposal (reset_retry/kill_hung_session)
@@ -642,7 +652,9 @@ class TechLeadLaunchAuthority:
             assert self.focus_issue_number is not None  # __post_init__
             return frozenset((self.focus_issue_number,))
         if self.flavor is TechLeadSessionFlavor.HEALTH_REVIEW:
-            return frozenset(self.problem_issue_numbers)
+            # Plus every blocked item it was granted to triage (#7593): a
+            # remedy is one of the four dispositions it owes each of them.
+            return frozenset(self.problem_issue_numbers) | self.triage_issue_numbers()
         return frozenset()
 
     def matches_assignment(self, assignment: TechLeadAssignment) -> bool:
@@ -683,6 +695,20 @@ class TechLeadLaunchAuthority:
         )
         return matches[0] if len(matches) == 1 else None
 
+    def bind_validated_work_release(
+        self, issue_number: int, intent: "ValidatedWorkReleaseIntent"
+    ) -> "tuple[ValidatedWorkAuthoritySnapshot, ...] | None":
+        """The launch-observed grant of each record a release names (#9092).
+
+        None when any named record was not observed releasable for this
+        issue at launch: the agent can never reach a record it was not shown.
+        """
+        from .validated_work_release import bind_release
+
+        return bind_release(
+            intent, issue_number=issue_number, grants=self.observed_validated_work_releases
+        )
+
     def to_dict(self) -> dict[str, object]:
         return {
             "schema_version": self.schema_version,
@@ -695,8 +721,14 @@ class TechLeadLaunchAuthority:
                 authority.to_dict()
                 for authority in self.observed_validated_work_authorities
             ],
+            "observed_validated_work_releases": [
+                authority.to_dict()
+                for authority in self.observed_validated_work_releases
+            ],
             "problem_issue_numbers": list(self.problem_issue_numbers),
             "recovery_tracker_numbers": list(self.recovery_tracker_numbers),
+            "triage_grants": [grant.to_dict() for grant in self.triage_grants],
+            "covered_work": [[issue, list(prs)] for issue, prs in self.covered_work],
             "observed_session_generations": [
                 generation.to_dict() for generation in self.observed_session_generations
             ],
@@ -759,27 +791,18 @@ class TechLeadLaunchAuthority:
                 "tech_lead authority observed_session_generations must be a "
                 f"list of objects, got {raw_generations!r}"
             )
-        raw_validated_work = data.get("observed_validated_work_authorities", [])
-        if not isinstance(raw_validated_work, list) or any(
-            not isinstance(item, dict) for item in raw_validated_work
-        ):
-            raise ValueError(
-                "tech_lead authority observed_validated_work_authorities must"
-                f" be a list of objects, got {raw_validated_work!r}"
-            )
-        from .validated_work_commands import ValidatedWorkAuthoritySnapshot
         return cls(
             flavor=flavor,
             anchor_issue_number=anchor,
             focus_issue_number=focus,
             manifest_pr_numbers=tuple(raw_prs),
             observed_rework_targets=tuple(ReworkTarget.from_dict(item) for item in cast(list[dict[str, Any]], data.get("observed_rework_targets", []))),
-            observed_validated_work_authorities=tuple(
-                ValidatedWorkAuthoritySnapshot.from_dict(item)
-                for item in cast(list[dict[str, Any]], raw_validated_work)
-            ),
+            observed_validated_work_authorities=_snapshots_from(data, "observed_validated_work_authorities"),
+            observed_validated_work_releases=_snapshots_from(data, "observed_validated_work_releases"),
             problem_issue_numbers=tuple(raw_problems),
             recovery_tracker_numbers=tuple(raw_trackers),
+            triage_grants=_triage_grants_from(data.get("triage_grants", [])),
+            covered_work=_covered_work_from(data.get("covered_work", [])),
             observed_session_generations=tuple(
                 TechLeadSessionGeneration.from_dict(item) for item in raw_generations
             ),
@@ -819,6 +842,78 @@ def _validate_validated_work_authorities(
         raise ValueError("Validated-work recovery grants must belong to act-level scope")
     if grants != tuple(sorted(grants, key=lambda grant: grant.issue_number)):
         raise ValueError("Observed validated-work authorities must be sorted by issue")
+
+
+def _snapshots_from(data: dict[str, object], key: str) -> "tuple[ValidatedWorkAuthoritySnapshot, ...]":
+    """A persisted list of validated-work snapshots; malformed content raises."""
+    from .validated_work_commands import ValidatedWorkAuthoritySnapshot
+
+    raw = data.get(key, [])
+    if not isinstance(raw, list) or any(not isinstance(item, dict) for item in cast(list[object], raw)):
+        raise ValueError(f"tech_lead authority {key} must be a list of objects, got {raw!r}")
+    return tuple(ValidatedWorkAuthoritySnapshot.from_dict(item) for item in cast(list[dict[str, Any]], raw))
+
+
+def _validate_validated_work_releases(authority: TechLeadLaunchAuthority) -> None:
+    from .validated_work_commands import ValidatedWorkAuthoritySnapshot
+
+    grants = cast(object, authority.observed_validated_work_releases)
+    if not isinstance(grants, tuple) or any(
+        not isinstance(grant, ValidatedWorkAuthoritySnapshot) for grant in grants
+    ):
+        raise ValueError("Observed validated-work releases must be typed immutable facts")
+    keys = [(grant.issue_number, grant.record_id) for grant in authority.observed_validated_work_releases]
+    if keys != sorted(set(keys)):
+        raise ValueError("Observed validated-work releases must be sorted and unique by record")
+    if any(issue not in authority.allowed_act_level_targets() for issue, _record in keys):
+        raise ValueError("Validated-work release grants must belong to act-level scope")
+
+
+def _triage_grants_from(raw: object) -> tuple[TriageGrant, ...]:
+    if not isinstance(raw, list) or any(not isinstance(item, dict) for item in raw):
+        raise ValueError(f"tech_lead authority triage_grants must be a list of objects, got {raw!r}")
+    return tuple(TriageGrant.from_dict(cast(dict[str, Any], item)) for item in raw)
+
+
+def _validate_triage_grants(authority: TechLeadLaunchAuthority) -> None:
+    grants = cast(object, authority.triage_grants)
+    if not isinstance(grants, tuple) or any(not isinstance(g, TriageGrant) for g in grants):
+        raise ValueError("triage grants must be typed TriageGrant facts")
+    if grants and authority.flavor is not TechLeadSessionFlavor.HEALTH_REVIEW:
+        raise ValueError("triage grants are valid only for a health review (#7593)")
+    numbers = [grant.issue_number for grant in authority.triage_grants]
+    if numbers != sorted(set(numbers)):
+        raise ValueError("triage grants must be sorted and unique by issue")
+    if authority.anchor_issue_number in numbers:
+        raise ValueError("a health review cannot be granted its own anchor to triage")
+
+
+def _validate_covered_work(authority: TechLeadLaunchAuthority) -> None:
+    work = cast(object, authority.covered_work)
+    if not isinstance(work, tuple) or any(
+        not isinstance(entry, tuple) or len(entry) != 2 or not _positive(entry[0])
+        or not isinstance(entry[1], tuple) or not all(_positive(pr) for pr in entry[1])
+        or entry[1] != tuple(sorted(set(entry[1])))
+        or any(pr not in authority.manifest_pr_numbers for pr in entry[1])
+        for entry in cast(tuple[object, ...], work)
+    ):
+        raise ValueError("covered work is (issue, sorted manifest PRs) pairs of positive ints")
+    issues = [issue for issue, _prs in authority.covered_work]
+    if issues != sorted(set(issues)) or authority.anchor_issue_number in issues:
+        raise ValueError("covered work names each issue once, in order, never the anchor")
+
+
+def _positive(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _covered_work_from(raw: object) -> tuple[tuple[int, tuple[int, ...]], ...]:
+    if not isinstance(raw, list) or any(
+        not isinstance(entry, list) or len(entry) != 2 or not isinstance(entry[1], list)
+        for entry in cast(list[object], raw)
+    ):
+        raise ValueError(f"tech_lead authority covered_work must be [issue, [prs]] pairs, got {raw!r}")
+    return tuple((entry[0], tuple(entry[1])) for entry in cast(list[list[Any]], raw))
 
 
 def _validate_recovery_tracker_grants(authority: TechLeadLaunchAuthority) -> None:
@@ -863,10 +958,23 @@ class StoredTechLeadOp:
     finding_ids: tuple[str, ...] = ()
     rework_request: ReworkRequest | None = None
     validated_work_authority: ValidatedWorkAuthoritySnapshot | None = None
+    # The records a ``release_validated_work`` op resolves and the PR that
+    # rebuilt their work, each bound to its launch-observed snapshot (#9092).
+    validated_work_release: "ValidatedWorkRelease | None" = None
     # When the proposing session observed the board (ISO-8601). Required for
     # ``release_withheld_review``: a failure recorded for its target since
     # then is newer than the block the tech lead diagnosed (#7399).
     observed_at: str = ""
+    # What the operator approves for a ``propose_decision`` op (#7593): the
+    # decision as written for them, and the follow-up issues it files.
+    decision: OperatorDecision | None = None
+    # What a ``resolve_block`` op decides (#7658), recorded with the op so an
+    # approval runs exactly the decision the operator read.
+    resolution: BlockResolution | None = None
+    # What approving the decision executes beyond its item, and the
+    # operator's own checklist (#8691); a decision op's only, never empty
+    # on any other op.
+    follow_through: DecisionFollowThrough = field(default_factory=DecisionFollowThrough)
     schema_version: int = _SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -874,6 +982,7 @@ class StoredTechLeadOp:
             raise ValueError(
                 f"Unsupported tech_lead op schema_version: {self.schema_version!r}"
             )
+        _validate_stored_op_decision(self)
         if self.op_type not in ACT_LEVEL_TECH_LEAD_ACTIONS:
             raise ValueError(
                 f"StoredTechLeadOp op_type must be one of"
@@ -910,6 +1019,7 @@ class StoredTechLeadOp:
         if self.rework_request is not None and self.target_issue_number != self.rework_request.target.issue_number:
             raise ValueError("Stored rework target issue must match its request")
         _validate_stored_op_recovery_authority(self)
+        _validate_stored_op_release(self)
         _validate_stored_op_observation(self)
         findings = cast(object, self.finding_ids)
         if not isinstance(findings, tuple) or any(
@@ -941,6 +1051,14 @@ class StoredTechLeadOp:
                 if self.validated_work_authority is not None
                 else None
             ),
+            "validated_work_release": (
+                self.validated_work_release.to_dict()
+                if self.validated_work_release is not None
+                else None
+            ),
+            "decision": self.decision.to_dict() if self.decision is not None else None,
+            "resolution": self.resolution.to_dict() if self.resolution is not None else None,
+            "follow_through": self.follow_through.to_dict(),
         }
 
     @classmethod
@@ -951,6 +1069,7 @@ class StoredTechLeadOp:
         input to fail-safe around (mirrors TechLeadLaunchAuthority.from_dict).
         """
         from .validated_work_commands import ValidatedWorkAuthoritySnapshot
+        from .validated_work_release import ValidatedWorkRelease
 
         raw_schema = data.get("schema_version")
         if isinstance(raw_schema, bool) or not isinstance(raw_schema, int):
@@ -983,8 +1102,86 @@ class StoredTechLeadOp:
                 if data.get("validated_work_authority") is not None
                 else None
             ),
+            validated_work_release=(
+                ValidatedWorkRelease.from_dict(
+                    cast(dict[str, Any], data["validated_work_release"])
+                )
+                if data.get("validated_work_release") is not None
+                else None
+            ),
+            decision=(
+                OperatorDecision.from_dict(cast(dict[str, Any], data["decision"]))
+                if data.get("decision") is not None
+                else None
+            ),
+            resolution=(
+                BlockResolution.from_mapping(data["resolution"], context="stored op")
+                if data.get("resolution") is not None
+                else None
+            ),
+            follow_through=DecisionFollowThrough.from_dict(
+                cast(dict[str, Any], data.get("follow_through") or {})
+            ),
             schema_version=raw_schema,
         )
+
+
+@dataclass(frozen=True)
+class OperatorDecision:
+    """The decision a ``propose_decision`` op puts to the operator (#7593).
+
+    ``title`` and ``body`` are exactly what the proposal shows and what is
+    posted on the item once approved; ``follow_ups`` are the drafted issues the
+    approval files (a split names the remainder here). Recorded with the op,
+    never re-read from the proposal issue's editable body.
+    """
+
+    title: str
+    body: str
+    follow_ups: tuple[DecisionFollowUp, ...] = ()
+
+    def __post_init__(self) -> None:
+        for name in ("title", "body"):
+            value: object = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"OperatorDecision {name} must be a non-empty string")
+        follow_ups = cast(object, self.follow_ups)
+        if not isinstance(follow_ups, tuple) or any(
+            not isinstance(item, DecisionFollowUp) for item in follow_ups
+        ):
+            raise ValueError("OperatorDecision follow_ups must be DecisionFollowUp items")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "title": self.title,
+            "body": self.body,
+            "follow_ups": [item.to_dict() for item in self.follow_ups],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "OperatorDecision":
+        raw = data.get("follow_ups", [])
+        if not isinstance(raw, list):
+            raise ValueError("OperatorDecision follow_ups must be a list")
+        return cls(
+            title=str(data.get("title", "")),
+            body=str(data.get("body", "")),
+            follow_ups=tuple(
+                DecisionFollowUp(title=str(item["title"]), body=str(item["body"]))
+                for item in raw
+            ),
+        )
+
+
+def _validate_stored_op_decision(op: StoredTechLeadOp) -> None:
+    if not isinstance(cast(object, op.follow_through), DecisionFollowThrough):
+        raise ValueError("StoredTechLeadOp follow_through must be a DecisionFollowThrough")
+    if op.follow_through and op.op_type not in ("propose_decision", RESOLVE_BLOCK_ACTION):
+        raise ValueError("Only a decision op (propose_decision, resolve_block) carries follow-through steps")
+    if (op.op_type == "propose_decision") != isinstance(op.decision, OperatorDecision):
+        raise ValueError("Only propose_decision carries, and requires, an OperatorDecision")
+    if (op.op_type == RESOLVE_BLOCK_ACTION) != isinstance(op.resolution, BlockResolution):
+        raise ValueError("Only resolve_block carries, and requires, a BlockResolution")
 
 
 def _validate_stored_op_recovery_authority(op: StoredTechLeadOp) -> None:
@@ -1005,17 +1202,35 @@ def _validate_stored_op_recovery_authority(op: StoredTechLeadOp) -> None:
         raise ValueError("Stored recovery target issue must match its authority")
 
 
+def _validate_stored_op_release(op: StoredTechLeadOp) -> None:
+    from .validated_work_release import (
+        RELEASE_VALIDATED_WORK_ACTION,
+        ValidatedWorkRelease,
+    )
+
+    release = cast(object, op.validated_work_release)
+    if (op.op_type == RELEASE_VALIDATED_WORK_ACTION) != isinstance(release, ValidatedWorkRelease):
+        raise ValueError(
+            "Only release_validated_work carries, and requires, a bound ValidatedWorkRelease"
+        )
+    if (
+        op.validated_work_release is not None
+        and op.target_issue_number != op.validated_work_release.issue_number
+    ):
+        raise ValueError("Stored release target issue must match its records")
+
+
 def _validate_stored_op_observation(op: StoredTechLeadOp) -> None:
     observed = cast(object, op.observed_at)
     if not isinstance(observed, str):
         raise ValueError(f"StoredTechLeadOp observed_at must be a string, got {observed!r}")
-    if op.op_type != "release_withheld_review":
+    if op.op_type not in ("release_withheld_review", RESOLVE_BLOCK_ACTION):
         return
     try:
         datetime.fromisoformat(observed)
     except ValueError as exc:
         raise ValueError(
-            "release_withheld_review requires the ISO-8601 instant its proposer"
+            f"{op.op_type} requires the ISO-8601 instant its proposer"
             f" observed the board, got {observed!r}"
         ) from exc
 
@@ -1189,13 +1404,13 @@ class TechLeadDisposition:
 
 @dataclass(frozen=True)
 class ApprovedTechLeadOp:
-    """A stored op whose proposal issue no longer carries the gate label.
+    """A stored op whose proposal issue a maintainer approved (#7763).
 
     Classified by the fact gatherer from the SAME open-issue scan that finds
-    tech_lead anchors (#6778): an open issue with a stored op but without
-    ``PROPOSED_TECH_LEAD_LABEL`` was approved by the operator. The planner turns
-    each into the op's execution action; the applier re-validates
-    preconditions and finalizes the proposal issue.
+    tech_lead anchors (#6778): an open issue with a stored op whose ``approved``
+    label the approval owner VERIFIED came from a maintainer. The planner turns
+    each into the op's execution action; the applier re-checks consent fresh,
+    re-validates preconditions and finalizes the proposal issue.
     """
 
     proposal_issue_number: int
@@ -1231,15 +1446,14 @@ class TechLeadCaseFileSummary:
 
 @dataclass(frozen=True)
 class GatedTechLeadProposal:
-    """One OPEN issue observed carrying the operator-approval gate (#7014).
+    """One OPEN tech-lead proposal still awaiting approval (#7014, #7763).
 
     LABEL truth about the approval backlog, as opposed to ledger truth. Every
-    gated-proposal producer attaches ``PROPOSED_TECH_LEAD_LABEL`` — act-level op
-    proposals (#6778), promoted findings (#6957), and plain follow-up issues
-    (ADR-0031 §2) — but only act-level op proposals leave a
-    ``tech_lead_proposal_ops`` row. So the ledger alone can never answer "what
-    is waiting on the operator?", and a projection that trusts only the ledger
-    renders an empty approval backlog while gated issues pile up on GitHub.
+    gated-proposal producer attaches the approval model's provenance and
+    waiting labels — act-level op proposals (#6778), promoted findings
+    (#6957), and plain follow-up issues (ADR-0031 §2) — but only act-level op
+    proposals leave a ``tech_lead_proposal_ops`` row. So the ledger alone can
+    never answer "what is waiting on the operator?".
 
     Carries what the tick's ALREADY-observed issues can say about one gated
     issue (zero extra GitHub calls): its number, its title, and when it was

@@ -174,6 +174,8 @@ class LineagePublication:
     published_via: PublicationProvenance
     published_pre_push_expected: str
     published_at: str
+    # The open PR an OBSERVED_OPEN_PR publication was observed on; 0 otherwise.
+    published_pr_number: int = 0
 
     def __post_init__(self) -> None:
         require_text(self.lineage_key, "lineage_key")
@@ -184,8 +186,88 @@ class LineagePublication:
             raise ValueError("publication provenance must be typed")
         if self.published_pre_push_expected:
             require_sha(self.published_pre_push_expected)
-            if self.published_via is PublicationProvenance.OBSERVED_MERGE:
-                raise ValueError("an observed merge proves no pre-push baseline")
+            if self.published_via is not PublicationProvenance.PUSHED_BY_OWNER:
+                raise ValueError("an observed publication proves no pre-push baseline")
+        if type(self.published_pr_number) is not int or self.published_pr_number < 0:
+            raise ValueError("published PR number must be a non-negative int")
+        if (self.published_pr_number > 0) is not (
+            self.published_via is PublicationProvenance.OBSERVED_OPEN_PR
+        ):
+            raise ValueError("exactly an open-PR publication names its PR")
+
+
+@dataclass(frozen=True, slots=True)
+class LineageLanding:
+    """A merged PR of the lineage's branch and its head at merge (§2.8).
+
+    Terminal and append-only, so it lives beside the lineage fact rather than
+    in it: the fact is what the branch publishes NOW and sequences recovery,
+    while a landing only says which validated heads already shipped. A reused
+    branch can carry both an older landing and a newer, divergent open PR.
+    """
+
+    lineage_key: str
+    pr_number: int
+    head_sha: str
+    landed_at: str
+
+    def __post_init__(self) -> None:
+        require_text(self.lineage_key, "lineage_key")
+        if type(self.pr_number) is not int or self.pr_number <= 0:
+            raise ValueError("a landing names its merged PR")
+        require_sha(self.head_sha)
+        require_text(self.landed_at, "landed_at")
+
+    @property
+    def ref(self) -> str:
+        """The pin that keeps the head at merge reachable after the branch and
+        its fetched tracking ref are gone."""
+        return landing_ref(self.lineage_key, self.pr_number)
+
+
+#: Where permanent pins of PR heads that resolved validated work live.
+LANDED_REF_PREFIX = "refs/issue-orchestrator/landed/"
+CARRIED_REF_PREFIX = "refs/issue-orchestrator/carried/"
+#: Every permanent publication pin: never escrow, never released.
+PUBLICATION_PIN_PREFIXES = (LANDED_REF_PREFIX, CARRIED_REF_PREFIX)
+
+
+def landing_ref(lineage_key: str, pr_number: int) -> str:
+    return f"{LANDED_REF_PREFIX}{lineage_key.replace(':', '-')}/{pr_number}"
+
+
+@dataclass(frozen=True, slots=True)
+class LineageCarrier:
+    """Another branch's PR of the issue that carries this lineage's work (#8137).
+
+    The work was republished on ``branch_name``. An open PR's row holds its
+    latest proven head; a merged PR's row holds its head at merge and never
+    moves. Like a landing it sits beside the lineage fact - which says what
+    THIS branch publishes and sequences recovery from - and only resolves the
+    validated heads its pinned head contains.
+    """
+
+    lineage_key: str
+    pr_number: int
+    branch_name: str
+    head_sha: str
+    merged: bool
+    observed_at: str
+
+    def __post_init__(self) -> None:
+        require_text(self.lineage_key, "lineage_key")
+        if type(self.pr_number) is not int or self.pr_number <= 0:
+            raise ValueError("a carrier names its PR")
+        require_text(self.branch_name, "branch_name")
+        require_sha(self.head_sha)
+        if type(self.merged) is not bool:
+            raise ValueError("a carrier says whether its PR merged")
+        require_text(self.observed_at, "observed_at")
+
+
+def carrier_ref(lineage_key: str, pr_number: int, head_sha: str) -> str:
+    """One create-only pin per proven head: an open PR's head moves, its pins never do."""
+    return f"{CARRIED_REF_PREFIX}{lineage_key.replace(':', '-')}/{pr_number}/{head_sha}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +277,22 @@ class PublicationResolution:
     resolved_ancestors: tuple[ValidatedWorkDisposition, ...]
     failed_ancestors: tuple[ValidatedWorkDisposition, ...]
     classified_waiters: tuple[ValidatedWorkDisposition, ...]
+
+
+class PrPublicationStatus(StrEnum):
+    """What recording an open PR's publication did to the lineage fact."""
+
+    # The fact (or a carrier) now names the PR head, or an open carrier was
+    # proven current again; either way the lineage was reclassified.
+    ADVANCED = "advanced"
+    ALREADY_PUBLISHED = "already_published"  # the fact already contains the PR head
+    PUBLICATION_IN_FLIGHT = "publication_in_flight"  # recovery owns the remote expectation now
+    CONTAINMENT_UNPROVEN = "containment_unproven"  # the store could not verify the commits
+
+    @property
+    def reclassified_lineage(self) -> bool:
+        """Whether the lineage's records were reclassified, so its block may have moved."""
+        return self is PrPublicationStatus.ADVANCED
 
 
 class LineageResolutionRefusal(StrEnum):

@@ -56,12 +56,14 @@ from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
 from .control_api_pause_routes import control_pause_router
+from .refresh_request import request_refresh
 from ..infra import gh_audit
 from ..execution.repository_engine_supervisor import build_default_supervisor_ops
 from ..ports.repository_engine_supervisor import SupervisorOps
 from ..ports import RepositoryHost
 from ..control.goal_pilot import GoalPilot
 from ..execution.control_center_actions import ControlCenterActions
+from ..execution.control_center_tech_lead import build_control_center_tech_lead
 from ..execution.control_center_recovery import (
     build_control_center_recovery_queries,
     build_control_center_recovery_stops,
@@ -96,6 +98,7 @@ from .control_api_e2e_support import (
     install_control_api_e2e_dependencies,
 )
 from .control_api_issue_routes import control_issue_router
+from .control_api_ruling_routes import control_ruling_router
 from .control_api_issue_support import (
     ControlApiIssueDependencies,
     install_control_api_issue_dependencies,
@@ -648,20 +651,7 @@ async def refresh(request: Request) -> JSONResponse:
     if _orchestrator is None:
         return JSONResponse({"error": "Orchestrator not initialized"}, status_code=503)
 
-    # Parse optional inflight_stable_ids from request body
-    inflight_stable_ids: set[str] = set()
-    try:
-        body = await request.body()
-        if body:
-            data = json.loads(body)
-            if isinstance(data, dict) and "inflight_stable_ids" in data:
-                ids = data["inflight_stable_ids"]
-                if isinstance(ids, list):
-                    inflight_stable_ids = set(str(i) for i in ids)
-    except (json.JSONDecodeError, ValueError):
-        pass  # Ignore malformed body, proceed with empty set
-
-    _orchestrator.request_refresh(inflight_stable_ids=inflight_stable_ids)
+    await request_refresh(request, _orchestrator)
     return JSONResponse({"status": "refresh_requested"})
 
 
@@ -1143,6 +1133,7 @@ install_control_api_repo_dependencies(
         get_recovery_stops=lambda: build_control_center_recovery_stops(
             get_supervisor()
         ),
+        get_tech_lead=lambda: build_control_center_tech_lead(get_supervisor()),
     ),
 )
 install_control_api_setup_dependencies(
@@ -1165,6 +1156,7 @@ from .completion_intake_routes import completion_intake_router
 
 control_app.include_router(completion_intake_router)
 control_app.include_router(control_issue_router)
+control_app.include_router(control_ruling_router)  # maintainer rulings (#8141)
 control_app.include_router(control_tools_router)
 control_app.include_router(control_repo_router)
 control_app.include_router(control_setup_router)

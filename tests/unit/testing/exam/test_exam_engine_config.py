@@ -32,8 +32,16 @@ from tests.e2e.exam.case_engines import (
     case_a_engine,
     case_b_engine,
     case_c_engine,
+    case_d_engine,
+    case_h_engine,
+    case_e_engine,
+    case_i_engine,
+    case_j_engine,
+    case_k_engine,
+    case_resolution_engine,
     case_u_engine,
 )
+from tests.e2e.exam.engine import RulingAgents
 from tests.e2e.exam.agents import CODER_LABEL, HELD_CODER_LABEL, REVIEWER_LABEL
 from tests.e2e.exam.engine import HELD_SESSION_TIMEOUT_MINUTES
 from tests.e2e.exam.engine_checkout import EngineCheckout
@@ -92,8 +100,21 @@ def _load_case_config(
 
 @pytest.mark.parametrize(
     "spec",
-    [case_a_engine(), case_b_engine(), case_c_engine(), case_u_engine(Path("/tmp/exam-u-release"))],
-    ids=["A", "B", "C", "U"],
+    [
+        case_a_engine(),
+        case_b_engine(),
+        case_c_engine(),
+        case_u_engine(Path("/tmp/exam-u-release")),
+        case_d_engine(),
+        case_h_engine(),
+        case_e_engine(Path("/tmp/exam-e-changes-once")),
+        case_resolution_engine(resolve_block="execute"),
+        case_resolution_engine(resolve_block="propose"),
+        case_i_engine(RulingAgents(Path("/tmp/exam-i-prompts"))),
+        case_j_engine(),
+        case_k_engine("exam-integration-test"),
+    ],
+    ids=["A", "B", "C", "U", "D", "H", "E", "F", "G", "I", "J", "K"],
 )
 def test_every_case_engine_config_loads(
     spec: CaseEngine, tmp_path: Path, written: list[Path]
@@ -182,3 +203,152 @@ def test_case_u_holds_work_until_released(tmp_path: Path, written: list[Path]) -
     assert "--hold-until" not in loaded.agents[CODER_LABEL].command
     assert held_coder.timeout_minutes == reviewer.timeout_minutes == HELD_SESSION_TIMEOUT_MINUTES
     assert loaded.session_timeout_minutes == HELD_SESSION_TIMEOUT_MINUTES
+
+
+def test_case_d_runs_the_asking_coders_and_a_periodic_health_review(
+    tmp_path: Path, written: list[Path]
+) -> None:
+    """#7593: the coders plant the questions themselves; the health review is
+    the run granted blocked items, and the sweep stays out of the way."""
+    from tests.e2e.exam.agents import (
+        ASKING_BESIDE_PR_CODER_LABEL,
+        ASKING_CODER_LABEL,
+        SPLIT_QUESTION,
+    )
+
+    loaded = _load_case_config(case_d_engine(), tmp_path, written)
+
+    asks = loaded.agents[ASKING_CODER_LABEL].command
+    beside = loaded.agents[ASKING_BESIDE_PR_CODER_LABEL].command
+    assert asks is not None and "--asks" in asks and SPLIT_QUESTION.split()[0] in asks
+    assert beside is not None and "--pr-label needs-human" in beside
+    assert loaded.tech_lead.health_review.interval_minutes > 0
+    assert loaded.tech_lead.stuck_sweep.enabled is False
+    for action_type, mode in EXAM_TECH_LEAD_AUTHORITY.items():
+        assert loaded.tech_lead.authority.mode_for(action_type) == mode
+
+
+def test_only_case_d_lets_the_engine_reuse_worktrees() -> None:
+    """#7593: under the e2e fresh-worktree default a health review's anchor
+    refuses its own launch (its branch is marked for preservation), so case D
+    alone runs with reuse on; the other cases keep the default."""
+    checkout = EngineCheckout(root=_TREE, commit="0" * 40)
+    for spec, reuse in ((case_a_engine(), False), (case_b_engine(), False), (case_d_engine(), True)):
+        engine = spec.engine(Config(), checkout)
+        expected = {"ORCHESTRATOR_DISABLE_WORKTREE_REUSE": "0"} if reuse else {}
+        assert dict(engine.process.env_overrides) == expected
+
+
+def test_case_h_enables_the_tech_lead_but_never_triggers_a_run(
+    tmp_path: Path, written: list[Path]
+) -> None:
+    """Approval verification needs an enabled tech lead (#7763); the case
+    must never spend its model, so every run trigger is off."""
+    loaded = _load_case_config(case_h_engine(), tmp_path, written)
+
+    assert loaded.tech_lead_enabled
+    assert loaded.tech_lead_review_threshold == 0
+    assert loaded.tech_lead.health_review.interval_minutes == 0
+    assert loaded.tech_lead.stuck_sweep.enabled is False
+    assert loaded.tech_lead.findings.promote == "off"
+
+
+def test_case_e_reviews_with_one_round_of_changes_and_no_tech_lead(
+    tmp_path: Path, written: list[Path]
+) -> None:
+    """#7678: the first post-publish review requests changes, so the merge-held
+    PR is reworked; the engine alone (no tech lead) must keep the merge held."""
+    from tests.e2e.exam.agents import ASKING_BESIDE_PR_CODER_LABEL, ASKING_CODER_LABEL, REVIEWER_LABEL
+
+    marker = tmp_path / "changes-once"
+    loaded = _load_case_config(case_e_engine(marker), tmp_path, written)
+
+    reviewer = loaded.agents[REVIEWER_LABEL].command
+    assert reviewer is not None and f"--changes-once {marker}" in reviewer
+    assert {ASKING_CODER_LABEL, ASKING_BESIDE_PR_CODER_LABEL} <= set(loaded.agents)
+    assert loaded.tech_lead_review_agent is None
+
+
+@pytest.mark.parametrize("mode", ["execute", "propose"])
+def test_cases_f_and_g_differ_only_in_the_resolve_block_dial(
+    mode: str, tmp_path: Path, written: list[Path]
+) -> None:
+    """#7658: the operator hands the tech lead these decisions through config
+    alone, so the two cases' engines differ in that one dial."""
+    from tests.e2e.exam.agents import (
+        ASKING_PROVISIONING_CODER_LABEL,
+        GIVES_UP_CODER_LABEL,
+        SPEC_QUESTION_BESIDE_PR_CODER_LABEL,
+        SPLIT_UNTIL_RESOLVED_CODER_LABEL,
+    )
+
+    loaded = _load_case_config(case_resolution_engine(resolve_block=mode), tmp_path, written)
+
+    assert loaded.tech_lead.authority.resolve_block == mode
+    for action_type, ceiling in EXAM_TECH_LEAD_AUTHORITY.items():
+        assert loaded.tech_lead.authority.mode_for(action_type) == ceiling
+    commands = {label: loaded.agents[label].command or "" for label in (
+        SPLIT_UNTIL_RESOLVED_CODER_LABEL, GIVES_UP_CODER_LABEL,
+        SPEC_QUESTION_BESIDE_PR_CODER_LABEL, ASKING_PROVISIONING_CODER_LABEL,
+    )}
+    assert "--until-resolved" in commands[SPLIT_UNTIL_RESOLVED_CODER_LABEL]
+    assert "--gives-up" in commands[GIVES_UP_CODER_LABEL]
+    assert "--pr-label needs-human" in commands[SPEC_QUESTION_BESIDE_PR_CODER_LABEL]
+    # The provisioning coder asks every time: nothing may resolve it.
+    assert "--until-resolved" not in commands[ASKING_PROVISIONING_CODER_LABEL]
+    assert loaded.tech_lead.health_review.interval_minutes > 0
+    assert loaded.tech_lead.stuck_sweep.enabled is False
+    # The give-up coder's exit lands as needs-human (session_lifecycle) at once.
+    assert loaded.retry.interrupted_sessions.retry_coding is False
+
+
+def test_case_i_captures_every_ruled_prompt(tmp_path: Path, written: list[Path]) -> None:
+    """#8141: the ruled item's coder and every reviewer capture the prompt they
+    were launched with; the answerable coder asks until the tech lead resolves it."""
+    from tests.e2e.exam.agents import ANSWERABLE_CODER_LABEL, RULED_CODER_LABEL
+
+    agents = RulingAgents(tmp_path / "prompts")
+    loaded = _load_case_config(case_i_engine(agents), tmp_path, written)
+
+    coder = loaded.agents[RULED_CODER_LABEL]
+    assert coder.reviewer == REVIEWER_LABEL
+    assert f"--capture-prompts {agents.capture_dir}" in coder.command
+    reviewer = loaded.agents[REVIEWER_LABEL].command
+    assert "--role reviewer" in reviewer and f"--capture-prompts {agents.capture_dir}" in reviewer
+    answerable = loaded.agents[ANSWERABLE_CODER_LABEL].command
+    assert "--until-resolved" in answerable and "--asks" in answerable
+    assert loaded.tech_lead.authority.mode_for("resolve_block") == "execute"
+
+
+def test_case_j_asks_until_a_decision_is_posted_and_decisions_wait_for_approval(
+    tmp_path: Path, written: list[Path]
+) -> None:
+    """#8691: the coder asks porchpin#459's question until a decision lands on
+    its issue; a health review triages it, and a decision waits for the
+    maintainer whatever the dials (it carries steps beyond the item)."""
+    from tests.e2e.exam.agents import DECIDING_CODER_LABEL
+
+    loaded = _load_case_config(case_j_engine(), tmp_path, written)
+
+    deciding = loaded.agents[DECIDING_CODER_LABEL]
+    assert "--until-resolved" in deciding.command and "--asks" in deciding.command
+    assert deciding.reviewer == REVIEWER_LABEL
+    assert loaded.tech_lead.health_review.interval_minutes > 0
+    assert loaded.tech_lead.authority.mode_for("resolve_block") == "propose"
+
+
+def test_case_k_runs_integration_mode_on_its_own_branch(tmp_path: Path, written: list[Path]) -> None:
+    """#8144: integration mode on the run's own branch (implying the worktree
+    base), released by the tech-lead-reviewed label, coders writing their own
+    files so their PRs never truly conflict."""
+    from tests.e2e.exam.agents import INTEGRATION_CODER_LABEL
+
+    loaded = _load_case_config(case_k_engine("exam-integration-abc"), tmp_path, written)
+
+    assert loaded.integration.enabled
+    assert loaded.integration.branch == "exam-integration-abc"
+    assert loaded.integration.merge_after == "tech-lead-reviewed"
+    assert loaded.worktree_base_branch_override == "exam-integration-abc"
+    coder = loaded.agents[INTEGRATION_CODER_LABEL]
+    assert "--own-file" in coder.command and coder.reviewer == REVIEWER_LABEL
+    assert loaded.review_exchange_mode == "via-draft-pr"

@@ -26,6 +26,8 @@ if TYPE_CHECKING:
     from ..domain.repository_setup_auth import RepositorySetupGitHubAuthorization
     from ..infra.config import Config
     from ..ports import RepositoryHost
+    from ..ports.improver_toolbox import AuditedRepoReads
+    from ..ports.operator_activity import OperatorActivitySource
     from ..ports.promotion_target import PromotionTargetHost
     from ..ports.pattern_registry import PatternCaseFileRegistry
     from ..ports.repository_setup import RepositorySetupGitHubVerification
@@ -53,6 +55,22 @@ def create_repository_host(
     from ..adapters.github import GitHubAdapter
 
     return GitHubAdapter(repo=repo, config=config)
+
+
+def create_audited_repo_reads(repo: str) -> "AuditedRepoReads":
+    """GitHub reads of ``repo`` for the improver's toolbox (#8001): it serves
+    only what the toolbox policy allows, and holds the credential."""
+    from ..adapters.github.audited_repo_reader import GitHubAuditedRepoReader
+
+    return GitHubAuditedRepoReader(repo)
+
+
+def create_operator_activity_source(repo: str) -> "OperatorActivitySource":
+    """``repo``'s recent GitHub activity with each actor, for the improver's
+    operator-intervention input (#8001)."""
+    from ..adapters.github.operator_activity import GitHubOperatorActivity
+
+    return GitHubOperatorActivity(repo)
 
 
 def create_fresh_issue_reader(repo: str, config: "Config") -> "GitHubFreshIssueReader":

@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-
 COMPLETION_RECORD_PATH = ".issue-orchestrator/completion.json"
 
 
@@ -32,6 +31,7 @@ class RequestedAction(str, Enum):
     REMOVE_CODE_REVIEW_LABEL = "remove_code_review_label"
     POST_COMMENT = "post_comment"
     PUSH_BRANCH = "push_branch"
+    HOLD_MERGE_FOR_HUMAN = "hold_merge_for_human"
 
 
 @dataclass(frozen=True)
@@ -116,6 +116,10 @@ class CompletionRecord:
     validation_record_path: str | None = None
     follow_up_issues: list[ProposedFollowUpIssue] | None = None
     partial_pr: bool = False
+    #: The PR finishes an issue earlier PRs delivered in part (#8689).
+    finishes_issue: bool = False
+    #: An approval's attestation that the diff upholds these standing rulings (#8141).
+    upheld_rulings: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -146,4 +150,6 @@ class CompletionRecord:
                 issue.to_dict() for issue in self.follow_up_issues
             ] if self.follow_up_issues else None,
             "partial_pr": self.partial_pr,
+            "finishes_issue": self.finishes_issue,
+            "upheld_rulings": self.upheld_rulings,
         }

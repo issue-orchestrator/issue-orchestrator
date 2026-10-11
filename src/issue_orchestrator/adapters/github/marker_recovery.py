@@ -110,6 +110,22 @@ def prove_marker_issue(
     return None
 
 
+def prove_open_marker_issue(client: "GitHubHttpClient", *, marker: str) -> MarkerIssue | None:
+    """AUTHORITATIVE over every OPEN issue: ``None`` means no open issue has
+    ``marker`` in its body, whatever its title or labels became. Uncached and
+    complete or loud, like :func:`prove_marker_issue`, but scoped to open
+    issues so it reads a few pages instead of the repository's history."""
+    if not marker.strip():
+        raise ValueError("an open-issue marker lookup needs a marker")
+    for payload in client.list_issues(
+        state="open", limit=AUTHORITATIVE_SCAN_LIMIT, use_cache=False, exhaustive=True
+    ):
+        found = _marker_issue(payload, marker)
+        if found is not None:
+            return found
+    return None
+
+
 def _marker_issue(payload: object, marker: str) -> MarkerIssue | None:
     if not isinstance(payload, dict):
         return None

@@ -13,6 +13,7 @@ from issue_orchestrator.domain.validated_work import (
 )
 from issue_orchestrator.domain.validated_work_store import (
     DispositionPhase,
+    LineageLanding,
     LineagePublication,
     PublicationProvenance,
     PublishAttempt,
@@ -153,13 +154,32 @@ def test_boolean_ancestry_fact_is_not_a_typed_proof(tmp_path):
     assert not store.for_issue(6914).found_work
 
 
-def test_merged_publication_cannot_invent_a_pre_push_baseline():
+@pytest.mark.parametrize(
+    "observed", [PublicationProvenance.OBSERVED_MERGE, PublicationProvenance.OBSERVED_OPEN_PR]
+)
+def test_an_observed_publication_cannot_invent_a_pre_push_baseline(observed):
+    pr = 7 if observed is PublicationProvenance.OBSERVED_OPEN_PR else 0
     with pytest.raises(ValueError, match="proves no"):
-        LineagePublication(
-            "lineage", V, "record", PublicationProvenance.OBSERVED_MERGE, ROOT, AT
-        )
+        LineagePublication("lineage", V, "record", observed, ROOT, AT, pr)
     with pytest.raises(ValueError, match="provenance"):
-        LineagePublication("lineage", V, "record", "observed_merge", "", AT)
+        LineagePublication("lineage", V, "record", observed.value, "", AT)
+
+
+@pytest.mark.parametrize(("via", "pr"), [
+    (PublicationProvenance.OBSERVED_OPEN_PR, 0),
+    (PublicationProvenance.PUSHED_BY_OWNER, 7),
+    (PublicationProvenance.OBSERVED_MERGE, 7),
+])
+def test_only_an_open_pr_publication_names_its_pr(via, pr):
+    """A merged PR is a landing beside the fact (§2.8), never the fact's PR."""
+    with pytest.raises(ValueError, match="names its PR"):
+        LineagePublication("lineage", V, "record", via, "", AT, pr)
+
+
+@pytest.mark.parametrize(("pr", "head"), [(0, V), (-1, V), (7, "not-a-sha")])
+def test_a_landing_names_its_merged_pr_and_head(pr, head):
+    with pytest.raises(ValueError):
+        LineageLanding("lineage", pr, head, AT)
 
 
 @pytest.mark.parametrize(

@@ -49,6 +49,17 @@ if [ -z "$PYTHON_BIN" ]; then
     exit 1
 fi
 
+# A push that only deletes remote refs pushes no code, so there is no tree to
+# guard. The installer replaces the placeholder line below with the shared
+# pre-push ref functions (infra/hooks/pre_push_refs.py); push_is_delete_only
+# fails closed, so any update, or no ref lines at all, runs the guard.
+@@PRE_PUSH_REFS_SHELL@@
+capture_push_refs
+if push_is_delete_only "$PUSH_REFS_FILE"; then
+    echo "pre-push: delete-only push; skipping the dirty-tree guard (reason=delete-only)" >&2
+    exit 0
+fi
+
 if ! "$PYTHON_BIN" -m issue_orchestrator.entrypoints.cli_tools.prepush_check --dirty-only -v; then
     echo "ERROR: Dirty-tree guard failed." >&2
     exit 1

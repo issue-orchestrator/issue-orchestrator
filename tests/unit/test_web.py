@@ -2,6 +2,7 @@
 
 import base64
 import json
+import threading
 from types import SimpleNamespace
 import pytest
 from pathlib import Path
@@ -184,6 +185,15 @@ def create_mock_orchestrator():
     mock_orch.resume = MagicMock()
     mock_orch.request_shutdown = MagicMock()
     mock_orch.shutdown_requested = False  # Public property for JSON serialization
+    # The facade's real state lock and runner: a MagicMock runner would return
+    # a mock without running the transition it was handed (#8219).
+    mock_orch.state_lock = threading.RLock()
+
+    def run_locked(fn):
+        with mock_orch.state_lock:
+            return fn()
+
+    mock_orch.run_locked = run_locked
 
     mock_deps = MagicMock()
     mock_deps.publish_recovery = MagicMock()

@@ -22,8 +22,9 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
+from issue_orchestrator.control.human_gates import HumanGates
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.review_scope import extract_issue_number_from_pr
 from issue_orchestrator.control.review_validity import evaluate_review_validity
@@ -31,12 +32,29 @@ from issue_orchestrator.domain.tech_lead_artifacts import (
     TECH_LEAD_DECISION_FILENAME,
     TECH_LEAD_REPORT_FILENAME,
 )
+from issue_orchestrator.domain.tech_lead_charter_decisions import TechLeadCharterDecision
 from issue_orchestrator.domain.tech_lead_run_artifacts import TECH_LEAD_DATA_DIRNAME
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.testing.asyncdsl import OrchestratorWatcher
 from issue_orchestrator.testing.exam.upgrade import UpgradeFacts
+from issue_orchestrator.domain.standing_ruling import (
+    REFUSED_APPROVAL_MARKER,
+    RulingsBlockError,
+    parse_rulings_block,
+)
+from issue_orchestrator.domain.decision_steps import DECISION_STEP_MARKER_PREFIX as DECISION_STEP_MARKER
+from issue_orchestrator.testing.exam.observation import (
+    BodyRulingFact,
+    CapturedPrompt,
+    DecisionProposalFact,
+    DeliveryPullRequestFact,
+)
+
+#: The tech lead's ``resolve_block`` decision comment (``domain/block_resolution.decision_marker``).
+RESOLUTION_COMMENT = "<!-- io:resolve-block:comment:decision="
 from issue_orchestrator.testing.exam import (
+    DecisionFact,
     ExamObservation,
     GitHubCallCounts,
     PullRequestFact,
@@ -44,9 +62,10 @@ from issue_orchestrator.testing.exam import (
     RunEnd,
     TechLeadActionFact,
     TechLeadRunFact,
+    TriageFact,
     WorkItemFact,
 )
-from issue_orchestrator.testing.exam.livelock import find_repeating_failures
+from issue_orchestrator.observation.no_progress import find_repeating_failures
 from issue_orchestrator.testing.exam.screens import SCREEN_QUOTE_CHARS, render_recording, silent_screen
 from issue_orchestrator.testing.exam.stall import ItemEvent, concerns_item, stall_facts
 from issue_orchestrator.testing.exam.tech_lead import (
@@ -131,12 +150,91 @@ def _refusing_gate(config: Config, labels: LabelManager, issue: Any, open_pr: PR
     if open_pr is None:
         return ""
     validity = evaluate_review_validity(
-        config=config, label_manager=labels, issue=issue, pr=open_pr
+        config=config, label_manager=labels, gates=HumanGates.unrecorded(labels), issue=issue, pr=open_pr
     )
     if validity.valid:
         return ""
     blocking = f" ({', '.join(validity.blocking_labels)})" if validity.blocking_labels else ""
     return f"review_validity:{validity.reason}{blocking}"
+
+
+def _charter_records(state_dir: Path, issue_number: int) -> tuple[TechLeadCharterDecision, ...]:
+    """The charter decisions the engine recorded about the item, oldest first.
+
+    Read from the charter decision ledger in the engine's authority store, the
+    record the engine itself keeps. An engine that predates the ledger records
+    none (no table to read): no decisions, not an error.
+    """
+    db = state_dir / "tech_lead_authority.sqlite"
+    if not db.exists():
+        return ()
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        try:
+            rows = conn.execute(
+                "SELECT record FROM tech_lead_charter_decisions WHERE target_number = ?"
+                " ORDER BY decided_at, decision_id",
+                (issue_number,),
+            ).fetchall()
+        except sqlite3.OperationalError as error:
+            if "no such table" in str(error):
+                return ()
+            raise
+    finally:
+        conn.close()
+    return tuple(TechLeadCharterDecision.from_dict(json.loads(row["record"])) for row in rows)
+
+
+def _available_proposal(
+    decision: TechLeadCharterDecision, proposal_open: Callable[[int], bool]
+) -> int | None:
+    """The decision's proposal while the operator can still act on it.
+
+    A decision awaiting approval is in force only while its proposal is open.
+    The engine may not have reconciled a proposal closed since, so the
+    observer reads the proposal's live state rather than the ledger's last
+    word: a closed proposal is no proposal.
+    """
+    number = decision.proposal_issue_number
+    if number is None or decision.effect != "awaiting_approval":
+        return number
+    return number if proposal_open(number) else None
+
+
+def observe_triage(
+    state_dir: Path, issue_number: int, *, proposal_open: Callable[[int], bool]
+) -> TriageFact | None:
+    """The latest triage the engine recorded for the item (#7593), if any.
+
+    An engine that predates triage records none (no field in its records): no
+    fact, not an error.
+    """
+    for decision in reversed(_charter_records(state_dir, issue_number)):
+        if decision.triage_class is None:
+            continue
+        return TriageFact(
+            triage_class=decision.triage_class.value,
+            action_kind=decision.action_kind,
+            effect=decision.effect,
+            proposal_issue_number=_available_proposal(decision, proposal_open),
+        )
+    return None
+
+
+def observe_decisions(
+    state_dir: Path, issue_number: int, *, proposal_open: Callable[[int], bool]
+) -> tuple[DecisionFact, ...]:
+    """Every decision the charter ledger recorded about the item, oldest first (#7658)."""
+    return tuple(
+        DecisionFact(
+            action_kind=decision.action_kind,
+            effect=decision.effect,
+            triage_class=None if decision.triage_class is None else decision.triage_class.value,
+            proposal_issue_number=_available_proposal(decision, proposal_open),
+        )
+        for decision in _charter_records(state_dir, issue_number)
+    )
 
 
 def observe_item(
@@ -148,6 +246,8 @@ def observe_item(
     parked_screen: str,
     extra_pr_numbers: Iterable[int] = (),
     read_checks: bool = True,
+    state_dir: Path | None = None,
+    capture_dir: Path | None = None,
 ) -> WorkItemFact:
     """The item's final facts; ``read_checks=False`` skips the GraphQL rollup
     read for the cheap progress probe the drive loop makes."""
@@ -155,6 +255,11 @@ def observe_item(
     issue = adapter.get_issue(item.issue_number)
     if issue is None:
         raise RuntimeError(f"issue #{item.issue_number} vanished while observing")
+
+    def proposal_open(number: int) -> bool:
+        proposal = adapter.get_issue(number)
+        return proposal is not None and proposal.state == "open"
+
     linked = {pr.number: pr for pr in linked_pull_requests(repo, item.issue_number, state="all")}
     for number in extra_pr_numbers:
         if number not in linked:
@@ -169,6 +274,7 @@ def observe_item(
     open_prs = [adapter.get_pr(f.number) for f in facts if f.state.is_open]
     labels = LabelManager(config)
     events = item_events(watcher, item, (fact.number for fact in facts))
+    body_rulings, body_rulings_error = _body_rulings(issue.body)
     return WorkItemFact(
         role=item.role,
         issue_number=item.issue_number,
@@ -189,7 +295,74 @@ def observe_item(
             for number in (event.payload.get("pr_number"),)
             if isinstance(number, int) and not isinstance(number, bool)
         ),
+        triage=(
+            observe_triage(state_dir, item.issue_number, proposal_open=proposal_open)
+            if state_dir is not None else None
+        ),
+        decisions=(
+            observe_decisions(state_dir, item.issue_number, proposal_open=proposal_open)
+            if state_dir is not None else ()
+        ),
+        prompts=captured_prompts(capture_dir, item.issue_number) if capture_dir is not None else (),
+        body_rulings=body_rulings,
+        body_rulings_error=body_rulings_error,
+        refused_approvals=sum(
+            len(adapter.issue_comment_bodies_containing(fact.number, REFUSED_APPROVAL_MARKER)) for fact in facts
+        ),
+        resolution_comments=tuple(adapter.issue_comment_bodies_containing(item.issue_number, RESOLUTION_COMMENT)),
+        milestone=issue.milestone or "",
+        decision_proposals=(
+            observe_decision_proposals(adapter, state_dir, item.issue_number) if state_dir is not None else ()
+        ),
     )
+
+
+#: The tech-lead actions that put a decision to the operator (#8691).
+_DECISION_KINDS = frozenset({"propose_decision", "resolve_block"})
+
+
+def observe_decision_proposals(adapter: Any, state_dir: Path, issue_number: int) -> tuple[DecisionProposalFact, ...]:
+    """Every decision proposal the charter ledger records about the item, as
+    GitHub holds it: its body and its per-step markers (#8691)."""
+    numbers = sorted({
+        decision.proposal_issue_number for decision in _charter_records(state_dir, issue_number)
+        if decision.action_kind in _DECISION_KINDS and decision.proposal_issue_number is not None
+    })
+    facts = []
+    for number in numbers:
+        proposal = adapter.get_issue(number)
+        if proposal is None:
+            raise RuntimeError(f"decision proposal #{number} vanished while observing")
+        facts.append(DecisionProposalFact(
+            number=number, state=str(proposal.state), body=proposal.body or "",
+            step_comments=tuple(adapter.issue_comment_bodies_containing(number, DECISION_STEP_MARKER)),
+        ))
+    return tuple(facts)
+
+
+def _body_rulings(body: str | None) -> tuple[tuple[BodyRulingFact, ...], str]:
+    """The standing rulings an issue body records (#8141), or why it cannot say."""
+    try:
+        rulings = parse_rulings_block(body)
+    except RulingsBlockError as error:
+        return (), str(error)
+    return tuple(BodyRulingFact(ruling.ruling_id, ruling.authority.value, ruling.text) for ruling in rulings), ""
+
+
+def captured_prompts(capture_dir: Path, issue_number: int) -> tuple[CapturedPrompt, ...]:
+    """The prompts the exam shim captured for *issue_number*, oldest first.
+
+    Files are ``<issue>-<task>-<ns>.txt`` (``tests/e2e/exam/shims/exam_agent.py``).
+    """
+    if not capture_dir.is_dir():
+        return ()
+    prompts = []
+    for path in capture_dir.glob(f"{issue_number}-*-*.txt"):
+        number, task, captured = path.stem.split("-", 1)[0], *path.stem.split("-", 1)[1].rsplit("-", 1)
+        if int(number) != issue_number:
+            continue
+        prompts.append(CapturedPrompt(task=task, captured_ns=int(captured), text=path.read_text(encoding="utf-8")))
+    return tuple(sorted(prompts, key=lambda prompt: prompt.captured_ns))
 
 
 # ---------------------------------------------------------------------------
@@ -374,6 +547,7 @@ def build_observation(
     ended_by: RunEnd,
     notes: tuple[str, ...],
     upgrade: UpgradeFacts | None = None,
+    delivery: DeliveryPullRequestFact | None = None,
 ) -> ExamObservation:
     return ExamObservation(
         case_id=case_id,
@@ -389,4 +563,5 @@ def build_observation(
         ended_by=ended_by,
         notes=notes,
         upgrade=upgrade,
+        delivery=delivery,
     )

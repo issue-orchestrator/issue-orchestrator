@@ -12,6 +12,7 @@ via Field() + json_schema_extra. This single source of truth drives:
 from __future__ import annotations
 
 import functools
+import re
 from pathlib import Path
 from typing import Any, Literal, Optional, TYPE_CHECKING
 
@@ -32,6 +33,7 @@ from ..domain.tech_lead_findings import (
 )
 from ..domain.tech_lead_naming import TECH_LEAD_DISPLAY_NAME
 from ..domain.blocked_item_custody import CustodyState
+from ..domain.ci_failure import DEFAULT_GENUINE_SIGNATURES, DEFAULT_TRANSIENT_SIGNATURES
 from ..domain.tech_lead_charter import CharterRole
 from .config_models_tech_lead_custody import (
     DEFAULT_CUSTODY_STALE_MINUTES,
@@ -45,6 +47,9 @@ from .config_models_tech_lead_charter import (
 )
 from .budgeted_validation_config import budgeted_validation_reference
 from .config_models import (
+    INTEGRATION_DELIVER_MODES,
+    IntegrationConfig,
+    INTEGRATION_MERGE_METHODS,
     MERGE_QUEUE_PROVIDERS,
     TECH_LEAD_AUTHORITY_MODES,
     TECH_LEAD_MAX_EXPEDITED_LIMIT,
@@ -1382,9 +1387,11 @@ class ReviewSettings(BaseModel):
             "doc_examples": ["execute", "propose"],
             "doc_notes": (
                 "execute files the proposed follow-up issue directly; propose "
-                "files it as a gated proposal issue carrying the proposed-tech-lead "
-                "label, inert until an operator removes that label (per-instance "
-                "approval, #6778). Allowed values: execute, propose."
+                "files it as a gated proposal issue (labels tech-lead-proposal and "
+                "awaiting-approval), inert until a maintainer approves it with the "
+                "approved label or the Control Center's Approvals inbox; approval "
+                "admits it to the work queue (per-instance approval, #6778, #7763). "
+                "Allowed values: execute, propose."
             ),
             "section": _TECH_LEAD_SECTION,
             "config_attr": "tech_lead.authority.create_issue",
@@ -1425,7 +1432,8 @@ class ReviewSettings(BaseModel):
             "doc_notes": (
                 "Reset from scratch is destructive, so it always needs operator "
                 "approval (#7330): each proposal is filed as a gated GitHub issue "
-                "carrying the proposed-tech-lead label, and removing the label is "
+                "labelled tech-lead-proposal and awaiting-approval, and a "
+                "maintainer's approved label (or Approve in the Control Center) is "
                 "per-instance approval that runs the reset+retry-from-scratch "
                 "owner after re-validating the proposal's preconditions; stale "
                 "proposals downgrade to a surfaced record (#6764, #6778). "
@@ -1445,8 +1453,8 @@ class ReviewSettings(BaseModel):
             "doc_examples": ["propose", "execute"],
             "doc_notes": (
                 "propose (default) files each proposal as a gated GitHub issue "
-                "carrying the proposed-tech-lead label; removing the label is "
-                "per-instance approval and executes the stored op after "
+                "labelled tech-lead-proposal and awaiting-approval; a maintainer's "
+                "approved label is per-instance approval and executes the stored op after "
                 "re-validating the target session is still active (#6778). "
                 "execute terminates the exact session generation that was active "
                 "when the decision was planned, after re-validating that it is "
@@ -1515,6 +1523,32 @@ class ReviewSettings(BaseModel):
             "yaml_path": "tech_lead.authority.release_withheld_review",
         },
     )
+    tech_lead_authority_resolve_block: str = Field(
+        "propose",
+        title=f"{TECH_LEAD_DISPLAY_NAME} Authority: Resolve Block",
+        description=(
+            "Let the tech lead clear a needs-human work block by deciding it:"
+            " answer the agent's question, decide a split, or lift a stale block"
+        ),
+        json_schema_extra={
+            "enum": list(TECH_LEAD_AUTHORITY_MODES),
+            "doc_examples": ["propose", "execute"],
+            "doc_notes": (
+                "propose (default) files each decision as a gated proposal the"
+                " operator approves; execute lets the tech lead clear the block"
+                " itself. Only work blocks are resolvable (an agent's question,"
+                " the engine giving up); a merge escalation, a tech-lead"
+                " hand-over, a quarantine or an operator's own label never is,"
+                " and human-only work (credentials, accounts, provisioning,"
+                " money, legal) always escalates. Each decision is posted on the"
+                " item and recorded; if the block comes back after a resolve,"
+                " the tech lead never clears that cause again."
+            ),
+            "section": _TECH_LEAD_SECTION,
+            "config_attr": "tech_lead.authority.resolve_block",
+            "yaml_path": "tech_lead.authority.resolve_block",
+        },
+    )
     # Per-role charter dials (#7330): one enabled/depth/authority triple per role.
     tech_lead_charter_flow_enabled: bool = _charter_field(CharterRole.FLOW, "enabled")
     tech_lead_charter_flow_depth: str = _charter_field(CharterRole.FLOW, "depth")
@@ -1548,8 +1582,9 @@ class ReviewSettings(BaseModel):
                 "The finding-promotion lane (#6957) turns a pattern case file "
                 "that crossed its evidence threshold into a runnable issue in "
                 "the repo that owns the fix. gated (default) files it carrying "
-                "the proposed-tech-lead label, so operator approval is exactly "
-                "one action — removing the label; auto files it ungated, "
+                "the tech-lead-proposal and awaiting-approval labels, so operator "
+                "approval is exactly one action — a maintainer's approved label "
+                "in the target repo (#7763); auto files it ungated, "
                 "immediately runnable in the target repo's own pipeline; off "
                 "disables the lane entirely (no promotion issues and no "
                 "loop-closure reads); the lane is also inert without "
@@ -1799,7 +1834,7 @@ class ReviewSettings(BaseModel):
                 "expedite requests past the cap are logged and fall back to "
                 "normal priority. 0 disables expediting entirely. Under "
                 "'propose' authority an expedited follow-up jumps the lane only "
-                "after its proposed-tech-lead gate is removed."
+                "after a maintainer's approval admits it (#7763)."
             ),
             "section": _TECH_LEAD_SECTION,
             "config_attr": "tech_lead.max_expedited",
@@ -1847,6 +1882,7 @@ class ReviewSettings(BaseModel):
         "tech_lead_authority_request_rework",
         "tech_lead_authority_recover_validated_work",
         "tech_lead_authority_release_withheld_review",
+        "tech_lead_authority_resolve_block",
     )
     @classmethod
     def _validate_tech_lead_authority_mode(cls, value: str, info: ValidationInfo) -> str:
@@ -2064,6 +2100,75 @@ class ValidatedWorkSettings(BaseModel):
     )
 
 
+def _signature_lines_compile(value: str) -> str:
+    for line in value.split("\n"):
+        if line.strip():
+            try:
+                re.compile(line.strip())
+            except re.error as error:
+                raise ValueError(f"invalid regular expression {line.strip()!r}: {error}") from error
+    return value
+
+
+class CiFailureTriageSettings(BaseModel):
+    """Settings for reading and answering a failed required check (#8692)."""
+
+    ci_failure_triage_enabled: bool = Field(
+        True,
+        title="Triage failed checks",
+        description="Read a failed check's job log with the engine's credential, re-run a transient failure once per head commit, and attach the log excerpt to any other failure's rework brief",
+        json_schema_extra={
+            "section": "CI Failure Triage",
+            "config_attr": "ci_failure_triage.enabled",
+            "yaml_path": "ci_failure_triage.enabled",
+            "doc_examples": ["true", "false"],
+            "doc_notes": "A re-run never spends a rework cycle. A second transient failure on the same head commit goes to rework like any other failure.",
+        },
+    )
+    ci_failure_triage_transient_signatures: str = Field(
+        "\n".join(DEFAULT_TRANSIENT_SIGNATURES),
+        title="Transient signatures",
+        description="Regular expressions (one per line, case-insensitive) that mark a failed job's log as a runner, infrastructure or known-flaky failure worth one re-run",
+        json_schema_extra={
+            "section": "CI Failure Triage",
+            "config_attr": "ci_failure_triage.transient_signatures",
+            "yaml_path": "ci_failure_triage.transient_signatures",
+            "ui_transform": "newline_separated_list",
+            "doc_examples": ["The runner has received a shutdown signal", "workspace watch .* windows process tree"],
+            "doc_notes": "Checked before the genuine signatures. A TIMED_OUT or STARTUP_FAILURE check conclusion is transient on its own.",
+        },
+    )
+    ci_failure_triage_genuine_signatures: str = Field(
+        "\n".join(DEFAULT_GENUINE_SIGNATURES),
+        title="Genuine signatures",
+        description="Regular expressions (one per line, case-insensitive) that mark a failed job's log as a test, assertion or build failure",
+        json_schema_extra={
+            "section": "CI Failure Triage",
+            "config_attr": "ci_failure_triage.genuine_signatures",
+            "yaml_path": "ci_failure_triage.genuine_signatures",
+            "ui_transform": "newline_separated_list",
+            "doc_examples": ["AssertionError", "^FAILED \\S"],
+            "doc_notes": "A failure matching neither list is unknown; genuine and unknown failures both go to rework with the log excerpt attached.",
+        },
+    )
+    ci_failure_triage_log_tail_bytes: int = Field(
+        65536, ge=1024, le=1048576, strict=True,
+        title="Log tail (bytes)",
+        description="How much of each failed job's log the engine keeps, from the end",
+        json_schema_extra={
+            "section": "CI Failure Triage",
+            "config_attr": "ci_failure_triage.log_tail_bytes",
+            "yaml_path": "ci_failure_triage.log_tail_bytes",
+            "doc_examples": ["65536"],
+        },
+    )
+
+    @field_validator("ci_failure_triage_transient_signatures", "ci_failure_triage_genuine_signatures")
+    @classmethod
+    def _signatures_compile(cls, value: str) -> str:
+        return _signature_lines_compile(value)
+
+
 class MergeQueueSettings(BaseModel):
     """Settings for the Merge Queue tab."""
 
@@ -2150,6 +2255,118 @@ class MergeQueueSettings(BaseModel):
             raise ValueError(
                 f"provider must be one of {list(MERGE_QUEUE_PROVIDERS)}, got {value!r}"
             )
+        return value
+
+
+class IntegrationSettings(BaseModel):
+    """Settings for the Integration Branch tab (#8144)."""
+
+    enabled: bool = Field(
+        False,
+        title="Enable Integration Branch Mode",
+        description="io merges approved PRs into an integration branch; you merge one delivery PR",
+        json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": (
+                "When enabled, agents' worktrees and PRs use the integration branch as their"
+                " base (it implies worktrees.base_branch_override), io merges each approved"
+                " PR into it once its checks are green on a head containing the integration"
+                " tip, updates a behind PR mechanically before any agent rework, and keeps"
+                " one delivery PR (integration -> default branch) open for you to merge with"
+                " a merge commit. Cannot be combined with merge_queue.enabled."
+            ),
+            "section": "Integration Branch",
+            "config_attr": "integration.enabled",
+            "yaml_path": "integration.enabled",
+            "restart_required": True,
+        },
+    )
+    branch: str = Field(
+        "integration",
+        title="Integration Branch",
+        description="The branch approved PRs are merged into (created from the default branch if missing)",
+        json_schema_extra={
+            "doc_examples": ["integration"],
+            "doc_notes": "A plain branch name: no 'origin/' or 'refs/' prefix. Never deleted by io.",
+            "section": "Integration Branch",
+            "config_attr": "integration.branch",
+            "yaml_path": "integration.branch",
+            "restart_required": True,
+        },
+    )
+    # One allowed value today: a single-value Literal would emit a JSON-schema
+    # `const`, which the form-control projection rejects, so it is a `str`
+    # with an `enum` and a validator (as merge_queue.provider is).
+    deliver: str = Field(
+        "manual",
+        title="Delivery",
+        description="When the delivery PR is merged",
+        json_schema_extra={
+            "enum": list(INTEGRATION_DELIVER_MODES),
+            "doc_examples": ["manual"],
+            "doc_notes": (
+                "manual: io keeps the delivery PR current and you merge it when you choose."
+                " cadence and milestone are not defined yet (#9062)."
+            ),
+            "section": "Integration Branch",
+            "config_attr": "integration.deliver",
+            "yaml_path": "integration.deliver",
+            "restart_required": True,
+        },
+    )
+    merge_method: str = Field(
+        "merge",
+        title="Merge Method",
+        description="How io merges an approved PR into the integration branch",
+        json_schema_extra={
+            "enum": list(INTEGRATION_MERGE_METHODS),
+            "doc_examples": ["merge"],
+            "doc_notes": (
+                "merge: a merge commit, made atomically on the tip the PR was checked against"
+                " (the branch is fast-forwarded only from that tip)."
+            ),
+            "section": "Integration Branch",
+            "config_attr": "integration.merge_method",
+            "yaml_path": "integration.merge_method",
+            "restart_required": True,
+        },
+    )
+    merge_after: Literal["code-reviewed", "tech-lead-reviewed"] = Field(
+        "code-reviewed",
+        title="Merge After Gate",
+        description="The approval gate a PR must clear before io merges it",
+        json_schema_extra={
+            "doc_examples": ["code-reviewed", "tech-lead-reviewed"],
+            "doc_notes": (
+                "code-reviewed is reviewer approval; tech-lead-reviewed waits for the"
+                " batch tech-lead review as well."
+            ),
+            "section": "Integration Branch",
+            "config_attr": "integration.merge_after",
+            "yaml_path": "integration.merge_after",
+            "restart_required": True,
+        },
+    )
+
+    @field_validator("deliver")
+    @classmethod
+    def _validate_deliver(cls, value: str) -> str:
+        if value not in INTEGRATION_DELIVER_MODES:
+            raise ValueError(f"deliver must be one of {list(INTEGRATION_DELIVER_MODES)}, got {value!r}")
+        return value
+
+    @field_validator("merge_method")
+    @classmethod
+    def _validate_merge_method(cls, value: str) -> str:
+        if value not in INTEGRATION_MERGE_METHODS:
+            raise ValueError(f"merge_method must be one of {list(INTEGRATION_MERGE_METHODS)}, got {value!r}")
+        return value
+
+    @field_validator("branch")
+    @classmethod
+    def _validate_branch(cls, value: str) -> str:
+        # The config's own rule, so the form and the YAML load agree (#8144).
+        IntegrationConfig(branch=value)
         return value
 
 
@@ -2721,7 +2938,9 @@ TAB_DEFINITIONS: list[dict[str, Any]] = [
     {"key": "milestones", "label": "Milestones", "model": MilestonesSettings},
     {"key": "review", "label": "Review", "model": ReviewSettings},
     {"key": "merge_queue", "label": "Merge Queue", "model": MergeQueueSettings},
+    {"key": "integration", "label": "Integration Branch", "model": IntegrationSettings},
     {"key": "validated_work", "label": "Validated Work", "model": ValidatedWorkSettings},
+    {"key": "ci_failure_triage", "label": "CI Failure Triage", "model": CiFailureTriageSettings},
     {"key": "goal_pilot", "label": "Goal Pilot", "model": GoalPilotSettings},
     {"key": "hooks", "label": "Hooks", "model": HooksSettings},
     {"key": "advanced", "label": "Advanced", "model": AdvancedSettings},

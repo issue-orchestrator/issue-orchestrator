@@ -17,7 +17,6 @@ from ..adapters.worktree.custody import custody_guard
 from ..execution import git_push_operations as git_push_ops
 from ..execution.command_runner import LocalCommandRunner
 from ..execution.git_push_operations import GitAuthEnvProvider
-from ..infra.runtime_artifacts import filter_orchestrator_untracked_planted
 from ..ports.command_runner import OutputNewlines
 from .git_exact_operations import GitExactOperations
 from .git_branch_identity import issue_number_from_branch
@@ -175,6 +174,9 @@ class GitWorkingCopy:
     def fetch_remote_branch_head(self, worktree: Path, branch: str) -> str | None:
         return GitRevisionReader(self._run_git).fetch_remote_branch_head(worktree, branch)
 
+    def fetch_pull_request_head(self, repository: Path, number: int) -> str | None:
+        return GitRevisionReader(self._run_git).fetch_pull_request_head(repository, number)
+
     def get_branch_status(self, worktree: Path) -> BranchStatus | None:
         """Get the status of the current branch."""
         branch = self.get_current_branch(worktree)
@@ -282,18 +284,12 @@ class GitWorkingCopy:
                 )
 
             if mode == "all":
-                untracked_paths = self._run_git_nul_paths(
-                    worktree,
-                    ["ls-files", "--others", "--exclude-standard", "-z"],
+                files.update(
+                    self._run_git_nul_paths(
+                        worktree,
+                        ["ls-files", "--others", "--exclude-standard", "-z"],
+                    )
                 )
-                # ``sync_cli_tools`` plants files into every worktree. In a
-                # foreign repo they appear here as untracked and must not
-                # count as dirty. The filter is scoped to this untracked
-                # branch so tracked-modified versions of the same paths in
-                # the orchestrator's own repo (picked up above via
-                # ``diff --name-only``) still fire the guard.
-                untracked_paths = filter_orchestrator_untracked_planted(untracked_paths)
-                files.update(untracked_paths)
 
             return sorted(files)
         except GitError:
@@ -378,6 +374,21 @@ class GitWorkingCopy:
             )
             return BranchPathsResult(success=False, error=error)
 
+    def branch_touched_paths_against_base(
+        self, worktree: Path, base_ref: str
+    ) -> BranchPathsResult:
+        """Every path the branch touches: ``--no-renames`` lists a rename as its
+        deletion and its addition, and no ``--diff-filter`` keeps deletions."""
+        try:
+            paths = self._run_git_nul_paths(
+                worktree, ["diff", "--name-only", "-z", "--no-ext-diff", "--no-renames", f"{base_ref}...HEAD"],
+            )
+            return BranchPathsResult(success=True, paths=tuple(paths))
+        except GitError as exc:
+            error = _git_error_output(exc)
+            logger.warning("Failed to read touched paths against %s in %s: %s", base_ref, worktree, error)
+            return BranchPathsResult(success=False, error=error)
+
     def branch_commit_messages_against_base(
         self, worktree: Path, base_ref: str
     ) -> BranchCommitMessagesResult:
@@ -386,15 +397,15 @@ class GitWorkingCopy:
     def _branch_content(self) -> GitBranchContentReader:
         return GitBranchContentReader(self._run_git_output_exact, self._run_git_nul_paths)
 
-    def get_commits_ahead_of_main(self, worktree: Path) -> list[CommitInfo]:
-        """Get commits that are ahead of main branch."""
+    def get_commits_ahead_of(self, worktree: Path, base_branch: str) -> list[CommitInfo]:
+        """Get commits that are ahead of the worktree's base branch."""
         try:
-            # Get commits in HEAD but not in origin/main
+            # Get commits in HEAD but not in origin/<base>
             result = self._run_git(
                 worktree,
                 [
                     "log",
-                    "origin/main..HEAD",
+                    f"origin/{base_branch}..HEAD",
                     "--format=%H|%s|%an|%h",
                 ],
             )
@@ -415,7 +426,7 @@ class GitWorkingCopy:
                     )
             return commits
         except GitError:
-            logger.warning("Failed to get commits ahead of main in %s", worktree)
+            logger.warning("Failed to get commits ahead of %s in %s", base_branch, worktree)
             return []
 
     def fetch(self, worktree: Path, remote: str = "origin") -> bool:

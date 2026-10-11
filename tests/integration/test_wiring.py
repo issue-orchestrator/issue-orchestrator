@@ -148,6 +148,7 @@ class TestOrchestratorWiring:
         mock_worktree_manager.create.return_value = WorktreeInfo(
             path=worktree_path,
             branch_name="456-test-feature",
+            base_branch="main",
         )
 
         working_copy = MagicMock()
@@ -176,6 +177,8 @@ class TestOrchestratorWiring:
             repo=config.repo,
         )
 
+        # The launch boundary reads the issue fresh (#7763): it exists on GitHub.
+        mock_repository_host.issues.append(test_issue)
         # launch_session only takes issue - gets agent_config internally
         session = orchestrator.launch_session(test_issue)
 

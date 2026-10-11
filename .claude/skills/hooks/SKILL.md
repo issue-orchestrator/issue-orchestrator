@@ -60,7 +60,7 @@ Runs before `git push`:
 
 ### `src/issue_orchestrator/hooks/pre-push`
 Installed into orchestrator-created worktrees:
-- resolves the orchestrator Python interpreter (`ISSUE_ORCHESTRATOR_PYTHON` or baked-in `sys.executable`)
+- resolves the orchestrator Python interpreter (`ISSUE_ORCHESTRATOR_PYTHON` or baked-in `sys.executable`; session-scoped, unlike the durable `verify-pr.sh` interpreter owned by `infra/hooks/durable_python.py`)
 - runs the dirty-tree guard
 - blocks target-repo test-skipping patterns such as `@Disabled`, `@Ignore`, `assumeTrue`, `assumeFalse`
 
@@ -101,9 +101,10 @@ Use `issue-orchestrator setup-hooks` only when intentionally installing AI hook 
 
 ### Changing Pre-push Validation
 1. For this repo's local publish gate, edit `hooks/pre-push` or the Makefile target it calls.
-2. For target-repo managed guardrails, edit `src/issue_orchestrator/infra/repo_guardrails.py` and `src/issue_orchestrator/templates/hooks/git/`.
-3. For worktree-installed checks, edit `src/issue_orchestrator/hooks/pre-push` and `_worktree_hooks.py`.
-4. Test locally with `./hooks/pre-push`, `make validate-pr`, and focused unit tests.
+2. For target-repo managed guardrails, edit `src/issue_orchestrator/infra/repo_guardrails.py` (it renders `.githooks/pre-push` and `scripts/verify-pr.sh`).
+3. The delete-only skip and stdin capture shared by every pre-push hook live in `src/issue_orchestrator/infra/hooks/pre_push_refs.py`; `hooks/pre-push` carries a test-guarded verbatim copy.
+4. For worktree-installed checks, edit `src/issue_orchestrator/hooks/pre-push` and `_worktree_hooks.py`.
+5. Test locally with `./hooks/pre-push`, `make validate-pr`, and focused unit tests.
 
 ## Exit Codes
 

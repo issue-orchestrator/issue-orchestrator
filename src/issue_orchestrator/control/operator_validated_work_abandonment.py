@@ -1,13 +1,14 @@
 """Own operator abandonment from exact authority through block reprojection."""
 
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 
 from ..domain.issue_disposition_gate import IssueDispositionGateStatus
 from ..domain.recovery_block import RecoveryMutationBusy
 from ..domain.validated_work import ResolutionKind
 from ..domain.validated_work_execution import RecordExecutionBusy
 from ..domain.validated_work_commands import (
+    AbandonAllOutcome,
     AbandonStatus,
     AbandonValidatedWorkCommand,
     AbandonValidatedWorkOutcome,
@@ -58,28 +59,85 @@ class OperatorValidatedWorkAbandonment:
                 return self._busy("The retained-work issue is already changing")
             if outcome.status is not AbandonStatus.ABANDONED:
                 return outcome
-            self._events.publish(
-                make_trace_event(
-                    EventName.VALIDATED_WORK_ABANDONED,
-                    {
-                        "issue_number": authority.issue_number,
-                        "record_id": authority.record_id,
-                        "evidence_id": authority.evidence_id,
-                        "actor": command.actor,
-                        "reason": command.reason,
-                        "resolution_kind": ResolutionKind.OPERATOR_ABANDONED.value,
-                    },
-                )
-            )
+            self._publish_abandoned(command)
             self._blocks.reconcile_issue_block(
                 authority.issue_number
             ).require_reconciled()
             return outcome
 
+    def abandon_all(
+        self, commands: tuple[AbandonValidatedWorkCommand, ...]
+    ) -> AbandonAllOutcome:
+        """Abandon several records of ONE issue atomically (#9092).
+
+        Every record's execution lease and the issue's mutation gate are held
+        across one store transaction, so either every record resolves or none
+        does, and the aggregate block is reprojected once afterwards. A
+        replay of a committed batch audits nothing again but still
+        reprojects: that is what a retry after a failed reprojection needs.
+        """
+        if not commands:
+            raise ValueError("a batch abandonment names at least one record")
+        if any(command.authority.repo_slug != self._repo for command in commands):
+            raise ValueError("abandonment names another repository")
+        issues = {command.authority.issue_number for command in commands}
+        if len(issues) != 1:
+            raise ValueError("a batch abandonment names the records of one issue")
+        (issue_number,) = issues
+        first = commands[0].authority.record_id
+        with ExitStack() as leases:
+            for command in commands:
+                record_id = command.authority.record_id
+                lease = self._execution.try_enter(record_id)
+                if isinstance(lease, RecordExecutionBusy):
+                    return self._busy_batch(
+                        record_id, "The retained-work record is already executing"
+                    )
+                token = leases.enter_context(lease)
+                self._execution.require_active(token, record_id)
+            try:
+                with self._hold_issue(issue_number):
+                    outcome = self._store.abandon_all_if_current(commands)
+            except RecoveryMutationBusy:
+                return self._busy_batch(
+                    first, "The retained-work issue is already changing"
+                )
+            if not outcome.committed:
+                return outcome
+            for command in commands if not outcome.replayed else ():
+                self._publish_abandoned(command)
+            self._blocks.reconcile_issue_block(issue_number).require_reconciled()
+            return outcome
+
+    def committed(self, commands: tuple[AbandonValidatedWorkCommand, ...]) -> bool:
+        """Whether this exact batch already committed: a retry of it replays
+        through :meth:`abandon_all` and needs no fresh precondition (#9092)."""
+        return self._store.already_abandoned_by(commands)
+
+    def _publish_abandoned(self, command: AbandonValidatedWorkCommand) -> None:
+        authority = command.authority
+        self._events.publish(
+            make_trace_event(
+                EventName.VALIDATED_WORK_ABANDONED,
+                {
+                    "issue_number": authority.issue_number,
+                    "record_id": authority.record_id,
+                    "evidence_id": authority.evidence_id,
+                    "actor": command.actor,
+                    "reason": command.reason,
+                    "resolution_kind": ResolutionKind.OPERATOR_ABANDONED.value,
+                },
+            )
+        )
+
+    @classmethod
+    def _busy_batch(cls, record_id: str, message: str) -> AbandonAllOutcome:
+        return AbandonAllOutcome((), cls._busy(message), record_id)
+
     @staticmethod
     def _busy(message: str) -> AbandonValidatedWorkOutcome:
         return AbandonValidatedWorkOutcome(
-            AbandonStatus.REFUSED_STATE, None, (), None, message
+            AbandonStatus.BUSY, None, (), None, message
         )
 
     @contextmanager

@@ -64,6 +64,24 @@ CREATE TABLE IF NOT EXISTS needs_human_cause (
     reason TEXT NOT NULL,
     PRIMARY KEY (issue_number, cause)
 );
+-- The current generation of each issue's shared needs-human block (#8688):
+-- one row per issue, opened when an acquisition puts the label on afresh and
+-- dropped with the label, like the cause rows. A self-recording cause opens a
+-- generation without a cause row, so it cannot live on those. ``episode`` is
+-- AUTOINCREMENT so a generation reopened in the same instant still differs -
+-- it is what a tech-lead triage is keyed to, so a lift and re-block owes one.
+CREATE TABLE IF NOT EXISTS needs_human_generation (
+    episode INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_number INTEGER NOT NULL UNIQUE CHECK (issue_number > 0),
+    opened_at TEXT NOT NULL,
+    -- GitHub's event that applied the label standing in this generation, bound
+    -- when a health review first verifies it. A different standing event means
+    -- the label came off and went back on outside the owner: a new generation.
+    label_event_id INTEGER,
+    -- 1 when no acquisition was seen to open it (a hand-placed or re-applied
+    -- label): it was opened from GitHub's event instead, dated by it.
+    adopted INTEGER NOT NULL DEFAULT 0
+);
 """
 
 # Additive columns the quarantine table gained after it shipped. ``CREATE TABLE

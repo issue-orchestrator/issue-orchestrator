@@ -63,6 +63,7 @@ from .tech_lead_finding_promotion import (
     apply_settle_tech_lead_promotion,
 )
 from .tech_lead_proposals import apply_discard_terminal_tech_lead_proposal_ops
+from .tech_lead_approval_writes import apply_settle_proposal_approval
 from .tech_lead_proposal_creation import apply_recover_tech_lead_proposal
 
 if TYPE_CHECKING:
@@ -71,6 +72,7 @@ if TYPE_CHECKING:
     from .label_manager import LabelManager
     from ..ports.promotion_target import PromotionTargetHost
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
+    from .tech_lead_approval import TechLeadApprovals
     from ..ports.pattern_registry import PatternCaseFileRegistry
 
 ActionHandler = Callable[[Action], ActionResult]
@@ -89,9 +91,13 @@ TECH_LEAD_MUTATING_ACTION_TYPES: frozenset[ActionType] = (
             ActionType.KILL_HUNG_SESSION,
             ActionType.REQUEST_REWORK,
             ActionType.RECOVER_VALIDATED_WORK,
+            ActionType.RELEASE_VALIDATED_WORK,
             ActionType.RELEASE_WITHHELD_REVIEW,
+            ActionType.APPLY_OPERATOR_DECISION,
+            ActionType.RESOLVE_BLOCK,
             ActionType.RECOVER_TECH_LEAD_PROPOSAL,
             ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS,
+            ActionType.SETTLE_PROPOSAL_APPROVAL,
             ActionType.APPEND_PATTERN_OBSERVATION,
             ActionType.RECORD_TECH_LEAD_DISPOSITION,
             ActionType.ESCALATE_TECH_LEAD_DISPOSITION,
@@ -162,7 +168,11 @@ def tech_lead_action_handlers(
     pattern_registry: "PatternCaseFileRegistry | None" = None,
     promotion_target: "PromotionTargetHost | None",
     recover_validated_work: ActionHandler | None = None,
+    release_validated_work: ActionHandler | None = None,
     release_withheld_review: ActionHandler | None = None,
+    apply_operator_decision: ActionHandler | None = None,
+    resolve_block: ActionHandler | None = None,
+    approvals: "TechLeadApprovals | None" = None,
 ) -> dict[ActionType, ActionHandler]:
     """Map every tech-lead ActionType to the owner that applies it."""
     handlers: dict[ActionType, ActionHandler] = {
@@ -183,12 +193,36 @@ def tech_lead_action_handlers(
                 action, "validated-work recovery executor is not wired"
             )
         ),
+        # Approved-only release of records rebuilt elsewhere (#9092).
+        ActionType.RELEASE_VALIDATED_WORK: (
+            release_validated_work
+            if release_validated_work is not None
+            else lambda action: ActionResult.fail(
+                action, "validated-work release executor is not wired"
+            )
+        ),
         # Review release re-verifies every precondition in its owner (#7399).
         ActionType.RELEASE_WITHHELD_REVIEW: (
             release_withheld_review
             if release_withheld_review is not None
             else lambda action: ActionResult.fail(
                 action, "withheld-review release executor is not wired"
+            )
+        ),
+        # An approved operator decision: retry, follow-ups, decision (#7593).
+        ActionType.APPLY_OPERATOR_DECISION: (
+            apply_operator_decision
+            if apply_operator_decision is not None
+            else lambda action: ActionResult.fail(
+                action, "operator-decision executor is not wired"
+            )
+        ),
+        # A needs-human work block decided in the operator's stead (#7658).
+        ActionType.RESOLVE_BLOCK: (
+            resolve_block
+            if resolve_block is not None
+            else lambda action: ActionResult.fail(
+                action, "block-resolution executor is not wired"
             )
         ),
         ActionType.RECOVER_TECH_LEAD_PROPOSAL: lambda action: apply_recover_tech_lead_proposal(
@@ -200,6 +234,12 @@ def tech_lead_action_handlers(
         ActionType.DISCARD_TERMINAL_TECH_LEAD_PROPOSAL_OPS: (
             lambda action: apply_discard_terminal_tech_lead_proposal_ops(
                 action, tracker=repository_host, authority=authority
+            )
+        ),
+        # Approval-label transitions, re-verified fresh before writing (#7763).
+        ActionType.SETTLE_PROPOSAL_APPROVAL: lambda action: (
+            apply_settle_proposal_approval(
+                action, approvals=approvals, repository=repository_host
             )
         ),
         # Repeat pattern observation: evidence comment + durable count (#6957).

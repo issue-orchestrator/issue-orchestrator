@@ -82,6 +82,8 @@ from ..domain.review_artifacts import (
 )
 from ..domain.review_exchange_resume import is_no_completion_reason
 from ..domain.review_exchange_turn import (
+    NO_EXCHANGE_RULINGS,
+    ExchangeStandingRulings,
     ReviewExchangePromptFiles,
     ReviewExchangeTurnPacket,
     ReviewExchangeTurnResult,
@@ -94,6 +96,7 @@ from ..domain.review_exchange_summary import ReviewExchangeReason, ReviewExchang
 from ..domain.runtime_config import RuntimeConfigReference
 from ..domain.review_validation import ReviewValidationEvidence
 from ..domain import review_exchange_turn_artifacts as turn_artifacts
+from ..domain.standing_ruling import upheld_rulings_of
 from ..events import EventContext, EventName
 from ..infra.env import ENV_PREFIX
 from ..infra.logging_config import log_context
@@ -299,6 +302,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     turn_mailbox: "TurnMailbox | None" = None,
     response_channels: ReviewExchangeResponseChannels | None = None,
     coder_prompt_addendum: str | None = None,
+    standing_rulings: ExchangeStandingRulings = NO_EXCHANGE_RULINGS,
     kill_evidence: ExchangeKillEvidenceRecorder | None = None,
 ) -> ReviewExchangeOutcome:
     """Run the coder↔reviewer exchange against a registry-owned persistent pair.
@@ -683,6 +687,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
                 kill_evidence=kill_evidence,
                 response_channels=effective_response_channels,
                 coder_prompt_addendum=coder_prompt_addendum,
+                standing_rulings=standing_rulings,
             ),
         )
     except Exception as exc:
@@ -1336,7 +1341,7 @@ def _finalize_reviewer_decision(
         and validation_error is None
         and approval_gate is not None
     ):
-        approval_error = approval_gate.rejection_reason()
+        approval_error = approval_gate.rejection_reason(upheld_rulings=upheld_rulings_of(reviewer.raw_json))
     policy_rework_feedback = validation_error or approval_error
     if reviewer.response_type == "ok" and policy_rework_feedback is not None:
         reviewer = ReviewExchangeResponse(
@@ -1484,6 +1489,8 @@ class _DriveRoundsCommand:
     coder_mirror: _RoleSliceMirror
     reviewer_mirror: _RoleSliceMirror
     coder_prompt_addendum: str | None = None
+    #: The issue's binding rulings, framed per role (#8141): every turn carries them.
+    standing_rulings: ExchangeStandingRulings = NO_EXCHANGE_RULINGS
     turn_mailbox: "TurnMailbox | None" = None
     kill_evidence: ExchangeKillEvidenceRecorder | None = None
     response_channels: ReviewExchangeResponseChannels = field(
@@ -1564,6 +1571,7 @@ def _drive_rounds(command: _DriveRoundsCommand) -> ReviewExchangeOutcome:
             prompt_files=prompt_files,
             last_coder_text=last_coder_text,
             last_reviewer_text=last_reviewer_text,
+            standing_rulings=command.standing_rulings.for_role(Role.REVIEWER),
         )
         _persist_turn_packet(exchange_dir, reviewer_packet)
         reviewer_prompt_text = reviewer_prompt_with_artifact_contract(
@@ -1753,6 +1761,7 @@ def _drive_rounds(command: _DriveRoundsCommand) -> ReviewExchangeOutcome:
             run_dir=run_dir,
             reviewer_feedback=_coder_reviewer_feedback(decision_result),
             coder_prompt_addendum=command.coder_prompt_addendum,
+            standing_rulings=command.standing_rulings.for_role(Role.CODER),
         )
         _persist_turn_packet(exchange_dir, coder_packet)
         coder_response_channel = response_channels.for_role(Role.CODER)

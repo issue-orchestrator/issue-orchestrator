@@ -1,9 +1,11 @@
 """Configuration sub-model dataclasses."""
 
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
 from ..domain.budgeted_validation import BudgetedValidationSuite
+from ..domain.ci_failure import DEFAULT_GENUINE_SIGNATURES, DEFAULT_TRANSIENT_SIGNATURES
 
 # Tech-lead sub-models live in their own module for cohesion and line budget
 # (mirroring the ``config_sections_tech_lead`` parsing split). Re-exported here
@@ -466,6 +468,110 @@ class MergeQueueConfig:
     provider: str = "github"  # see MERGE_QUEUE_PROVIDERS
     enqueue_after: str = "code-reviewed"  # orchestrator gate; see MERGE_QUEUE_GATES
     failure_action: str = "rework"  # rework | needs_human; see MERGE_QUEUE_FAILURE_ACTIONS
+
+
+#: Delivery cadences integration mode supports. Only ``manual`` has defined
+#: semantics (io keeps the delivery PR current; the operator merges it when
+#: they choose); ``cadence`` and ``milestone`` are deferred to #9062.
+INTEGRATION_DELIVER_MODES = ("manual",)
+#: How io merges an approved PR into integration. Only a merge commit can be
+#: made atomically on the checked tip (a merge commit with the head's tree, the
+#: branch fast-forwarded from that tip only) and still mark the PR merged.
+INTEGRATION_MERGE_METHODS = ("merge",)
+
+
+_REF_FORBIDDEN_CHARS = frozenset(" ~^:?*[\\\x7f")
+
+
+def git_branch_name_problem(name: str) -> str | None:
+    """Why *name* is not a valid git branch name (``git check-ref-format``); None if it is."""
+    if not name or name == "@":
+        return "it is empty or '@'"
+    if any(ord(char) < 32 or char in _REF_FORBIDDEN_CHARS for char in name):
+        return "it contains a space, a control character or one of ~^:?*[\\"
+    if ".." in name or "@{" in name or "//" in name:
+        return "it contains '..', '@{' or '//'"
+    if name.startswith(("/", "-")) or name.endswith(("/", ".", ".lock")):
+        return "it starts with '/' or '-', or ends with '/', '.' or '.lock'"
+    if any(part.startswith(".") or part.endswith(".lock") for part in name.split("/")):
+        return "a path component starts with '.' or ends with '.lock'"
+    return None
+
+
+@dataclass
+class IntegrationConfig:
+    """Integration-branch mode (#8144), off by default.
+
+    When ``enabled``, agents' worktrees and PRs use ``branch`` as their base
+    (it implies ``worktrees.base_branch_override``), io merges each approved PR
+    into it itself once every gate holds, brings approved PRs up to its tip
+    mechanically before any agent rework, and maintains one delivery PR from
+    ``branch`` into the default branch for the operator to merge.
+    """
+
+    enabled: bool = False
+    branch: str = "integration"
+    deliver: str = "manual"  # see INTEGRATION_DELIVER_MODES
+    merge_method: str = "merge"  # see INTEGRATION_MERGE_METHODS
+    #: The PR label required before io merges: reviewer approval
+    #: (``code-reviewed``) or the batch tech-lead review (``tech-lead-reviewed``).
+    merge_after: str = "code-reviewed"  # see MERGE_QUEUE_GATES
+
+    def __post_init__(self) -> None:
+        if type(self.enabled) is not bool:
+            raise ValueError("integration.enabled must be true or false")
+        branch = self.branch
+        problem = (
+            "it is not a string" if not isinstance(branch, str)
+            else "it has an 'origin/' or 'refs/' prefix" if branch.startswith(("origin/", "refs/"))
+            else git_branch_name_problem(branch)
+        )
+        if problem is not None:
+            # A name git rejects would load, then fail every upkeep's create
+            # while every launch waits for the branch (#8144 review r3 F4).
+            raise ValueError(f"integration.branch must be a plain git branch name, got {branch!r}: {problem}")
+        for name, allowed in (
+            ("deliver", INTEGRATION_DELIVER_MODES),
+            ("merge_method", INTEGRATION_MERGE_METHODS),
+            ("merge_after", MERGE_QUEUE_GATES),
+        ):
+            value = getattr(self, name)
+            if value not in allowed:
+                raise ValueError(f"integration.{name} must be one of {list(allowed)}, got {value!r}")
+
+
+@dataclass
+class CiFailureTriageConfig:
+    """How the engine reads and answers a failed required check (#8692).
+
+    When a reviewer-approved PR's check fails, the engine reads the failed
+    jobs' log tails with its own credential and classifies them: a transient
+    (runner/infrastructure/known-flaky) failure is re-run once per head commit;
+    any other failure goes to rework with the log excerpt in the brief.
+    Signatures are case-insensitive regular expressions matched per log line.
+    """
+
+    enabled: bool = True
+    transient_signatures: list[str] = field(
+        default_factory=lambda: list(DEFAULT_TRANSIENT_SIGNATURES)
+    )
+    genuine_signatures: list[str] = field(
+        default_factory=lambda: list(DEFAULT_GENUINE_SIGNATURES)
+    )
+    #: How much of each failed job's log the engine keeps (the tail).
+    log_tail_bytes: int = 65536
+
+    def __post_init__(self) -> None:
+        if type(self.log_tail_bytes) is not int or not 1024 <= self.log_tail_bytes <= 1048576:
+            raise ValueError("ci_failure_triage.log_tail_bytes must be an integer in [1024, 1048576]")
+        for name in ("transient_signatures", "genuine_signatures"):
+            for pattern in getattr(self, name):
+                try:
+                    re.compile(pattern)
+                except re.error as error:
+                    raise ValueError(
+                        f"ci_failure_triage.{name}: invalid regular expression {pattern!r}: {error}"
+                    ) from error
 
 
 @dataclass

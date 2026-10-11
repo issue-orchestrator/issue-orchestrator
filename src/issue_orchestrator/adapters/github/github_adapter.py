@@ -9,11 +9,15 @@ Naming: This is an execution-layer adapter that talks to an external platform.
 import logging
 import os
 import time
+from datetime import datetime
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+from ...domain.issue_delivery import MergedPullRequest
 from ...infra.config import Config
 from ...ports.pull_request_tracker import (
+    CheckRunAttempt,
+    FailedChecksRead,
     MergeQueueEntry,
     MergeQueueRead,
     PRInfo,
@@ -21,10 +25,12 @@ from ...ports.pull_request_tracker import (
     StatusCheckRollupRead,
     StatusCheckRollupState,
 )
+from ...ports.engine_audit import OpenIssueLabels
 from ...ports.repository_host import DependencyIssueSnapshot, RepositoryHostError
 from ...ports.comment_receipt import IssueCommentReceipt
 from ...infra import gh_audit
 from .github_issue import GitHubIssue
+from .failed_checks import failed_checks_from_contexts
 from .errors import GitHubHttpError, GitHubTransportError
 from .http_client import (
     GitHubAuth,
@@ -33,14 +39,16 @@ from .http_client import (
     build_github_auth,
     classify_github_http_failure,
 )
-from .marker_recovery import find_marker_issue, prove_marker_issue
+from .marker_recovery import find_marker_issue, prove_marker_issue, prove_open_marker_issue
 from .repo import get_repo_from_git, GitRepoError
 from .cache import GitHubCache
 from .adapter_cache import GitHubAdapterCacheSupport
+from .integration_branch import GitHubIntegrationBranchMixin
 from ...ports.verification import VerificationService
 
 if TYPE_CHECKING:
     from ...domain.issue_key import IssueKey, GitHubIssueKey
+    from ...domain.tech_lead_approval import LabelEvent, StandingLabel
     from ...ports.issue import Issue
 
 logger = logging.getLogger(__name__)
@@ -49,6 +57,34 @@ logger = logging.getLogger(__name__)
 _VALID_ROLLUP_STATES: frozenset[str] = frozenset(
     {"SUCCESS", "FAILURE", "PENDING", "EXPECTED", "ERROR"}
 )
+
+
+def _label_event(issue_number: int, payload: dict[str, Any]) -> "LabelEvent":
+    """One GitHub label event as approval evidence (#7763).
+
+    Automation is anything GitHub marks as such: a ``Bot`` account, a
+    ``[bot]`` login, or an event performed through a GitHub App. A labeled
+    event without an id or an identified actor is malformed and raises.
+    """
+    from ...domain.tech_lead_approval import LabelEvent
+
+    actor = payload.get("actor")
+    if not isinstance(actor, dict) or type(actor.get("id")) is not int:
+        raise GitHubHttpError(
+            f"label event on #{issue_number} carries no identified actor; cannot attribute it"
+        )
+    login = str(actor.get("login") or "")
+    return LabelEvent(
+        event_id=int(payload.get("id") or 0),
+        actor_login=login,
+        actor_is_bot=(
+            actor.get("type") == "Bot"
+            or login.casefold().endswith("[bot]")
+            or bool(payload.get("performed_via_github_app"))
+        ),
+        created_at=str(payload.get("created_at") or ""),
+        actor_id=actor["id"],
+    )
 
 
 def _is_not_found_error(exc: GitHubHttpError) -> bool:
@@ -136,7 +172,7 @@ def _pr_state_from_api(pr: dict[str, Any]) -> str:
     return raw_state
 
 
-class GitHubAdapter:
+class GitHubAdapter(GitHubIntegrationBranchMixin):
     """Adapter for GitHub operations via HTTP API.
 
     This adapter implements the IssueTracker, LabelSet, and PullRequestTracker
@@ -565,6 +601,12 @@ class GitHubAdapter:
             if authoritative
             else find_marker_issue(self._client, title=title, marker=marker)
         )
+        return found.number if found is not None else None
+
+    def find_open_issue_by_marker(self, *, marker: str) -> int | None:
+        """The open issue whose body carries ``marker``; None proves there is
+        none (uncached, complete or raising)."""
+        found = prove_open_marker_issue(self._client, marker=marker)
         return found.number if found is not None else None
 
     def get_default_branch(self) -> str:
@@ -1097,6 +1139,26 @@ class GitHubAdapter:
             logger.error("Failed to enqueue PR %s to merge queue: %s", pr_number, e)
             raise
 
+    def read_failed_checks(self, pr_number: int) -> FailedChecksRead:
+        """Failed check contexts on the PR's head commit (#8692)."""
+        return failed_checks_from_contexts(self._client.get_failed_check_contexts(pr_number))
+
+    def read_check_job_log_tail(self, job_id: int, *, max_bytes: int) -> str:
+        """The bounded tail of an Actions job's log (#8692)."""
+        return self._client.get_actions_job_log_tail(job_id, max_bytes=max_bytes)
+
+    def read_check_run_latest_attempt(self, run_id: int) -> CheckRunAttempt:
+        """A workflow run's current attempt and its jobs (#8692)."""
+        raw = self._client.get_actions_run_latest_attempt(run_id)
+        return CheckRunAttempt(
+            attempt=raw["attempt"], job_ids=frozenset(raw["job_ids"]),
+            started_at=datetime.fromisoformat(raw["started_at"]),
+        )
+
+    def rerun_failed_check_jobs(self, run_id: int) -> None:
+        """Re-run one workflow run's failed jobs (#8692)."""
+        self._client.rerun_failed_workflow_jobs(run_id)
+
     def read_merge_queue_entry(self, pr_number: int) -> MergeQueueRead:
         """Read a PR's merge queue entry (GraphQL) as a typed three-valued read.
 
@@ -1223,6 +1285,13 @@ class GitHubAdapter:
             for pr in self._client.list_prs_numbered_above(number_floor)
         ]
 
+    def list_open_issue_labels_complete(self) -> list[OpenIssueLabels]:
+        """Every open issue with its title and labels, cursor-paged; raises rather than truncating."""
+        return [
+            OpenIssueLabels(number=number, title=title, labels=labels)
+            for number, title, labels in self._client.list_open_issue_labels_complete()
+        ]
+
     def list_open_prs_complete(self) -> list[PRInfo]:
         """Every open PR; raises rather than returning a partial list."""
         return [self._pr_info_from_api(pr) for pr in self._client.list_open_prs_complete()]
@@ -1230,6 +1299,15 @@ class GitHubAdapter:
     def merged_prs_referencing_issues(self, issue_numbers: Sequence[int]) -> frozenset[int]:
         """Merged PRs that reference one of ``issue_numbers`` (closing or partial)."""
         return self._client.merged_prs_referencing_issues(issue_numbers)
+
+    def merged_pr_history(self, issue_number: int) -> tuple[MergedPullRequest, ...]:
+        """Merged PRs that reference ``issue_number``, with body and merge time (#8689)."""
+        with gh_audit.context(
+            reason=gh_audit.AuditReason.GH_READ,
+            issue_key=str(issue_number),
+            scope=gh_audit.AuditScope.UNKNOWN,
+        ):
+            return self._client.merged_pr_history(issue_number)
 
     def create_pr(
         self,
@@ -1830,6 +1908,10 @@ class GitHubAdapter:
         """
         return self._client.issue_comment_marker_present(issue_number, marker)
 
+    def issue_comment_bodies_containing(self, issue_number: int, needle: str) -> tuple[str, ...]:
+        """Every comment body containing ``needle``, from a complete fail-loud scan."""
+        return self._client.issue_comment_bodies_containing(issue_number, needle)
+
     def issue_closed_on_or_after(self, issue_number: int, timestamp: str) -> bool:
         """Return True if the issue has a ``closed`` event at/after ``timestamp``.
 
@@ -1839,6 +1921,60 @@ class GitHubAdapter:
         truncated or malformed reads.
         """
         return self._client.issue_closed_on_or_after(issue_number, timestamp)
+
+    def standing_label(self, issue_number: int, label: str) -> "StandingLabel | None":
+        """Approval evidence (#7763, #8346): every labeled event of ``label``'s
+        standing run, so the approval owner can judge each one."""
+        from ...domain.tech_lead_approval import StandingLabel
+
+        run = self._client.standing_label_events(issue_number, label)
+        if not run:
+            return None
+        return StandingLabel(tuple(_label_event(issue_number, payload) for payload in run))
+
+    def label_application(self, issue_number: int, label: str) -> "LabelEvent | None":
+        """Block-episode evidence (#8688): the event that put ``label`` on, while
+        it stands. Only the label's own transitions end it, never a close."""
+        return self.label_applications(issue_number, (label,))[label.casefold()]
+
+    def label_applications(
+        self, issue_number: int, labels: Sequence[str]
+    ) -> "dict[str, LabelEvent | None]":
+        """:meth:`label_application` of each of ``labels``, from one read of
+        the issue's events, keyed by casefolded name (#8731)."""
+        runs = self._client.standing_label_runs(issue_number, labels, close_voids=False)
+        return {
+            folded: _label_event(issue_number, run[0]) if run else None
+            for folded, run in runs.items()
+        }
+
+    def latest_label_removal(self, issue_number: int, label: str) -> "LabelEvent | None":
+        """Who last took ``label`` off, while it is still off."""
+        run = self._client.standing_label_events(issue_number, label, removed=True)
+        return _label_event(issue_number, run[-1]) if run else None
+
+    def repository_role(self, login: str) -> str | None:
+        """``login``'s role in this repository, or None for an unknown user."""
+        return self._client.repository_role(login)
+
+    def is_own_write(self, event: "LabelEvent") -> bool:
+        """Whether *event* was written by this engine's own GitHub App.
+
+        GitHub records an installation token's issue event as its App's bot
+        account (``<slug>[bot]``, a ``Bot``) and leaves the event's
+        ``performed_via_github_app`` null (#8987), so the actor's account id
+        is matched against the App's bot account. A personal-token engine
+        writes as its user, indistinguishable from that user's hand: False.
+        """
+        account = self._client.app_bot_account()
+        return account is not None and event.actor_is_bot and event.actor_id == account.user_id
+
+    def own_write_verdict(self, event: "LabelEvent") -> bool | None:
+        """:meth:`is_own_write` where it is decidable (an App engine), else
+        None: a personal-token engine cannot tell its write from its user's."""
+        if self._client.app_bot_account() is None:
+            return None
+        return self.is_own_write(event)
 
     def get_pr_reviews(self, pr_number: int) -> list[dict[str, Any]]:
         """Get all reviews on a pull request.
@@ -1877,6 +2013,21 @@ class GitHubAdapter:
             List of milestone dictionaries with 'number', 'title', 'description', etc.
         """
         return self._client.list_milestones(state=state)
+
+    def update_issue_body(self, issue_number: int, body: str) -> None:
+        """Replace an issue's body and verify GitHub kept it (#7763)."""
+        self._client.update_issue_body(issue_number, body)
+
+        def _check() -> bool:
+            issue = self.get_issue(issue_number)
+            return issue is not None and (issue.body or "") == body
+
+        self._verify_write(
+            f"issue body #{issue_number}",
+            _check,
+            detail_fn=lambda: {"body_chars": len(body)},
+            issue_number=issue_number,
+        )
 
     def update_issue_milestone(self, issue_number: int, milestone: int | None) -> None:
         """Assign or clear a milestone on an issue."""

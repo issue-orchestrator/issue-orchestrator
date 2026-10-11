@@ -23,6 +23,7 @@ from ..execution.control_center_runtime import (
 from ..infra.repo_identity import deserialize_repo_identity
 from .control_api_repo_support import ControlApiRepoDependency
 from .control_api_recovery_routes import control_recovery_router
+from .control_api_tech_lead_routes import control_tech_lead_router
 
 logger = logging.getLogger(__name__)
 
@@ -414,6 +415,7 @@ async def discover_repos_endpoint(
 
 
 control_repo_router.include_router(control_recovery_router)
+control_repo_router.include_router(control_tech_lead_router)
 
 
 __all__ = ["control_repo_router"]

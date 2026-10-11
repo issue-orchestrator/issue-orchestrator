@@ -215,6 +215,10 @@ class AbandonStatus(StrEnum):
     ATTACHED_EVIDENCE_PENDING = "attached_evidence_pending"
     EVIDENCE_NOT_CURRENT = "evidence_not_current"
     AUTHORITY_STALE = "authority_stale"
+    #: Another owner is executing the record or changing its issue right now.
+    #: Nothing was written and nothing about the record is known to have
+    #: moved: retrying later is correct, re-approving is not needed (#9092).
+    BUSY = "busy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,6 +263,7 @@ class AbandonValidatedWorkOutcome:
                 AbandonStatus.NO_SUCH_RECORD
                 | AbandonStatus.ALREADY_RESOLVED
                 | AbandonStatus.REFUSED_STATE
+                | AbandonStatus.BUSY
             ):
                 self._validate_empty_refusal()
             case _:
@@ -295,6 +300,47 @@ class AbandonValidatedWorkOutcome:
 
 
 @dataclass(frozen=True, slots=True)
+class AbandonAllOutcome:
+    """All-or-nothing abandonment of several records of one issue (#9092).
+
+    Either every command abandoned its record (``abandoned`` holds one
+    outcome per command, in command order) or none did: ``refusal`` is the
+    first command's refusal, ``refused_record_id`` names its record, and the
+    store wrote nothing. ``replayed`` marks a committed batch that these very
+    commands had already applied: nothing was written this time.
+    """
+
+    abandoned: tuple[AbandonValidatedWorkOutcome, ...]
+    refusal: AbandonValidatedWorkOutcome | None = None
+    refused_record_id: str = ""
+    replayed: bool = False
+
+    def __post_init__(self) -> None:
+        if type(self.abandoned) is not tuple or any(
+            type(item) is not AbandonValidatedWorkOutcome
+            or item.status is not AbandonStatus.ABANDONED
+            for item in self.abandoned
+        ):
+            raise ValueError("abandoned outcomes must all be ABANDONED")
+        if self.refusal is None:
+            if not self.abandoned or self.refused_record_id:
+                raise ValueError("a committed batch abandons at least one record")
+            return
+        if self.abandoned or self.replayed:
+            raise ValueError("a refused batch abandons nothing")
+        if (
+            type(self.refusal) is not AbandonValidatedWorkOutcome
+            or self.refusal.status is AbandonStatus.ABANDONED
+        ):
+            raise ValueError("a batch refusal must be a typed refusal")
+        require_text(self.refused_record_id, "refused_record_id")
+
+    @property
+    def committed(self) -> bool:
+        return self.refusal is None
+
+
+@dataclass(frozen=True, slots=True)
 class ValidatedWorkDisposition:
     """The disposition OF ONE RECORD. It always names the work it disposes."""
 
@@ -308,6 +354,18 @@ class ValidatedWorkDisposition:
     pr_number: int | None = None
     published_head_sha: str | None = None
     resolution: OperatorResolution | None = None
+    # RECOVERED inside a head its issue's open PR publishes (§2.7): the
+    # completion's own push published it, and recovery routed nothing.
+    published_by_its_pr: bool = False
+    # The branch of the PR that publishes the work, when it is not the
+    # record's own: the work was republished on another branch (#8137).
+    # '' is the record's own branch - the only one before #8137.
+    published_branch: str = ""
+
+    @property
+    def publication_branch(self) -> str:
+        """The branch whose PR publishes this record's work."""
+        return self.published_branch or self.key.branch_name
 
     @property
     def unresolved(self) -> bool:
@@ -326,6 +384,8 @@ class ValidatedWorkDisposition:
             require_sha(self.published_head_sha)
         if self.pr_number is not None:
             require_positive(self.pr_number, "pr_number")
+        if type(self.published_branch) is not str:
+            raise ValueError("published_branch must be a branch name or ''")
         if (
             self.state is ValidatedWorkState.RECOVERED
             and self.published_head_sha is None
@@ -394,10 +454,15 @@ class ValidatedWorkDispositionBatch:
         blocks the issue (QUEUED/PARKED/PUBLISHING hold ``recovery-pending``,
         FAILED asserts ``needs-human``) or has routed the published PR to
         review (RECOVERED). A record for work no captured run validated says
-        nothing about this run, so it does not count.
+        nothing about this run, so it does not count. Neither does work its
+        issue's open PR publishes (``published_by_its_pr``): the completion's
+        own push published it and recovery routed nothing (porchpin #186). The
+        answer is read from the durable record, so a replayed capture gives it
+        again.
         """
         return any(
-            d.key in self.captured_keys and d.state is not ValidatedWorkState.ABANDONED
+            d.key in self.captured_keys and not d.published_by_its_pr
+            and d.state is not ValidatedWorkState.ABANDONED
             for d in self.dispositions
         )
 

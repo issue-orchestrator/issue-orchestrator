@@ -54,6 +54,17 @@ instead of switching to a terminal.
 | PR gate | Script | `scripts/verify-pr.sh` | Runs the repo's publish validation command from `validation.publish.cmd` |
 | Hook helper | Python | `scripts/agent-hooks/block_no_verify.py` | Repo-local fallback used by agent hook scripts |
 
+`scripts/verify-pr.sh` is committed, so the absolute issue-orchestrator
+interpreter it prefers (after `ISSUE_ORCHESTRATOR_PYTHON`) must outlive the
+checkout that generated it. `infra/hooks/durable_python.py` owns that choice:
+`--python`, else `ISSUE_ORCHESTRATOR_PYTHON`, else the running interpreter, and
+it refuses — before writing anything — a path inside a linked git worktree or a
+temp dir, naming the main checkout's interpreter when it can find one. Doctor
+reports a committed script whose preferred interpreter is missing (error) or
+lives in a linked worktree / temp dir (warning). Session-scoped artifacts (the
+per-worktree pre-push hook, Codex session hook argv) deliberately keep the
+running engine's interpreter, since they do not outlive it.
+
 ### Orchestrator-Installed Hooks (per worktree)
 
 These are installed automatically by issue-orchestrator when creating worktrees.
@@ -82,10 +93,38 @@ Managed pre-push guardrails also support an optional
 `repo-specific/hooks/post-verify` extension point. When that hook exists during
 `setup-guardrails` or guardrail repair, the rendered wrapper runs it after
 `scripts/verify-pr.sh` succeeds and before the push is allowed. The hook receives
-the normal pre-push remote arguments (`remote-name` and `remote-url`), but not
-the refs stdin stream because the verify step may already consume it. Re-run
-guardrail setup or repair after adding the hook so the managed wrapper includes
-the dispatch.
+the normal pre-push remote arguments (`remote-name` and `remote-url`) and the
+same ref lines on stdin that git gave the wrapper. Re-run guardrail setup or
+repair after adding the hook so the managed wrapper includes the dispatch.
+
+### Delete-only pushes
+
+Git gives a pre-push hook one line per ref on stdin
+(`<local ref> <local sha> <remote ref> <remote sha>`). Every generated pre-push
+hook (the managed repo wrapper, the worktree chained wrapper and the bundled
+orchestrator hook) reads those lines once into a temporary file and hands that
+file to each consumer: `pre-push.project`, `scripts/verify-pr.sh`, the
+post-verify hook and `pre-push.orchestrator`.
+
+A push that only deletes remote refs pushes no code. When every ref line is a
+deletion (`(delete)` with an all-zero local sha), the managed wrapper skips
+`scripts/verify-pr.sh` and the post-verify hook and logs
+`verify-pr-skipped reason=delete-only` to `pre-push.log`. The bundled
+orchestrator hook skips its dirty-tree guard in the same case. The project's
+own `pre-push.project` still runs. Anything else runs the gate: an update, a
+push that mixes deletions with updates, no ref lines at all (a hook run by
+hand, or the orchestrator's pre-publish rehearsal), or a line that does not
+parse. The rule lives in one shell function, `push_is_delete_only`, in
+`src/issue_orchestrator/infra/hooks/pre_push_refs.py`. The generated hooks
+render it; issue-orchestrator's own tracked `hooks/pre-push` carries a verbatim
+copy that a unit test keeps identical.
+
+Existing installs pick up a regenerated wrapper through the usual repair path.
+`doctor` reports **Repo Guardrails** as a warning when the managed
+`pre-push` differs from the current template. Re-running
+`issue-orchestrator setup-guardrails` (or the Control Center repair action)
+rewrites it. Worktree hooks are rewritten each time the orchestrator installs
+hooks into a worktree.
 
 ## AI Agent Support Matrix
 

@@ -1,6 +1,8 @@
 """Composition root for retained-work admission, custody, and recovery."""
 
 from dataclasses import dataclass
+from functools import partial
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from ..infra.config import Config
@@ -36,6 +38,10 @@ if TYPE_CHECKING:
     from ..control.recovery_drain import RecoveryDrain
     from ..control.review_exchange_lifecycle import CoreIssueRuntimeOwners
     from ..control.validated_work_scope_retirement import OutOfScopeRecordRetirement
+    from ..control.tech_lead_validated_work_release import (
+        TechLeadValidatedWorkReleaseExecutor,
+    )
+    from ..domain.tech_lead_approval import ApprovalVerdict
     from ..ports.fresh_issue_reader import FreshIssueReader
     from ..ports.publication_remote import PublicationRemote
     from ..ports.recovery_issue_reader import RecoveryIssueReader
@@ -109,6 +115,39 @@ def build_validated_work_recovery_authority(
     return ValidatedWorkRecoveryAuthority(owners.store)
 
 
+def build_validated_work_release_executor(
+    owners: ValidatedWorkRecoveryOwners,
+    *,
+    grants: ValidatedWorkRecoveryAuthorityReader,
+    events: EventSink,
+    applier: "ActionApplier",
+) -> "TechLeadValidatedWorkReleaseExecutor":
+    """Bind an approved ``release_validated_work`` to the abandonment owner (#9092).
+
+    The approval owner is wired onto the applier after this runs, so the
+    approving maintainer is read from it at execution time; an unwired owner
+    raises rather than releasing without a verified approver.
+    """
+    from ..control.tech_lead_validated_work_release import (
+        TechLeadValidatedWorkReleaseExecutor,
+    )
+
+    def approval(number: int) -> "ApprovalVerdict":
+        approvals = applier.tech_lead_approvals
+        if approvals is None:
+            raise LookupError("the tech-lead approval owner is not wired")
+        return approvals.verified_approval(number)
+
+    return TechLeadValidatedWorkReleaseExecutor(
+        events=events,
+        grants=grants,
+        pull_requests=owners.capture_observer,
+        approval=approval,
+        abandon_all=owners.abandonment.abandon_all,
+        committed=owners.abandonment.committed,
+    )
+
+
 def build_no_validated_work_recovery_authority(
 ) -> ValidatedWorkRecoveryAuthorityReader:
     """Compose explicit unavailable recovery authority for test environments."""
@@ -156,6 +195,7 @@ def build_validated_work_runtime(
     from ..control.operator_validated_work_abandonment import (
         OperatorValidatedWorkAbandonment,
     )
+    from ..control.validated_work_recovery_authority import ValidatedWorkRecoveryAuthority
     from ..control.validated_work_effects import FencedValidatedWorkEffects
     from ..control.validated_work_scope_retirement import OutOfScopeRecordRetirement
     from ..control.worktree_context import prepare_worktree_environment
@@ -232,7 +272,7 @@ def build_validated_work_runtime(
             worktree_path=worktree,
         ),
     )
-    return ValidatedWorkRecoveryOwners(
+    owners = ValidatedWorkRecoveryOwners(
         store=blocks,
         custody=custody,
         repair=repair,
@@ -250,6 +290,13 @@ def build_validated_work_runtime(
         capture_observer=external.capture_observer,
         issues=external.issues,
     )
+    # The release executor (#9092) closes over this graph's abandonment owner,
+    # so it is attached where the graph is built, as the pending-work builder
+    # attaches its block: the composition root never names its parts.
+    action_applier.release_validated_work = build_validated_work_release_executor(
+        owners, grants=ValidatedWorkRecoveryAuthority(blocks), events=events, applier=action_applier,
+    )
+    return owners
 
 
 def build_validated_work_recovery(
@@ -273,12 +320,16 @@ def build_validated_work_recovery(
     from ..control.retained_claim_maintenance import RetainedClaimMaintenance
     from ..control.recovery_publication_attempt import RecoveryPublicationAttempt
     from ..control.recovery_publication_cleanup import RecoveryPublicationCleanup
+    from ..control.completion_pr_labels import acquire_merge_hold
     from ..control.recovery_publication_completion import RecoveryPublicationCompletion
     from ..control.recovery_record_operation import RecoveryRecordOperation
     from ..control.remote_authority_refresh import RemoteAuthorityRefreshOperation
     from ..control.retained_completion_preparation import RetainedCompletionPreparation
     from ..control.retry_review_routing import RetryReviewPolicy
     from ..control.validated_work_scope_retirement import OutOfScopeRetirementSweep
+    from ..control.validated_work_published_head import (
+        PullRequestCarriage, PullRequestPublicationRecorder,
+    )
     from ..control.review_exchange_lifecycle import OtherRuntimeActivity
     from ..control.staged_published_work_finalizer import StagedPublishedWorkFinalizer
     from ..execution.git_validated_head_executor import GitValidatedHeadExecutor
@@ -332,6 +383,7 @@ def build_validated_work_recovery(
         verifier=verifier,
         cleanup=cleanup,
         recovery_label=label_manager.recovery_pending,
+        hold_merge=partial(acquire_merge_hold, completion_processor.needs_human_block),
     )
     operation = RecoveryRecordOperation(
         execution=owners.execution,
@@ -371,6 +423,12 @@ def build_validated_work_recovery(
             store=owners.records,
             execution=owners.execution,
             retirement=owners.scope_retirement,
+            publication=PullRequestPublicationRecorder(
+                carriage=PullRequestCarriage(git=working_copy, observer=owners.capture_observer),
+                store=owners.store,
+                repository=config.repo_root,
+                now=lambda: datetime.now(timezone.utc).isoformat(),
+            ),
             batch_size=config.validated_work.drain_batch_size,
             liveness=liveness,
         ),

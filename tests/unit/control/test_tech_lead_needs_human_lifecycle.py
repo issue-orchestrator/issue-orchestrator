@@ -33,6 +33,7 @@ from issue_orchestrator.control.needs_human_block import (
     NeedsHumanBlock,
     NeedsHumanCause,
 )
+from tests.label_application_helpers import standing_while_present
 
 
 class _LiveLabelWriter:
@@ -585,6 +586,7 @@ class TestQuarantineProvenanceIsRespected:
                 tech_lead_marker=labels.tech_lead_needs_human,
                 labels=_LiveLabelWriter(live),
                 read_labels=lambda issue_number: list(live[issue_number]),
+                label_application=standing_while_present(lambda issue_number: list(live[issue_number])),
                 quarantined_issue_numbers=lambda: frozenset({903}),
                 causes=SqlitePendingWorkClaimStore.for_repo(tmp_path),
             ),
@@ -614,6 +616,7 @@ class TestQuarantineProvenanceIsRespected:
                 tech_lead_marker=labels.tech_lead_needs_human,
                 labels=_LiveLabelWriter(live),
                 read_labels=lambda issue_number: list(live[issue_number]),
+                label_application=standing_while_present(lambda issue_number: list(live[issue_number])),
                 quarantined_issue_numbers=frozenset,
                 causes=SqlitePendingWorkClaimStore.for_repo(tmp_path),
             ),
@@ -701,6 +704,7 @@ class TestTheSharedBlockIsNotOneOwnersToRetract:
             tech_lead_marker=labels.tech_lead_needs_human,
             labels=_LiveLabelWriter(live),
             read_labels=lambda issue_number: list(live.get(issue_number, set())),
+            label_application=standing_while_present(lambda issue_number: list(live.get(issue_number, set()))),
             quarantined_issue_numbers=claims.quarantined_issue_numbers,
             causes=claims,
         )
@@ -872,6 +876,7 @@ class TestEveryOrchestratorCauseOwnsTheSharedBlock:
             tech_lead_marker=labels.tech_lead_needs_human,
             labels=label_set,
             read_labels=lambda number: list(live.get(number, set())),
+            label_application=standing_while_present(lambda number: list(live.get(number, set()))),
             quarantined_issue_numbers=claims.quarantined_issue_numbers,
             causes=claims,
         )
@@ -1100,6 +1105,7 @@ class TestTheBlockOwnerIsNotBypassableInProduction:
             tech_lead_marker=labels.tech_lead_needs_human,
             labels=label_set,
             read_labels=lambda number: list(live.get(number, set())),
+            label_application=standing_while_present(lambda number: list(live.get(number, set()))),
             quarantined_issue_numbers=claims.quarantined_issue_numbers,
             causes=claims,
         )
@@ -1189,6 +1195,7 @@ class TestTheBlockOwnerIsNotBypassableInProduction:
 
         adapter = MagicMock()
         pr_adapter = MagicMock()
+        pr_adapter.merged_pr_history.return_value = ()
         # A real PR comes back, so the label-applying path is genuinely reached.
         pr_adapter.create_pr.return_value = PRInfo(
             number=77,
@@ -1273,16 +1280,24 @@ class TestTheBlockOwnerIsNotBypassableInProduction:
         """``pr_labels`` is agent-supplied, so it is untrusted input.
 
         Nothing in record validation stopped an agent naming the configured
-        shared label there. Applied, it creates a block with no cause recorded
-        - which a later typed release then takes away from whoever did record
-        one. The agent already has the typed needs_human outcome for this, and
-        that one goes through the owner.
+        shared label there. Applied to the PR, it creates a block with no cause
+        recorded - which a later typed release then takes away from whoever did
+        record one. Refusing the whole record instead stranded its work: once
+        retained, no agent is left to correct it, so recovery met the same
+        refusal on every pass (porchpin #364, #7592).
+
+        The door now types the request (#7678): the PR is created and keeps
+        the ordinary label, the raw adapter never writes the reserved one, and
+        the block owner holds the PR's MERGE with the merge-decision cause. The
+        issue's work is not blocked (#7595 put it there, porchpin#364).
 
         Driven with a REAL ``CREATE_PR`` completion that returns a PR, because
         the label-applying code is reachable only on that path: a record that
         requests nothing never gets there, and a test that stops short of it
         would pass with the whole branch deleted.
         """
+        from issue_orchestrator.domain.human_block import NeedsHumanCause
+
         live: dict[int, set[str]] = {903: set(), 77: set()}
         labels, _applier, _quarantine, block, claims = self._wiring(
             sample_config, tmp_path, live
@@ -1297,27 +1312,32 @@ class TestTheBlockOwnerIsNotBypassableInProduction:
             outcome="completed",
         )
 
-        # The whole completion is refused, at the door.
-        assert not run.result.success
-        assert any("reserved shared block" in error for error in run.result.errors)
-        # "Before any side effect" asserted as the ABSENCE of every external
-        # effect, not just of one label call: nothing was labelled - not even
-        # the ordinary label beside the reserved one - and the PR and git
-        # surfaces were never touched at all, so no branch was pushed and no
-        # PR created or reused.
-        assert run.labels.add_label.call_args_list == []
-        assert run.external_calls() == []
-        assert claims.needs_human_causes(77) == frozenset()
+        assert run.result.success, run.result.errors
+        assert "pr.create_pr" in run.external_calls()
+        applied = [
+            (call.args[0], call.args[1])
+            for call in run.labels.add_label.call_args_list
+        ]
+        assert (77, "size:small") in applied
+        # The reserved label reached neither the raw adapter nor the PR...
+        assert [pair for pair in applied if pair[1] == labels.needs_human] == []
+        # ...the owner holds the PR's merge, with its cause...
+        assert labels.needs_human in live[77]
+        assert claims.needs_human_causes(77) == frozenset(
+            {NeedsHumanCause.MERGE_DECISION.value}
+        )
+        # ...and the issue's work is not blocked.
+        assert labels.needs_human not in live[903]
         assert claims.needs_human_causes(903) == frozenset()
 
     def test_an_ordinary_pr_label_still_lands_on_a_created_pr(
         self, sample_config, tmp_path
     ):
-        """The other half: the rejection is scoped to the reserved label.
+        """The other half: the routing is scoped to the reserved label.
 
-        Without it the same record creates its PR and applies its labels, so
-        the guard above is proven to be about the reserved value rather than
-        about ``pr_labels`` being present at all.
+        Without it the same record creates its PR and applies its labels and
+        asks the issue for nothing, so the routing above is proven to be about
+        the reserved value rather than about ``pr_labels`` being present at all.
         """
         live: dict[int, set[str]] = {903: set(), 77: set()}
         labels, _applier, _quarantine, block, _claims = self._wiring(
@@ -1338,10 +1358,11 @@ class TestTheBlockOwnerIsNotBypassableInProduction:
             (call.args[0], call.args[1])
             for call in run.labels.add_label.call_args_list
         ]
-        # ...and this is the run that PROVES the assertion above is meaningful:
-        # the same record really does reach PR creation when nothing reserved
-        # is in it, so a rejected one reaching none of it is a real difference.
         assert "pr.create_pr" in run.external_calls()
+        # ...and this is the run that PROVES the issue block above came from
+        # the reserved label: without one, the issue is asked for nothing.
+        assert live[903] == set()
+        assert _claims.needs_human_causes(903) == frozenset()
 
     def test_a_refusal_at_the_capability_fails_the_completion(
         self, sample_config, tmp_path
@@ -1621,6 +1642,7 @@ class TestTheOwnerSurvivesAHalfWrittenTransition:
             tech_lead_marker=labels.tech_lead_needs_human,
             labels=labels_writer or _LiveLabelWriter(live),
             read_labels=read_labels or (lambda number: list(live.get(number, set()))),
+            label_application=standing_while_present(read_labels or (lambda number: list(live.get(number, set())))),
             quarantined_issue_numbers=lambda: frozenset(held),
             causes=claims,
         ), claims
@@ -1794,6 +1816,11 @@ class TestTheOwnerSurvivesAHalfWrittenTransition:
                     raise RuntimeError("sqlite write failed")
                 real.clear_needs_human_causes(issue_number)
 
+            def bind_needs_human_generation(self, issue_number, *, event_id, applied_at, own_write):
+                return real.bind_needs_human_generation(
+                    issue_number, event_id=event_id, applied_at=applied_at, own_write=own_write
+                )
+
         causes = _RefusingClear()
         labels, block, _claims = self._block(
             sample_config, tmp_path, live, causes=causes
@@ -1852,6 +1879,11 @@ class TestTheOwnerSurvivesAHalfWrittenTransition:
 
             def clear_needs_human_causes(self, issue_number):
                 real.clear_needs_human_causes(issue_number)
+
+            def bind_needs_human_generation(self, issue_number, *, event_id, applied_at, own_write):
+                return real.bind_needs_human_generation(
+                    issue_number, event_id=event_id, applied_at=applied_at, own_write=own_write
+                )
 
         class _RefusingAdd(_LiveLabelWriter):
             def __init__(self, live_labels, *, refuse: bool) -> None:
@@ -1914,6 +1946,11 @@ class TestTheOwnerSurvivesAHalfWrittenTransition:
 
             def clear_needs_human_causes(self, issue_number):
                 raise RuntimeError("sqlite write failed")
+
+            def bind_needs_human_generation(self, issue_number, *, event_id, applied_at, own_write):
+                return real.bind_needs_human_generation(
+                    issue_number, event_id=event_id, applied_at=applied_at, own_write=own_write
+                )
 
         labels, block, _ = self._block(
             sample_config, tmp_path, live, causes=_RefusingClear()

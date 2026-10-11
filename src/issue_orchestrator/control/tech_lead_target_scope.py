@@ -26,11 +26,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ..domain.decision_steps import DecisionStepKind
 from ..domain.tech_lead_artifacts import ACT_LEVEL_TECH_LEAD_ACTIONS
 from ..domain.tech_lead_session import TechLeadLaunchAuthority, TechLeadSessionFlavor
 
 if TYPE_CHECKING:
-    from ..domain.tech_lead_artifacts import TechLeadDecision
+    from ..domain.tech_lead_artifacts import ProposedTechLeadAction, TechLeadDecision
 
 #: Comment/routing proposals whose ``target_number`` must fall inside the
 #: general launch scope.
@@ -48,11 +49,13 @@ def _launch_scope_description(
     if authority.flavor is TechLeadSessionFlavor.FAILURE_INVESTIGATION:
         return f"the originating issue #{authority.focus_issue_number}"
     if authority.flavor is TechLeadSessionFlavor.HEALTH_REVIEW:
+        granted = ", ".join(f"#{n}" for n in sorted(authority.triage_issue_numbers()))
         return (
             f"the health-review anchor issue #{authority.anchor_issue_number}"
-            " (board-wide comments/escalations belong on the anchor; act-level"
-            " proposals instead use the cohort this review owns, published as"
-            " problem_cohort in board-snapshot.json)"
+            f" and the blocked items granted for triage ({granted or 'none this run'},"
+            " listed in blocked-item-triage.json); board-wide comments/escalations"
+            " belong on the anchor, and act-level proposals use the cohort this"
+            " review owns (problem_cohort in board-snapshot.json) or a granted item"
         )
     return (
         "the audited manifest PRs and the tracking issue"
@@ -66,10 +69,12 @@ def _act_level_scope_description(authority: TechLeadLaunchAuthority) -> str:
         return f"the originating work issue #{authority.focus_issue_number}"
     if authority.flavor is TechLeadSessionFlavor.HEALTH_REVIEW:
         cohort = ", ".join(f"#{n}" for n in authority.problem_issue_numbers)
+        granted = ", ".join(f"#{n}" for n in sorted(authority.triage_issue_numbers()))
         return (
             "the health review's immutable problem cohort, published as"
             " problem_cohort in board-snapshot.json"
-            f" ({cohort or 'empty — a periodic review owns no act-level target'})"
+            f" ({cohort or 'empty'}), and the blocked items granted for triage in"
+            f" blocked-item-triage.json ({granted or 'none this run'})"
         )
     return (
         "no work issue is in scope for an act-level mutation from this"
@@ -106,18 +111,9 @@ def target_scope_violation(
                     f" scope for an act-level mutation:"
                     f" {_act_level_scope_description(authority)}"
                 )
-            if (
-                action.action_type == "recover_validated_work"
-                and authority.observed_validated_work_authority(
-                    action.target_number or 0
-                )
-                is None
-            ):
-                return (
-                    f"proposed action {action.id} (recover_validated_work) has"
-                    " no launch-observed retained-work authority for"
-                    f" #{action.target_number}"
-                )
+            unbound = _unbound_validated_work(action, authority) or _unbound_rework_step(action, authority)
+            if unbound is not None:
+                return unbound
             continue
         if action.action_type not in TARGET_SCOPED_ACTION_TYPES:
             continue
@@ -126,5 +122,42 @@ def target_scope_violation(
                 f"proposed action {action.id} ({action.action_type}) targets"
                 f" #{action.target_number}, outside this session's launch"
                 f" scope: {_launch_scope_description(authority, allowed)}"
+            )
+    return None
+
+
+def _unbound_validated_work(action: "ProposedTechLeadAction", authority: TechLeadLaunchAuthority) -> str | None:
+    """A validated-work op binds launch-observed retained-work authority: a
+    recovery its issue's single grant, a release each record it names (#9092)."""
+    target = action.target_number or 0
+    if action.action_type == "recover_validated_work" and authority.observed_validated_work_authority(target) is None:
+        return (
+            f"proposed action {action.id} (recover_validated_work) has"
+            f" no launch-observed retained-work authority for #{action.target_number}"
+        )
+    if action.action_type == "release_validated_work" and (
+        action.release is None or authority.bind_validated_work_release(target, action.release) is None
+    ):
+        return (
+            f"proposed action {action.id} (release_validated_work) names a record of"
+            f" #{action.target_number} that this session did not observe releasable at"
+            " launch (tech-lead-data/validated-work-release-targets.json)"
+        )
+    return None
+
+
+def _unbound_rework_step(action: "ProposedTechLeadAction", authority: TechLeadLaunchAuthority) -> str | None:
+    """A decision's ``request_pr_rework`` step needs the decided issue's PR as
+    observed at launch (#8691): the engine binds the rework to that head, as it
+    does a ``request_rework``'s, so the agent can name a PR but never a head."""
+    for step in action.follow_through.steps:
+        if step.kind is not DecisionStepKind.REQUEST_PR_REWORK:
+            continue
+        target = authority.observed_rework_target(step.number)
+        if target is None or target.issue_number != action.target_number:
+            return (
+                f"proposed action {action.id} ({action.action_type}) has a request_pr_rework step"
+                f" for PR #{step.number}, which is not #{action.target_number}'s open PR as this"
+                " session observed it at launch (tech-lead-data/scoped-rework-targets.json)"
             )
     return None

@@ -39,6 +39,7 @@ from ..ports.label_set import LabelSet
 from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.repository_host import RepositoryHost
 from ..ports.worktree_manager import WorktreeManager
+from ..domain.label_change_event import labels_changed_payload
 from ..domain.models import RETROSPECTIVE_REVIEW_TERMINAL_PREFIX
 from .action_results import FailureCollector
 from .session_launch_types import LaunchStep, launch_step_result
@@ -54,6 +55,8 @@ if TYPE_CHECKING:
         PersistentExchangePairRegistry,
     )
     from ..ports.promotion_target import PromotionTargetHost
+    from ..ports.standing_rulings import StandingRulings
+    from .tech_lead_approval import TechLeadApprovals
     from ..ports.tech_lead_authority import TechLeadAuthorityStore
     from ..ports.pattern_registry import PatternCaseFileRegistry
     from .retry_history_state import ExpediteLane
@@ -62,7 +65,10 @@ if TYPE_CHECKING:
     from .scoped_rework import RequestReworkExecutor
     from .tech_lead_reset_retry import TechLeadResetRetryExecutor
     from .tech_lead_validated_work_recovery import TechLeadValidatedWorkRecoveryExecutor
+    from .tech_lead_validated_work_release import TechLeadValidatedWorkReleaseExecutor
     from .tech_lead_review_release import TechLeadReviewReleaseExecutor
+    from .tech_lead_operator_decision import OperatorDecisionExecutor
+    from .tech_lead_block_resolution import TechLeadBlockResolutionExecutor
     from .tech_lead_run_ownership import TechLeadRunOwnership
 
 from .label_mutation_stats import LabelMutationStatField, LabelMutationStats
@@ -98,6 +104,7 @@ from .actions import (
     StopSessionAction,
     QueueReviewAction,
     EnqueueToMergeQueueAction,
+    RerunFailedChecksAction,
     EscalateToHumanAction,
     AddCommentAction,
     SupersedePullRequestAction,
@@ -106,7 +113,10 @@ from .actions import (
     CreateTechLeadIssueAction,
     KillHungSessionAction,
     RecoverValidatedWorkAction,
+    ReleaseValidatedWorkAction,
     ReleaseWithheldReviewAction,
+    ApplyOperatorDecisionAction,
+    ResolveBlockAction,
     RequestReworkAction,
     SurfaceTechLeadProposalAction,
     CleanupSessionAction,
@@ -120,6 +130,7 @@ from .provider_impact import ApplyProviderImpactAction, apply_provider_impact
 from ..ports.completion_intake import CompletionIntakeRuntime
 from .session_manager import SessionManager, SessionRef, SessionType, SessionContext
 from .tech_lead_applier_handlers import tech_lead_action_handlers
+from .integration_branch import apply_advance_integration
 from .published_review_release import apply_release_published_review
 from .tech_lead_issue_creation import apply_create_tech_lead_issue
 from .history_reconciliation import apply_history_reconciliation
@@ -144,7 +155,10 @@ _TechLeadOpAction = TypeVar(
     KillHungSessionAction,
     RequestReworkAction,
     RecoverValidatedWorkAction,
+    ReleaseValidatedWorkAction,
     ReleaseWithheldReviewAction,
+    ApplyOperatorDecisionAction,
+    ResolveBlockAction,
 )
 @dataclass
 class ActionApplier:
@@ -215,13 +229,20 @@ class ActionApplier:
     tech_lead_kill_session: Optional["TechLeadKillSessionExecutor"] = None
     request_rework: Optional["RequestReworkExecutor"] = None
     recover_validated_work: Optional["TechLeadValidatedWorkRecoveryExecutor"] = None
+    # Approved-only release of records rebuilt elsewhere (#9092).
+    release_validated_work: Optional["TechLeadValidatedWorkReleaseExecutor"] = None
     release_withheld_review: Optional["TechLeadReviewReleaseExecutor"] = None
+    apply_operator_decision: Optional["OperatorDecisionExecutor"] = None
+    resolve_block: Optional["TechLeadBlockResolutionExecutor"] = None
     tech_lead_ops: Optional["TechLeadAuthorityStore"] = None
     pattern_registry: Optional["PatternCaseFileRegistry"] = None
+    # Approval owner (#7763): approval-label writes and the consent re-check.
+    tech_lead_approvals: Optional["TechLeadApprovals"] = None
     # Cross-repo filing seam for the finding-promotion lane (#6957). Unwired
     # means promotion actions fail loudly instead of silently no-oping — the
     # lane is only ever planned when tech_lead.findings is enabled.
     promotion_target: Optional["PromotionTargetHost"] = None
+    standing_rulings: Optional["StandingRulings"] = None  # #8141's owner; integration merges re-judge by it (#8144)
     # Expedite-lane owner seam (#6870), wired post-construction; unwired = no-op.
     expedite_lane: Optional["ExpediteLane"] = None
     # Cross-engine tech-lead run ownership (#6994 R2 F3). Unwired means anchor
@@ -307,6 +328,9 @@ class ActionApplier:
             ActionType.DROP_TECH_LEAD: self._apply_queue_operation,
             ActionType.ESCALATE_TO_HUMAN: self._apply_escalate,
             ActionType.ENQUEUE_TO_MERGE_QUEUE: self._apply_enqueue_to_merge_queue,
+            ActionType.RERUN_FAILED_CHECKS: self._apply_rerun_failed_checks,
+            ActionType.ADVANCE_INTEGRATION: lambda action: apply_advance_integration(
+                action, self, verify_claim=self._verify_claim_before_write),
             ActionType.RELEASE_PUBLISHED_REVIEW: lambda action: apply_release_published_review(action, self),
             # Every tech-lead action type -> its extracted apply-time owner.
             **tech_lead_action_handlers(
@@ -316,16 +340,20 @@ class ActionApplier:
                 kill_hung_session=self._tech_lead_op(KillHungSessionAction, lambda: self.tech_lead_kill_session),
                 request_rework=self._apply_request_rework,
                 recover_validated_work=self._tech_lead_op(RecoverValidatedWorkAction, lambda: self.recover_validated_work),
+                release_validated_work=self._tech_lead_op(
+                    ReleaseValidatedWorkAction, lambda: self.release_validated_work),
                 release_withheld_review=self._tech_lead_op(
                     ReleaseWithheldReviewAction, lambda: self.release_withheld_review),
+                apply_operator_decision=self._tech_lead_op(ApplyOperatorDecisionAction, lambda: self.apply_operator_decision),
+                resolve_block=self._tech_lead_op(ResolveBlockAction, lambda: self.resolve_block),
                 events=self.events, label_manager=self.label_manager, needs_human_block=self.needs_human_block,
                 apply_action=self.apply, verify_claim=self._verify_claim_before_write,
                 require_expected=self._require_expected,
-                require_mutation_authority=self._require_mutation_authority,
+                require_mutation_authority=self.require_mutation_authority,
                 repository_host=self.repository_host,
                 authority=self.tech_lead_ops,
                 pattern_registry=self.pattern_registry,
-                promotion_target=self.promotion_target,
+                promotion_target=self.promotion_target, approvals=self.tech_lead_approvals,
             ),
             # Cleanup operations
             ActionType.CLEANUP_SESSION: self._apply_cleanup_session,
@@ -404,7 +432,7 @@ class ActionApplier:
                 label=action.label,
                 reason=action.reason,
             )
-            self._emit_issue_labels_changed(action.issue_number, [action.label], [], issue_key=action.issue_key)
+            self._emit_issue_labels_changed(action.issue_number, [action.label], [], action.issue_key, has_label is None)
             return ActionResult.ok(
                 action,
                 issue_number=action.issue_number,
@@ -588,7 +616,8 @@ class ActionApplier:
             events=self.events, authority=self.tech_lead_ops,
             reset=self.tech_lead_reset_retry, kill=self.tech_lead_kill_session,
             rework=self.request_rework, recovery=self.recover_validated_work,
-            release=self.release_withheld_review)
+            release=self.release_withheld_review, resolution=self.resolve_block,
+            work_release=self.release_validated_work)
 
     def _apply_supersede_pr(self, action: Action) -> ActionResult:
         """Comment on and close a PR that has been superseded by a reset."""
@@ -636,43 +665,22 @@ class ActionApplier:
         assert self.repository_host is not None, (
             "repository_host required for enqueue_to_merge_queue"
         )
-
+        assert self.label_manager is not None, "label_manager required for the enqueue's human hold"
         # Enqueue is a GitHub write on a (possibly still-claimed) issue.
         self._verify_claim_before_write(action, action.issue_number)
-
-        try:
-            self.repository_host.enqueue_to_merge_queue(action.pr_number)
-        except Exception as e:
-            logger.error(
-                issue_log(action.issue_number, "Failed to enqueue PR #%d to merge queue: %s"),
-                action.pr_number,
-                e,
-                exc_info=True,
-            )
-            return ActionResult.fail(
-                action,
-                f"PR #{action.pr_number} merge-queue enqueue failed: {e}",
-                pr_number=action.pr_number,
-            )
-
-        logger.info(
-            issue_log(action.issue_number, "Enqueued PR #%d to merge queue"),
-            action.pr_number,
+        from .merge_queue_coordinator import apply_enqueue_to_merge_queue
+        return apply_enqueue_to_merge_queue(
+            action, host=self.repository_host, labels=self.label_manager, events=self.events
         )
-        self.events.publish(make_trace_event(
-            EventName.MERGE_QUEUE_ENQUEUED,
-            {
-                "issue_number": action.issue_number,
-                "issue_key": action.issue_key or str(action.issue_number),
-                "pr_number": action.pr_number,
-                "pr_url": action.pr_url,
-            },
-        ))
-        return ActionResult.ok(
-            action,
-            issue_number=action.issue_number,
-            pr_number=action.pr_number,
-        )
+
+    def _apply_rerun_failed_checks(self, action: Action) -> ActionResult:
+        """Re-run a PR's transient CI failure (#8692): a GitHub write on the issue's PR."""
+        assert isinstance(action, RerunFailedChecksAction)
+        assert self.repository_host is not None, "repository_host required for rerun_failed_checks"
+        self._verify_claim_before_write(action, action.issue_number)
+        from .ci_failure_triage import apply_rerun_failed_checks
+        host = self.repository_host
+        return apply_rerun_failed_checks(action, rerun=host.rerun_failed_check_jobs, post_comment=host.add_comment)
 
     def _apply_close_issue(self, action: Action) -> ActionResult:
         """Close an issue through the repository host."""
@@ -685,7 +693,7 @@ class ActionApplier:
 
         def before_write() -> None:
             if isinstance(action, FoldCaseFileIssueAction):
-                self._require_mutation_authority(action, action.issue_number)
+                self.require_mutation_authority(action, action.issue_number)
             else:
                 self._verify_claim_before_write(action, action.issue_number)
 
@@ -748,7 +756,7 @@ class ActionApplier:
         """
         self._gate.require_expected(action, issue_number)
 
-    def _require_mutation_authority(self, action: Action, issue_number: int) -> None:
+    def require_mutation_authority(self, action: Action, issue_number: int) -> None:
         """Recheck board expectations and claim ownership immediately before a write."""
         self._require_expected(action, issue_number)
         self._verify_claim_before_write(action, issue_number)
@@ -1496,8 +1504,8 @@ class ActionApplier:
             pattern_registry=self.pattern_registry,
             add_comment=self.repository_host.add_comment,
             emit_labels_changed=self._emit_issue_labels_changed,
-            before_case_file_write=lambda: self._require_mutation_authority(action, reconciliation_subject_for(action)),
-            proposal_guard=self._require_mutation_authority,
+            before_case_file_write=lambda: self.require_mutation_authority(action, reconciliation_subject_for(action)),
+            proposal_guard=self.require_mutation_authority,
             expedite_lane=self.expedite_lane,
         )
 
@@ -1531,7 +1539,7 @@ class ActionApplier:
     def require_scoped_rework_authority(self, parent: RequestReworkAction) -> None:
         """Capability shared by typed mutations and owner-governed effects."""
         for number in (parent.issue_number, parent.request.target.pr_number):
-            self._require_mutation_authority(parent, number)
+            self.require_mutation_authority(parent, number)
 
     def _apply_request_rework(self, action: Action) -> ActionResult:
         assert isinstance(action, RequestReworkAction)
@@ -1558,7 +1566,7 @@ class ActionApplier:
             action,
             apply_fn,
             repository_host=self.repository_host,
-            ops=self.tech_lead_ops,
+            ops=self.tech_lead_ops, approvals=self.tech_lead_approvals,
             before_finalize_write=(lambda: self.require_scoped_rework_authority(action))
             if isinstance(action, RequestReworkAction) else None,
         )
@@ -1706,17 +1714,13 @@ class ActionApplier:
         added: list[str],
         removed: list[str],
         issue_key: str = "",
+        presence_unknown: bool = False,
     ) -> None:
         if not added and not removed:
             return
         self.events.publish(make_trace_event(
             EventName.ISSUE_LABELS_CHANGED,
-            {
-                "issue_number": issue_number,
-                "issue_key": issue_key or str(issue_number),
-                "added": added,
-                "removed": removed,
-            },
+            labels_changed_payload(issue_number, issue_key, added, removed, presence_unknown=presence_unknown),
         ))
 
     def _log_label_mutation(

@@ -8,9 +8,13 @@ This is an execution-layer interface.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from collections.abc import Sequence
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
+
+if TYPE_CHECKING:
+    from ..domain.issue_delivery import MergedPullRequest
 
 
 class ReviewState(Enum):
@@ -171,6 +175,43 @@ class MergeQueueRead:
     @property
     def is_present(self) -> bool:
         return self.status == "PRESENT"
+
+
+@dataclass(frozen=True)
+class FailedCheck:
+    """One failed check context on a PR's head commit (#8692).
+
+    ``job_id``/``run_id`` name the GitHub Actions job and workflow run behind a
+    check run; both are ``None`` for a check the engine can neither read a log
+    for nor re-run (a commit status, or a check run from another app).
+    """
+
+    name: str
+    conclusion: str
+    required: bool
+    job_id: int | None
+    run_id: int | None
+
+    def __post_init__(self) -> None:
+        if (self.job_id is None) != (self.run_id is None):
+            raise ValueError("a failed check names both its job and its run, or neither")
+
+
+@dataclass(frozen=True)
+class FailedChecksRead:
+    """The failed check contexts of a PR's current head commit."""
+
+    head_sha: str
+    checks: tuple[FailedCheck, ...]
+
+
+@dataclass(frozen=True)
+class CheckRunAttempt:
+    """A workflow run's current attempt (1 until re-run), when it started, and its job ids."""
+
+    attempt: int
+    job_ids: frozenset[int]
+    started_at: datetime
 
 
 @dataclass
@@ -459,6 +500,42 @@ class PullRequestTracker(Protocol):
         """
         ...
 
+    def read_failed_checks(self, pr_number: int) -> FailedChecksRead:
+        """Read the failed check contexts on a PR's head commit (one GraphQL call).
+
+        Only the CI-failure triage (#8692) calls this, and only for a PR whose
+        failed check already sent it to rework.
+
+        Raises:
+            RepositoryHostError: If the provider cannot be read.
+        """
+        ...
+
+    def read_check_job_log_tail(self, job_id: int, *, max_bytes: int) -> str:
+        """The last ``max_bytes`` of a GitHub Actions job's log, read with the
+        engine's own credential and never held whole in memory.
+
+        Raises:
+            RepositoryHostError: If the log cannot be read.
+        """
+        ...
+
+    def read_check_run_latest_attempt(self, run_id: int) -> "CheckRunAttempt":
+        """A GitHub Actions workflow run's current attempt and that attempt's jobs.
+
+        Raises:
+            RepositoryHostError: If the run or its jobs cannot be read in full.
+        """
+        ...
+
+    def rerun_failed_check_jobs(self, run_id: int) -> None:
+        """Re-run the failed jobs of one GitHub Actions workflow run.
+
+        Raises:
+            RepositoryHostError: If the provider refuses or cannot be reached.
+        """
+        ...
+
     def list_prs(self, state: str = "open", limit: int = 100) -> list[PRInfo]:
         """List pull requests.
 
@@ -497,6 +574,19 @@ class PullRequestTracker(Protocol):
         mentions the issue is in this set too. Together with
         :meth:`list_open_prs_complete` this answers "which PRs belong to these
         issues" for many issues at once.
+
+        Raises:
+            RepositoryError: If the answer cannot be proven complete.
+        """
+        ...
+
+    def merged_pr_history(self, issue_number: int) -> tuple["MergedPullRequest", ...]:
+        """Every MERGED same-repository PR that references ``issue_number``,
+        with its body and merge time (#8689).
+
+        The same complete timeline read as :meth:`merged_prs_referencing_issues`
+        (a mere mention is included; callers check each body's own link), in
+        one walk with no per-PR fetch.
 
         Raises:
             RepositoryError: If the answer cannot be proven complete.

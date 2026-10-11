@@ -11,6 +11,7 @@ from issue_orchestrator.control.completion_processor import CompletionProcessor
 from issue_orchestrator.control.manual_completion_preparation import ManualCompletionPreparation
 from issue_orchestrator.control.review_publish_pipeline import PublishPipelinePlan
 from issue_orchestrator.domain.completion_processing import ProcessingResult
+from issue_orchestrator.domain.issue_delivery import DeliveryBasis, IssueDelivery
 from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
 from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.manual_publication import PreparedManualPublication
@@ -37,7 +38,7 @@ def rig(custody):
     shared.prepare_completion.return_value = PreparedCompletion(
         record, custody.run.session_name, CompletionProcessingPolicy("agent:test", SessionKind.CODE), "feature", str(evidence.entry.normalized_path),
         PreparedActionPlan(PublishPipelinePlan(tuple(record.requested_actions), False), None, None, False, False))
-    shared.prepare_pull_request.return_value = PreparedPullRequest("#42: Feature", "Prepared body", "main", None, None, False)
+    shared.prepare_pull_request.return_value = PreparedPullRequest("#42: Feature", "Prepared body", "main", None, None, IssueDelivery(DeliveryBasis.WHOLE))
     owner = ManualCompletionPreparation(intake=custody.intake, completion=shared,
                                         working_copy=custody.wc, repo_slug="owner/repo")
     return custody, evidence, locators, shared, owner
@@ -65,11 +66,26 @@ def test_manual_command_carries_the_prepared_partial_claim(rig, partial):
     """#7288: the typed claim, not the rendered body, reaches the command."""
     custody, _, locators, shared, owner = rig
     shared.prepare_pull_request.return_value = PreparedPullRequest(
-        "#42: Feature", "Prepared body", "main", None, None, partial
+        "#42: Feature", "Prepared body", "main", None, None,
+        IssueDelivery(DeliveryBasis.CLAIMED_PARTIAL if partial else DeliveryBasis.WHOLE),
     )
     result = owner.prepare_manual_publication(locators, "Feature")
     assert isinstance(result, PreparedManualPublication)
     assert result.command.content.partial_pr is partial
+
+
+def test_manual_result_says_when_the_delivery_was_inferred_partial(rig):
+    """#8689: an unclaimed record on an issue merged PR #7 already refs."""
+    custody, _, locators, shared, owner = rig
+    shared.prepare_pull_request.return_value = PreparedPullRequest(
+        "#42: Feature", "Refs #42", "main", None, None,
+        IssueDelivery(DeliveryBasis.INFERRED_PARTIAL, evidence_pr=7),
+    )
+    result = owner.prepare_manual_publication(locators, "Feature")
+    assert isinstance(result, PreparedManualPublication)
+    assert result.command.content.partial_pr is True
+    assert any("Partial delivery (inferred)" in action and "#7" in action
+               for action in result.actions_taken)
 
 
 @pytest.mark.parametrize("damage", ["receipt", "run", "issue", "branch", "session", "workspace", "missing-receipt"])

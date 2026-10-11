@@ -106,3 +106,37 @@ def test_require_released_refuses_with_the_protected_pr_named():
     assert refused.value.observation()["holds"][0]["pr_number"] == 500
     assert "PR #500" in str(refused.value)
     assert "close PR #500" in str(refused.value)
+
+
+# -- work republished on another branch (#8137, porchpin#262/#479) -------------
+
+REPUBLISHED = f"{branch(ISSUE)}-r1"
+
+
+def test_work_republished_on_another_branch_is_held_by_the_pr_that_carries_it():
+    """A record validated on its branch whose work another branch's PR of the
+    issue publishes: that PR holds the issue, read on ITS branch."""
+    owner, pulls = _owner(
+        [disposition(ISSUE, ValidatedWorkState.RECOVERED, pr_number=479,
+                     published_branch=REPUBLISHED)],
+        [pr(ISSUE, 479, branch_name=REPUBLISHED, head_sha=LATER_PUSH)],
+    )
+
+    (hold,) = owner.holds(ISSUE)
+
+    assert (hold.pr_number, hold.branch_name) == (479, REPUBLISHED)
+    assert pulls.reads == [(REPUBLISHED, "open-complete")]
+    with pytest.raises(PublishedValidatedWorkHeld):
+        owner.require_released(ISSUE)
+
+
+def test_a_republished_record_is_not_held_by_a_pr_on_its_original_branch():
+    """The original branch's PR does not carry work published elsewhere."""
+    owner, pulls = _owner(
+        [disposition(ISSUE, ValidatedWorkState.RECOVERED, pr_number=479,
+                     published_branch=REPUBLISHED)],
+        [pr(ISSUE, 479, state="merged", branch_name=REPUBLISHED), pr(ISSUE, 457)],
+    )
+
+    assert owner.holds(ISSUE) == ()
+    assert pulls.reads == [(REPUBLISHED, "open-complete")]

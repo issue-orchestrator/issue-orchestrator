@@ -490,7 +490,7 @@ def test_reviewer_approval_gate_keeps_registered_role_after_settings_change(
         session_name=run.session_name,
     )
     assert gate is not None
-    reason = gate.rejection_reason()
+    reason = gate.rejection_reason(upheld_rulings=())
     if authority_state == "valid":
         assert reason is None
     else:

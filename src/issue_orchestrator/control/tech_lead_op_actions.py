@@ -11,11 +11,18 @@ depends only on ``action_base``, never on ``actions``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 
+from ..domain.block_resolution import BlockResolution
+from ..domain.decision_steps import DecisionFollowThrough
 from ..domain.scoped_rework import ReworkRequest
+from ..domain.tech_lead_session import OperatorDecision, StoredTechLeadOp
 from ..domain.validated_work_commands import ValidatedWorkAuthoritySnapshot
+from ..domain.validated_work_release import ValidatedWorkRelease
 from .action_base import Action, ActionType
+
+if TYPE_CHECKING:
+    from .reconciliation import ExpectedState
 
 
 @dataclass(frozen=True)
@@ -163,6 +170,74 @@ class RecoverValidatedWorkAction(Action):
 
 
 @dataclass(frozen=True)
+class ReleaseValidatedWorkAction(Action):
+    """Release the named retained records through the abandonment owner (#9092).
+
+    Only ever planned from an APPROVED gated proposal: the action is
+    destructive, so the charter never lets it run unattended, and a
+    construction without a proposal issue is refused here as well. The
+    executor re-verifies the superseding PR and the store compares every
+    record's authority snapshot before anything resolves.
+    """
+
+    #: The decision's ``action_type`` / stored op this command executes.
+    op_type: ClassVar[str] = "release_validated_work"
+
+    release: ValidatedWorkRelease = field(kw_only=True)
+    proposal_id: str = ""
+    finding_ids: tuple[str, ...] = ()
+    anchor_issue_number: int = 0
+    proposal_issue_number: int = 0
+    action_type: ActionType = field(
+        default=ActionType.RELEASE_VALIDATED_WORK, init=False
+    )
+
+    def __post_init__(self) -> None:
+        if not isinstance(cast(object, self.release), ValidatedWorkRelease):
+            raise ValueError("ReleaseValidatedWorkAction requires a bound release")
+        if not self.proposal_id:
+            raise ValueError("ReleaseValidatedWorkAction requires the proposal id")
+        if self.proposal_issue_number <= 0:
+            raise ValueError(
+                "ReleaseValidatedWorkAction runs only from an approved proposal"
+            )
+
+    @property
+    def issue_number(self) -> int:
+        return self.release.issue_number
+
+    @property
+    def rationale(self) -> str:
+        """The approved rationale, carried by the release it explains."""
+        return self.release.rationale
+
+    def reconciliation_subject(self) -> int:
+        return self.issue_number
+
+    @classmethod
+    def approved(
+        cls,
+        op: StoredTechLeadOp,
+        proposal_issue_number: int,
+        *,
+        reason: str,
+        expected: "ExpectedState",
+    ) -> "ReleaseValidatedWorkAction":
+        """The command an approved proposal's stored op executes, verbatim."""
+        if op.validated_work_release is None:
+            raise ValueError("an approved release op must carry its bound release")
+        return cls(
+            release=op.validated_work_release,
+            proposal_id=op.source_action_id,
+            finding_ids=op.finding_ids,
+            anchor_issue_number=proposal_issue_number,
+            proposal_issue_number=proposal_issue_number,
+            reason=reason,
+            expected=expected,
+        )
+
+
+@dataclass(frozen=True)
 class ReleaseWithheldReviewAction(Action):
     """Release the review of an issue's open PR withheld only by the issue's block.
 
@@ -209,6 +284,111 @@ class ReleaseWithheldReviewAction(Action):
         return self.issue_number
 
 
+@dataclass(frozen=True)
+class ApplyOperatorDecisionAction(Action):
+    """Carry out a ``propose_decision`` the operator approved (#7593).
+
+    Only ever built from an approved gated proposal: the decision is the
+    operator's, so there is no direct-execute path. Its owner
+    (``tech_lead_operator_decision``) files the drafted follow-up issues
+    create-once, posts the decision on the item, and retries the item through
+    the operator's own retry command.
+    """
+
+    #: The decision's ``action_type`` / stored op this command executes.
+    op_type: ClassVar[str] = "propose_decision"
+
+    issue_number: int = 0
+    decision: OperatorDecision = field(kw_only=True)
+    #: What approval executes beyond the item, and the operator's checklist (#8691).
+    follow_through: DecisionFollowThrough = field(default_factory=DecisionFollowThrough, kw_only=True)
+    proposal_id: str = ""
+    finding_ids: tuple[str, ...] = ()
+    anchor_issue_number: int = 0
+    proposal_issue_number: int = 0
+    requires_effective_disposition: bool = False
+    action_type: ActionType = field(
+        default=ActionType.APPLY_OPERATOR_DECISION, init=False
+    )
+
+    def __post_init__(self) -> None:
+        if self.issue_number <= 0:
+            raise ValueError("ApplyOperatorDecisionAction requires a positive issue_number")
+        if not self.proposal_id:
+            raise ValueError("ApplyOperatorDecisionAction requires the proposal id")
+        if self.proposal_issue_number <= 0:
+            raise ValueError(
+                "ApplyOperatorDecisionAction runs only from an approved proposal:"
+                " the decision is the operator's"
+            )
+
+    def reconciliation_subject(self) -> int:
+        return self.issue_number
+
+
+@dataclass(frozen=True)
+class ResolveBlockAction(Action):
+    """Decide a ``needs-human`` work block in the operator's stead (#7658).
+
+    Planned directly under ``execute`` authority or from an approved gated
+    proposal. It carries the decision and its provenance only; the applier's
+    owner (``tech_lead_block_resolution``) re-verifies at apply time that the
+    causes it names are still recorded, resolvable and never resolved before,
+    that the item names no human-only work, and that nothing runs or claims
+    it, then posts the decision, files a split's children and discharges only
+    those causes through the shared block's owner.
+    """
+
+    #: The decision's ``action_type`` / stored op this command executes.
+    op_type: ClassVar[str] = "resolve_block"
+
+    issue_number: int = 0
+    resolution: BlockResolution = field(kw_only=True)
+    #: What approval executes beyond the item (#8691): only ever on an
+    #: approved proposal, since steps make the charter gate the decision.
+    follow_through: DecisionFollowThrough = field(default_factory=DecisionFollowThrough, kw_only=True)
+    rationale: str = ""
+    proposal_id: str = ""
+    finding_ids: tuple[str, ...] = ()
+    anchor_issue_number: int = 0
+    proposal_issue_number: int = 0
+    #: ISO-8601 instant the proposing tech lead observed the board: a failure
+    #: recorded for the item since then is newer than the block it decided.
+    observed_at: str = ""
+    #: The proposing run: its session (whose own claim does not refuse) and
+    #: its run id (with ``proposal_id``, the decision's durable identity).
+    source_session_name: str = ""
+    source_run_id: str = ""
+    #: A split's children are filed as proposals awaiting approval when the
+    #: tech lead may not file issues unattended (``create_issue`` authority):
+    #: the decision is the tech lead's, each new issue is still approvable. An
+    #: approved resolution's children are the operator's own, never gated.
+    children_gated: bool = False
+    requires_effective_disposition: bool = False
+    action_type: ActionType = field(default=ActionType.RESOLVE_BLOCK, init=False)
+
+    def __post_init__(self) -> None:
+        if self.issue_number <= 0:
+            raise ValueError("ResolveBlockAction requires a positive issue_number")
+        if not self.proposal_id:
+            raise ValueError("ResolveBlockAction requires the proposal id")
+        for name in ("observed_at", "source_session_name", "source_run_id"):
+            if not getattr(self, name):
+                raise ValueError(f"ResolveBlockAction requires {name}")
+        if self.proposal_issue_number < 0:
+            raise ValueError("proposal_issue_number cannot be negative")
+        if self.follow_through and self.proposal_issue_number <= 0:
+            raise ValueError("a resolve_block with follow-through runs only from an approved proposal")
+
+    @property
+    def decision_id(self) -> str:
+        """The decision's durable identity, for its markers on GitHub."""
+        return f"{self.source_run_id}/{self.proposal_id}"
+
+    def reconciliation_subject(self) -> int:
+        return self.issue_number
+
+
 #: Act-level ops that carry ``requires_effective_disposition``: when one is a
 #: failure investigation's terminal remedy, a refused (stale) apply satisfies the
 #: investigation only if its result says the remedy's goal already holds.
@@ -218,4 +398,5 @@ EFFECTIVE_DISPOSITION_OP_ACTIONS = (
     KillHungSessionAction,
     RecoverValidatedWorkAction,
     ReleaseWithheldReviewAction,
+    ResolveBlockAction,
 )

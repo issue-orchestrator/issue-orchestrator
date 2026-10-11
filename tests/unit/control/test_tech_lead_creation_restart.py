@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from issue_orchestrator.domain.tech_lead_approval import with_proposal_marker
 from issue_orchestrator.control.actions import AddCommentAction
 from issue_orchestrator.control.claim_gate import ClaimGate, ClaimLostError
 from issue_orchestrator.control.fact_gatherer import FactGatherer
@@ -24,6 +25,7 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.tech_lead_authority_store import (
     SqliteTechLeadAuthorityStore,
 )
+from tests.approval_helpers import GATED
 from tests.unit.control.test_scoped_rework import lane as lane
 from tests.unit.control.test_scoped_rework_repair import dispatcher
 
@@ -41,7 +43,7 @@ def creation(lane):
     host.get_issue_state.side_effect = lambda number: (
         host.get_issue(number).state if host.get_issue(number) is not None else None
     )
-    host.list_labels.return_value = [{"name": "proposed-tech-lead"}]
+    host.list_labels.return_value = [{"name": label} for label in GATED]
     host.list_milestones.return_value = []
     host.list_issues.side_effect = lambda **_: (
         [proposal] if "<!-- tech-lead-proposal:" in proposal.body else []
@@ -49,8 +51,8 @@ def creation(lane):
     applier = dispatcher(executor, host, store)
     action = CreateTechLeadProposalIssueAction(
         title="Original gated title",
-        body="Original instruction",
-        labels=("proposed-tech-lead",),
+        body=with_proposal_marker("Original instruction"),
+        labels=GATED,
         op=op,
         origin=TechLeadCreationOrigin.derived_from_anchor(77),
         expected=ExpectedState.with_labels(
@@ -151,7 +153,7 @@ def test_normal_ticks_complete_original_intent_once_after_restart(
     [
         "ambiguous",
         "stale-head",
-        "missing-gate",
+        "unprovisionable-gate",
         "original-expectation",
         "legacy-authority",
     ],
@@ -171,8 +173,9 @@ def test_absence_cannot_bypass_original_authority_or_eligibility(creation, refus
         host.find_issue_by_marker.side_effect = TimeoutError("absence is not proven")
     elif refusal == "stale-head":
         pr.head_sha = "b" * 40
-    elif refusal == "missing-gate":
+    elif refusal == "unprovisionable-gate":
         host.list_labels.return_value = []
+        host.create_label.side_effect = RuntimeError("cannot create approval labels")
     elif refusal == "original-expectation":
         anchor.labels.clear()
     for _ in range(3):
@@ -322,3 +325,39 @@ def test_accepted_response_loss_remains_ambiguous_until_marker_is_observable(
     assert host.create_issue.call_count == 1
     assert store.load_op(issue_number=501) == pending.op
     assert not store.list_pending_proposals()
+
+
+def test_a_filed_proposal_is_named_on_the_record_that_filed_it(creation):
+    """#7593: "awaiting approval" is a claim only a FILED proposal can make.
+
+    The record is written (audit first) before the proposal issue exists; once
+    creation commits, the record learns the issue the operator approves on, so
+    the triage watermark and the improver can tell a filed proposal from one
+    whose creation never landed.
+    """
+    from issue_orchestrator.control.tech_lead_charter_policy import TechLeadCharterPolicy
+    from issue_orchestrator.domain.tech_lead_charter_decisions import (
+        CharterDecisionSource,
+        CharterProposalLifecycle,
+        TechLeadCharterDecision,
+        decision_key,
+    )
+
+    lane, _anchor, applier, action = creation
+    _, store, host, _, _, proposal, _, _, _ = lane
+    op = action.op
+    store.charter_ledger.record_decisions([TechLeadCharterDecision.from_verdict(
+        TechLeadCharterPolicy.from_config(Config()).decide(op.op_type),
+        decision_id=decision_key(op.source_run_id, op.source_action_id),
+        source=CharterDecisionSource.DECISION, run_id=op.source_run_id,
+        action_id=op.source_action_id, anchor_issue_number=77,
+        target_number=op.target_issue_number, target_is_pr=False,
+        decided_at="2026-10-02T12:00:00+00:00", tracks_proposal=True,
+    )])
+    publish(host, proposal)
+
+    assert applier.apply(action).success
+
+    [record] = store.charter_ledger.list_recent()
+    assert record.lifecycle is CharterProposalLifecycle.AWAITING_APPROVAL
+    assert record.proposal_issue_number == proposal.number

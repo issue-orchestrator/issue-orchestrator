@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable
 from .actions import AddCommentAction, ActionResult
 from ..domain.tech_lead_comment import TechLeadCommentIntent
+from .tech_lead_charter_lifecycle import link_filed_proposal, link_or_log
 from .tech_lead_decision_receipt import record_decision_applied
 
 if TYPE_CHECKING:
@@ -17,7 +18,11 @@ if TYPE_CHECKING:
     from .tech_lead_validated_work_recovery import (
         TechLeadValidatedWorkRecoveryExecutor,
     )
+    from .tech_lead_validated_work_release import (
+        TechLeadValidatedWorkReleaseExecutor,
+    )
     from .tech_lead_review_release import TechLeadReviewReleaseExecutor
+    from .tech_lead_block_resolution import TechLeadBlockResolutionExecutor
 
 
 @dataclass(frozen=True)
@@ -61,6 +66,10 @@ def _same_remedy_generation(
         stored.target_terminal_id,
         stored.target_session_type,
         stored.validated_work_authority,
+        stored.validated_work_release,
+        stored.decision,
+        stored.resolution,
+        stored.follow_through.identity(),
     ) == (
         required.op_type,
         required.target_issue_number,
@@ -68,6 +77,10 @@ def _same_remedy_generation(
         required.target_terminal_id,
         required.target_session_type,
         required.validated_work_authority,
+        required.validated_work_release,
+        required.decision,
+        required.resolution,
+        required.follow_through.identity(),
     )
 
 
@@ -79,7 +92,26 @@ def _proposal_reuse_stale_reason(
     kill: TechLeadKillSessionExecutor | None,
     recovery: TechLeadValidatedWorkRecoveryExecutor | None,
     release: TechLeadReviewReleaseExecutor | None = None,
+    resolution: "TechLeadBlockResolutionExecutor | None" = None,
+    work_release: "TechLeadValidatedWorkReleaseExecutor | None" = None,
 ) -> str | None:
+    if stored.op_type == "release_validated_work" and work_release is not None:
+        assert stored.validated_work_release is not None
+        return work_release.stale_reason(stored.validated_work_release)
+    if stored.op_type == "resolve_block" and resolution is not None:
+        from .actions import ResolveBlockAction
+
+        assert stored.resolution is not None
+        return resolution.stale_reason(ResolveBlockAction(
+            issue_number=stored.target_issue_number, resolution=stored.resolution,
+            rationale=stored.rationale, proposal_id=stored.source_action_id,
+            observed_at=stored.observed_at, source_session_name=stored.source_session_name,
+            source_run_id=stored.source_run_id, proposal_issue_number=proposal_issue_number,
+        ))
+    if stored.op_type == "propose_decision":
+        # Waiting on the operator is all it does until approved; the target's
+        # being open (checked by the caller) is its whole applicability.
+        return None
     if stored.op_type == "release_withheld_review" and release is not None:
         return release.stale_reason(
             stored.target_issue_number, stored.observed_at, stored.source_session_name)
@@ -114,13 +146,19 @@ def _proposal_reuse_stale_reason(
     raise ValueError("proposal reuse has no live applicability owner")
 
 
+def _link_reused(authority: TechLeadAuthorityStore, action: "ReuseTechLeadProposalAction") -> None:
+    link_filed_proposal(authority, action.required_op, action.number)
+
+
 def validate_proposal_reuse(action: ReuseTechLeadProposalAction, *,
         host: RepositoryHost, authority: TechLeadAuthorityStore | None,
         reset: TechLeadResetRetryExecutor | None,
         kill: TechLeadKillSessionExecutor | None,
         rework: RequestReworkExecutor | None = None,
         recovery: TechLeadValidatedWorkRecoveryExecutor | None = None,
-        release: TechLeadReviewReleaseExecutor | None = None) -> None:
+        release: TechLeadReviewReleaseExecutor | None = None,
+        resolution: "TechLeadBlockResolutionExecutor | None" = None,
+        work_release: "TechLeadValidatedWorkReleaseExecutor | None" = None) -> None:
     if authority is None:
         raise ValueError("proposal reuse requires the authority owner")
     required = action.required_op
@@ -143,6 +181,8 @@ def validate_proposal_reuse(action: ReuseTechLeadProposalAction, *,
         kill=kill,
         recovery=recovery,
         release=release,
+        resolution=resolution,
+        work_release=work_release,
     )
     if stale is not None:
         raise ValueError(f"existing proposal is no longer applicable: {stale}")
@@ -202,7 +242,9 @@ def apply_issue_comment(action: AddCommentAction, *, host: RepositoryHost,
         kill: TechLeadKillSessionExecutor | None,
         rework: RequestReworkExecutor | None = None,
         recovery: TechLeadValidatedWorkRecoveryExecutor | None = None,
-        release: TechLeadReviewReleaseExecutor | None = None) -> ActionResult:
+        release: TechLeadReviewReleaseExecutor | None = None,
+        resolution: "TechLeadBlockResolutionExecutor | None" = None,
+        work_release: "TechLeadValidatedWorkReleaseExecutor | None" = None) -> ActionResult:
     """One publication owner for ordinary and mandatory issue explanations."""
     def guard() -> None:
         require_expected(action, action.number)
@@ -219,11 +261,22 @@ def apply_issue_comment(action: AddCommentAction, *, host: RepositoryHost,
                 rework=rework,
                 recovery=recovery,
                 release=release,
+                resolution=resolution,
+                work_release=work_release,
             )
     if isinstance(action, RequiredIssueCommentAction):
-        return apply_required_issue_comment(
+        result = apply_required_issue_comment(
             action, host=host, guard=guard, post_comment=post_comment, events=events
         )
+        if result.success and isinstance(action, ReuseTechLeadProposalAction):
+            # Only a reuse that verified and published names the proposal on
+            # the re-proposing record (#7593): a failed one filed nothing.
+            assert authority is not None  # validate_proposal_reuse required it
+            link_or_log(
+                lambda: _link_reused(authority, action),
+                f"re-proposal onto #{action.number}",
+            )
+        return result
     # Ordinary comments preserve their reconciliation exception contract.
     guard()
     try:

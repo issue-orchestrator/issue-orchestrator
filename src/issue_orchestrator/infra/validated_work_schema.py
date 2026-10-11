@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS validated_work_records (
     finalization_phase    TEXT NOT NULL DEFAULT 'not_started',  -- FinalizationPhase (§4.5)
     publishing_started_at TEXT NOT NULL DEFAULT '',   -- set by the first attempt claim
     published_head_sha    TEXT NOT NULL DEFAULT '',
+    published_pr_number   INTEGER NOT NULL DEFAULT 0,  -- contained in an OBSERVED_OPEN_PR head: that PR
+    published_branch      TEXT NOT NULL DEFAULT '',   -- that PR's branch; '' = the record's own (#8137)
     resolution_kind       TEXT NOT NULL DEFAULT '',   -- ResolutionKind
     resolved_by           TEXT NOT NULL DEFAULT '',   -- OperatorResolution.actor
     resolution_reason     TEXT NOT NULL DEFAULT '',
@@ -112,14 +114,41 @@ CREATE INDEX IF NOT EXISTS ix_validated_work_lineage
     ON validated_work_records (lineage_key, state);
 
 -- What has actually been published for this issue+branch (§2.1.4). Advanced by
--- BOTH verified publication routes: our own push, and an observed merged PR.
+-- every verified publication route: our own push, an observed merged PR, and
+-- the completion's own push observed on its open PR (§2.7).
+-- Merged PRs of the lineage's branch and each one's head at merge (§2.8):
+-- the validated heads they contain shipped, even through a squash merge.
+CREATE TABLE IF NOT EXISTS validated_work_lineage_landings (
+    lineage_key   TEXT NOT NULL,
+    pr_number     INTEGER NOT NULL,
+    head_sha      TEXT NOT NULL,
+    landed_at     TEXT NOT NULL,
+    PRIMARY KEY (lineage_key, pr_number)
+);
+
+-- PRs of the same issue on ANOTHER branch that carry this lineage's validated
+-- work (#8137): an open PR (merged=0, its latest proven head) or a merged one
+-- (merged=1, its head at merge; immutable). The work was republished there - a
+-- completion whose PR collided, a slice rebuilt on a fresh branch - so the
+-- lineage's own fact never names it. Each head is pinned like a landing.
+CREATE TABLE IF NOT EXISTS validated_work_lineage_carriers (
+    lineage_key   TEXT NOT NULL,
+    pr_number     INTEGER NOT NULL,
+    branch_name   TEXT NOT NULL,
+    head_sha      TEXT NOT NULL,
+    merged        INTEGER NOT NULL,
+    observed_at   TEXT NOT NULL,
+    PRIMARY KEY (lineage_key, pr_number)
+);
+
 CREATE TABLE IF NOT EXISTS validated_work_lineage (
     lineage_key                 TEXT PRIMARY KEY,
     published_head_sha          TEXT NOT NULL DEFAULT '',
     published_by_record_id      TEXT NOT NULL DEFAULT '',
     published_via               TEXT NOT NULL DEFAULT '',  -- PublicationProvenance
     published_pre_push_expected TEXT NOT NULL DEFAULT '',  -- '' under OBSERVED_MERGE
-    published_at                TEXT NOT NULL DEFAULT ''
+    published_at                TEXT NOT NULL DEFAULT '',
+    published_pr_number         INTEGER NOT NULL DEFAULT 0  -- the open PR, under OBSERVED_OPEN_PR only
 );
 
 -- Successors parked behind a publishing predecessor (§2.1.4).

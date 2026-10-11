@@ -6,19 +6,38 @@ import json
 
 import pytest
 
+from dataclasses import replace
+
 from issue_orchestrator.testing.exam import (
     PullRequestState,
     TechLeadReceipt,
     RunEnd,
     TechLeadActionDisposition,
+    DecisionFact,
+    TriageFact,
+    WorkItemFact,
     grade,
     render_summary,
 )
 from issue_orchestrator.testing.exam.cases import (
+    ASKS,
+    ASKS_BESIDE_PR,
     BLOCKED_ISSUE_GREEN_PR_AWAITING_REVIEW,
+    BLOCKED_ITEMS_TRIAGED,
+    BOT_APPROVED,
+    BOT_APPROVED_ROLES,
+    BOT_RACED_ROLES,
+    BOT_REAPPLIED,
+    MERGE_HELD_WORK_PROCEEDS,
     HALTED_EXCHANGE_WITH_VALIDATED_WORK,
+    MAINTAINER_APPROVED,
+    POSITIVE_APPROVAL_EXECUTES_ONCE,
+    STRIPPED,
     blocked_issue_green_pr_awaiting_review,
+    blocked_items_triaged,
+    merge_held_work_proceeds,
     halted_exchange_with_validated_work,
+    positive_approval_executes_once,
 )
 from issue_orchestrator.testing.exam.scorecard import RemedyVerdict
 
@@ -789,3 +808,415 @@ class TestRoundFifteenFindings:
             ),
         )
         assert seen.passed, seen.failures
+
+
+
+class TestCaseDBlockedItemsTriaged:
+    """#7593: a coding agent's pre-work question, graded on what the engine RECORDED."""
+
+    CASE = blocked_items_triaged(needs_human_label="needs-human")
+
+    @staticmethod
+    def _asks(triage: TriageFact | None, *, prs=()) -> WorkItemFact:
+        return replace(
+            item(issue_labels=("needs-human",), prs=prs), role=ASKS, issue_number=910, triage=triage,
+        )
+
+    def _grade(self, asks: WorkItemFact):
+        obs = observation(BLOCKED_ITEMS_TRIAGED, asks)
+        obs = replace(obs, items=(asks,), owned_numbers=frozenset({910, 950}))
+        return grade(self.CASE, obs)
+
+    def test_the_question_triaged_as_an_approvable_proposal_passes(self) -> None:
+        asks = self._asks(TriageFact("operator_decision", "propose_decision", "awaiting_approval", 950))
+
+        assert self._grade(asks).passed
+
+    def test_the_porchpin_shape_fails(self) -> None:
+        """What porchpin's engine did: advice only, no triage recorded."""
+        card = self._grade(self._asks(None))
+
+        assert {goal.name for goal in card.goals if not goal.passed} == {"asks.triaged_operator_decision"}
+
+    def test_the_split_question_handed_over_as_is_is_not_an_approvable_proposal(self) -> None:
+        card = self._grade(self._asks(TriageFact("human_hand_over", "escalate_to_human", "applied", None)))
+
+        assert {goal.name for goal in card.goals if not goal.passed} == {"asks.triaged_operator_decision"}
+
+    def test_a_decision_whose_proposal_never_got_filed_is_not_a_triage(self) -> None:
+        asks = self._asks(TriageFact("operator_decision", "propose_decision", "awaiting_approval", None))
+
+        assert not self._grade(asks).passed
+
+    def test_work_published_past_the_question_fails(self) -> None:
+        asks = self._asks(
+            TriageFact("operator_decision", "propose_decision", "awaiting_approval", 950),
+            prs=(pr(number=912, state=PullRequestState.READY),),
+        )
+
+        assert {goal.name for goal in self._grade(asks).goals if not goal.passed} == {"asks.no_pull_request"}
+
+    def test_an_observation_saved_before_triage_existed_still_loads(self) -> None:
+        data = self._asks(None).to_dict()
+        del data["triage"]
+
+        assert WorkItemFact.from_dict(data).triage is None
+
+
+class TestCaseHPositiveApproval:
+    """#7763: only a maintainer's positive `approved` executes a proposal."""
+
+    CASE = positive_approval_executes_once(
+        proposal_label="tech-lead-proposal",
+        awaiting_label="awaiting-approval",
+        approved_label="approved",
+    )
+
+    @staticmethod
+    def _other_bots(honoured: str | None = None) -> tuple[WorkItemFact, ...]:
+        """The case's other bot-approved proposals (#8346), each left gated
+        unless it is *honoured* — worked on its bot ``approved``."""
+        others = []
+        for offset, role in enumerate((*BOT_RACED_ROLES[1:], BOT_REAPPLIED)):
+            if role == honoured:
+                fact = item(issue_labels=("tech-lead-proposal", "approved"), events=("session.started",))
+            else:
+                fact = item(issue_labels=("tech-lead-proposal", "awaiting-approval"))
+            others.append(replace(fact, role=role, issue_number=930 + offset))
+        return tuple(others)
+
+    def _grade(
+        self,
+        maintainer: WorkItemFact,
+        stripped: WorkItemFact,
+        bot: WorkItemFact,
+        others: tuple[WorkItemFact, ...] | None = None,
+    ):
+        others = self._other_bots() if others is None else others
+        obs = observation(POSITIVE_APPROVAL_EXECUTES_ONCE, maintainer)
+        obs = replace(
+            obs,
+            items=(maintainer, stripped, bot, *others),
+            owned_numbers=frozenset({901, 902, 910, 920, *(other.issue_number for other in others)}),
+        )
+        return grade(self.CASE, obs)
+
+    def test_every_bot_approved_proposal_is_graded(self) -> None:
+        """#8346: the bot path runs several times in one exam run, and each
+        run of it must hold on its own."""
+        graded = {goal.role for goal in self.CASE.goals}
+
+        assert set(BOT_APPROVED_ROLES) <= graded
+        assert len(BOT_RACED_ROLES) >= 3 and BOT_REAPPLIED in BOT_APPROVED_ROLES
+
+    @pytest.mark.parametrize("role", [*BOT_RACED_ROLES[1:], BOT_REAPPLIED])
+    def test_any_one_honoured_bot_approval_fails_the_case(self, role) -> None:
+        card = self._grade(*self._items(), others=self._other_bots(honoured=role))
+
+        failed = {goal.name for goal in card.goals if not goal.passed}
+        assert not card.passed
+        assert {f"{role}.never_worked", f"{role}.keeps_labels", f"{role}.issue_free_of_blocks"} <= failed
+
+    def _items(
+        self,
+        *,
+        maintainer_labels=("tech-lead-proposal", "approved"),
+        maintainer_prs=(pr(state=PullRequestState.READY),),
+        stripped_labels=("tech-lead-proposal", "awaiting-approval"),
+        stripped_prs=(),
+        stripped_events=(),
+        bot_labels=("tech-lead-proposal", "awaiting-approval"),
+        bot_events=(),
+    ):
+        maintainer = replace(
+            item(issue_labels=maintainer_labels, prs=maintainer_prs, events=("session.started",)),
+            role=MAINTAINER_APPROVED,
+        )
+        stripped = replace(
+            item(issue_labels=stripped_labels, prs=stripped_prs, events=stripped_events),
+            role=STRIPPED, issue_number=910,
+        )
+        bot = replace(
+            item(issue_labels=bot_labels, events=bot_events), role=BOT_APPROVED, issue_number=920,
+        )
+        return maintainer, stripped, bot
+
+    def test_the_right_answer_passes(self) -> None:
+        assert self._grade(*self._items()).passed
+
+    def test_a_stripped_proposal_that_was_worked_fails(self) -> None:
+        """The old model: removing the gate WAS approval, so the strip ran it."""
+        card = self._grade(*self._items(
+            stripped_labels=("tech-lead-proposal",),
+            stripped_prs=(pr(number=911),),
+            stripped_events=("session.started",),
+        ))
+
+        failed = {goal.name for goal in card.goals if not goal.passed}
+        assert {"stripped.never_worked", "stripped.keeps_labels"} <= failed
+
+    def test_a_bot_approval_that_was_honoured_fails(self) -> None:
+        card = self._grade(*self._items(
+            bot_labels=("tech-lead-proposal", "approved"), bot_events=("session.started",),
+        ))
+
+        failed = {goal.name for goal in card.goals if not goal.passed}
+        assert {
+            "bot_approved.never_worked",
+            "bot_approved.keeps_labels",
+            "bot_approved.issue_free_of_blocks",
+        } <= failed
+
+    def test_a_maintainer_approval_worked_twice_fails(self) -> None:
+        card = self._grade(*self._items(
+            maintainer_prs=(pr(state=PullRequestState.READY), pr(number=903)),
+        ))
+
+        assert "maintainer_approved.single_pull_request" in {
+            goal.name for goal in card.goals if not goal.passed
+        }
+
+    def test_a_maintainer_approval_never_admitted_fails(self) -> None:
+        card = self._grade(*self._items(
+            maintainer_labels=("tech-lead-proposal", "awaiting-approval", "approved"),
+            maintainer_prs=(),
+        ))
+
+        failed = {goal.name for goal in card.goals if not goal.passed}
+        assert {
+            "maintainer_approved.single_pull_request",
+            "maintainer_approved.issue_free_of_blocks",
+        } <= failed
+
+
+class TestCaseEMergeHeldWorkProceeds:
+    """#7678: one label, two holds: a pre-work question holds the work, a
+    decision before a PR merges holds only the merge."""
+
+    CASE = merge_held_work_proceeds(needs_human_label="needs-human", rework_label="rework-cycle-1")
+
+    @staticmethod
+    def _items(
+        *,
+        issue_labels: tuple[str, ...] = ("pr-pending",),
+        pr_labels: tuple[str, ...] = ("code-reviewed", "rework-cycle-1", "needs-human"),
+        state: PullRequestState = PullRequestState.READY,
+        approved: tuple[int, ...] | None = None,
+        asks_labels: tuple[str, ...] = ("needs-human",),
+        asks_prs=(),
+    ) -> tuple[WorkItemFact, WorkItemFact]:
+        asks = replace(item(issue_labels=asks_labels, prs=asks_prs), role=ASKS, issue_number=920)
+        beside = replace(
+            item(issue_labels=issue_labels, prs=(pr(number=922, state=state, labels=pr_labels),),
+                 approved=approved),
+            role=ASKS_BESIDE_PR, issue_number=921,
+        )
+        return asks, beside
+
+    def _failed(self, asks: WorkItemFact, beside: WorkItemFact) -> set[str]:
+        obs = observation(MERGE_HELD_WORK_PROCEEDS, asks)
+        obs = replace(obs, items=(asks, beside), owned_numbers=frozenset({920, 921, 922}))
+        return {goal.name for goal in grade(self.CASE, obs).goals if not goal.passed}
+
+    def test_a_reviewed_reworked_merge_held_pr_beside_a_held_question_passes(self) -> None:
+        assert self._failed(*self._items()) == set()
+
+    def test_the_pre_7678_shape_fails(self) -> None:
+        """#7595 put the PR's question on the ISSUE: no merge hold on the PR,
+        the review vetoed (porchpin#379), and no rework."""
+        failed = self._failed(*self._items(
+            issue_labels=("needs-human", "pr-pending"), pr_labels=("needs-code-review",),
+            state=PullRequestState.DRAFT, approved=(),
+        ))
+
+        assert {
+            "asks_beside_pr.issue_free_of_blocks",
+            "asks_beside_pr.pr_label.rework-cycle-1",
+            "asks_beside_pr.pr_review_approved",
+            "asks_beside_pr.pr_label.needs-human",
+        } <= failed
+
+    def test_a_merged_pr_fails_however_it_was_reviewed(self) -> None:
+        failed = self._failed(*self._items(state=PullRequestState.MERGED))
+
+        assert "asks_beside_pr.pr_draft/ready" in failed
+
+    def test_a_pre_work_question_that_published_or_lost_its_hold_fails(self) -> None:
+        failed = self._failed(*self._items(asks_labels=(), asks_prs=(pr(number=923),)))
+
+        assert {"asks.keeps_labels", "asks.no_pull_request"} <= failed
+
+
+class TestCasesFAndGResolution:
+    """#7658: porchpin's needs-human blocks, decided by the tech lead itself
+    (case F, ``resolve_block: execute``) or as approvable proposals (case G)."""
+
+    from issue_orchestrator.testing.exam.cases import (
+        BESIDE_PR as _BESIDE,
+        PROVISIONING as _PROVISIONING,
+        SPLIT as _SPLIT,
+        STALE as _STALE,
+    )
+
+    @staticmethod
+    def _case(execute: bool):
+        from issue_orchestrator.testing.exam.cases import (
+            needs_human_block_resolutions_proposed,
+            needs_human_blocks_resolved,
+        )
+
+        build = needs_human_blocks_resolved if execute else needs_human_block_resolutions_proposed
+        return build(needs_human_label="needs-human")
+
+    def _items(self, *, execute: bool, resolve: tuple[DecisionFact, ...],
+               provisioning: tuple[DecisionFact, ...], blocked: bool) -> tuple[WorkItemFact, ...]:
+        labels = ("needs-human",) if blocked else ()
+        progressed = (pr(number=921, state=PullRequestState.READY),) if execute else ()
+        split = replace(item(issue_labels=labels, prs=progressed), role=self._SPLIT, issue_number=920,
+                        decisions=resolve)
+        stale = replace(item(issue_labels=labels, prs=tuple(replace(p, number=923) for p in progressed)),
+                        role=self._STALE, issue_number=922, decisions=resolve)
+        beside = replace(
+            item(issue_labels=("pr-pending",),
+                 prs=(pr(number=925, state=PullRequestState.READY,
+                         labels=("needs-code-review", "needs-human")),)),
+            role=self._BESIDE, issue_number=924, triage=None,
+        )
+        provisioning_item = replace(item(issue_labels=("needs-human",)), role=self._PROVISIONING,
+                                    issue_number=926, decisions=provisioning)
+        return split, stale, beside, provisioning_item
+
+    def _grade(self, execute: bool, items: tuple[WorkItemFact, ...]):
+        case = self._case(execute)
+        obs = replace(observation(case.case_id, items[0]), items=items,
+                      owned_numbers=frozenset(range(920, 960)))
+        return grade(case, obs)
+
+    def _failed(self, execute: bool, items: tuple[WorkItemFact, ...]) -> set[str]:
+        return {goal.name for goal in self._grade(execute, items).goals if not goal.passed}
+
+    HANDED_OVER = (DecisionFact("escalate_to_human", "applied", "human_hand_over", None),)
+    EXPLAINED = DecisionFact("post_comment", "applied", "explained", None)
+    APPLIED = (DecisionFact("resolve_block", "applied", "remedy", None),)
+    PROPOSED = (DecisionFact("resolve_block", "awaiting_approval", "remedy", 951),)
+
+    def test_execute_ends_with_the_work_blocks_cleared_and_moving(self) -> None:
+        items = self._items(execute=True, resolve=self.APPLIED, provisioning=self.HANDED_OVER,
+                            blocked=False)
+
+        card = self._grade(True, items)
+
+        assert card.passed, [goal for goal in card.goals if not goal.passed]
+
+    def test_propose_ends_with_approvable_proposals_and_the_blocks_in_place(self) -> None:
+        items = self._items(execute=False, resolve=self.PROPOSED, provisioning=self.HANDED_OVER,
+                            blocked=True)
+
+        card = self._grade(False, items)
+
+        assert card.passed, [goal for goal in card.goals if not goal.passed]
+
+    def test_the_porchpin_shape_fails_both(self) -> None:
+        """What porchpin's engine could do: hand everything to the operator."""
+        for execute in (True, False):
+            items = self._items(execute=execute, resolve=self.HANDED_OVER,
+                                provisioning=self.HANDED_OVER, blocked=True)
+
+            effect = "applied" if execute else "awaiting_approval"
+            assert {f"{role}.resolved_{effect}" for role in ("split", "stale")} <= self._failed(
+                execute, items
+            )
+
+    def test_a_resolve_stands_when_a_later_review_only_explains_the_item(self) -> None:
+        """Exam F at fd8ad07: a failure investigation resolved the stale block, and
+        a later health review, handed a stale grant (#8113), explained it. The
+        resolve took effect and still counts; an explanation alone does not."""
+        explained_after = (self.EXPLAINED, *self.APPLIED, self.EXPLAINED)
+        items = self._items(execute=True, resolve=explained_after, provisioning=self.HANDED_OVER,
+                            blocked=False)
+        assert self._grade(True, items).passed
+
+        only_explained = self._items(execute=True, resolve=(self.EXPLAINED,),
+                                     provisioning=self.HANDED_OVER, blocked=False)
+        assert {"split.resolved_applied", "stale.resolved_applied"} <= self._failed(True, only_explained)
+
+    def test_a_resolve_that_did_not_take_effect_does_not_count(self) -> None:
+        refused = (DecisionFact("resolve_block", "refused", "remedy", None),)
+        items = self._items(execute=True, resolve=refused, provisioning=self.HANDED_OVER,
+                            blocked=False)
+        assert "stale.resolved_applied" in self._failed(True, items)
+
+    def test_the_decision_history_round_trips_through_the_saved_observation(self) -> None:
+        [split, *_] = self._items(execute=True, resolve=(self.EXPLAINED, *self.PROPOSED),
+                                  provisioning=self.HANDED_OVER, blocked=False)
+
+        restored = WorkItemFact.from_dict(json.loads(json.dumps(split.to_dict())))
+
+        assert restored.decisions == split.decisions
+        assert restored.decided_kinds == ("post_comment", "resolve_block")
+
+    def test_a_hand_over_stands_when_a_later_review_only_explains_it(self) -> None:
+        """Exam F at fd8ad07: the hand-over re-granted its own item (#8112), and
+        the next review explained that the hand-over still stands."""
+        items = self._items(execute=True, resolve=self.APPLIED,
+                            provisioning=(*self.HANDED_OVER, self.EXPLAINED), blocked=False)
+        assert self._grade(True, items).passed
+
+        never_handed = self._items(execute=True, resolve=self.APPLIED,
+                                   provisioning=(self.EXPLAINED,), blocked=False)
+        assert self._failed(True, never_handed) == {"provisioning.handed_over"}
+
+    def test_a_resolved_provisioning_item_fails(self) -> None:
+        for provisioning in (self.APPLIED, (*self.HANDED_OVER, *self.APPLIED)):
+            items = self._items(execute=True, resolve=self.APPLIED, provisioning=provisioning,
+                                blocked=False)
+
+            assert self._failed(True, items) == {
+                "provisioning.handed_over",
+                "provisioning.no_resolve_block",
+            }
+
+    def test_a_proposal_that_never_got_filed_is_not_approvable(self) -> None:
+        unfiled = (DecisionFact("resolve_block", "awaiting_approval", "remedy", None),)
+        items = self._items(execute=False, resolve=unfiled, provisioning=self.HANDED_OVER,
+                            blocked=True)
+
+        assert not self._grade(False, items).passed
+
+
+def test_case_d_accepts_a_filed_resolution_put_to_the_operator() -> None:
+    """#7658: under propose, a filed resolve_block proposal puts the split
+    decision to the operator as a propose_decision does; an applied one
+    (decided without the operator) does not answer case D's question."""
+    case = TestCaseDBlockedItemsTriaged()
+    proposed = case._asks(TriageFact("remedy", "resolve_block", "awaiting_approval", 950))
+    assert case._grade(proposed).passed
+
+    applied = case._asks(TriageFact("remedy", "resolve_block", "applied", None))
+    failed = {goal.name for goal in case._grade(applied).goals if not goal.passed}
+    assert "asks.triaged_operator_decision" in failed
+
+
+def test_cases_f_and_g_fail_a_merge_hold_that_was_cleared() -> None:
+    """#7678: the question beside a published PR is a merge hold; clearing it
+    (or merging) fails both cases, whatever the dial."""
+    cls = TestCasesFAndGResolution
+    for execute in (True, False):
+        resolve = cls.APPLIED if execute else cls.PROPOSED
+        items = list(cls()._items(execute=execute, resolve=resolve,
+                                  provisioning=cls.HANDED_OVER, blocked=not execute))
+        items[2] = replace(items[2], pull_requests=(pr(number=925, state=PullRequestState.READY),))
+        assert "beside_pr.pr_label.needs-human" in cls()._failed(execute, tuple(items))
+
+
+def test_cases_f_and_g_fail_any_resolution_of_the_merge_hold() -> None:
+    """r12 F1: even a FILED proposal to resolve the PR's merge hold is wrong,
+    though the PR stays open, reviewed and held."""
+    cls = TestCasesFAndGResolution
+    for execute in (True, False):
+        resolve = cls.APPLIED if execute else cls.PROPOSED
+        items = list(cls()._items(execute=execute, resolve=resolve,
+                                  provisioning=cls.HANDED_OVER, blocked=not execute))
+        assert cls()._grade(execute, tuple(items)).passed
+        items[2] = replace(items[2], decisions=cls.PROPOSED)
+        assert cls()._failed(execute, tuple(items)) == {"beside_pr.no_resolve_block"}

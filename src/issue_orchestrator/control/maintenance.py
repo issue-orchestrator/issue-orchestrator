@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from ..ports.label_store import LabelStore
 
 from ..domain.host_rate_limit import rate_limit_cause
+from ..domain.tech_lead_approval import is_approval_model_label
 from ..ports.worktree_custody import CustodyError
 from .actions import RemoveLabelAction, SupersedePullRequestAction
 from .worktree_manager import get_worktree_path
@@ -226,7 +227,8 @@ def _remove_orchestrator_labels(
     from_scratch: bool,
 ) -> list[str]:
     labels_removed: list[str] = []
-    ours = label_manager.get_ours(current_labels)
+    # A reset never touches approval state (#7763): only its owner writes it.
+    ours = [label for label in label_manager.get_ours(current_labels) if not is_approval_model_label(label)]
     for label in ours:
         action = RemoveLabelAction(
             issue_number=issue_number,

@@ -226,8 +226,8 @@ class TestSharedComposition:
             gate=True,
         )
         assert DEST_AGENT in gated
-        # After the operator removes only the gate, a schedulable agent remains.
-        after_approval = tuple(l for l in gated if l != "proposed-tech-lead")
+        # Once a verified approval admits it, a schedulable agent remains.
+        after_approval = tuple(l for l in gated if l != "awaiting-approval")
         assert DEST_AGENT in after_approval
 
     def test_decision_labels_reject_unknown_destination_agent(self) -> None:
@@ -389,11 +389,15 @@ class TestExplicitMilestoneResolution:
             )
 
 
-class TestProposedTechLeadGate:
-    """The proposed-tech-lead gate label (#6778): agent-rejected, owner-attached."""
+class TestApprovalModelLabels:
+    """The approval model's labels (#7763): agent-rejected, owner-attached.
+    An agent's ``approved`` above all must never reach GitHub."""
 
-    @pytest.mark.parametrize("label", ["proposed-tech-lead", "Proposed-Tech-Lead"])
-    def test_agent_proposed_gate_label_is_rejected(self, label: str) -> None:
+    @pytest.mark.parametrize(
+        "label",
+        ["tech-lead-proposal", "Awaiting-Approval", "approved", "APPROVED"],
+    )
+    def test_agent_proposed_approval_label_is_rejected(self, label: str) -> None:
         config = make_config()
         labels = LabelManager(config)
 
@@ -402,7 +406,7 @@ class TestProposedTechLeadGate:
             [label], config=config, labels=labels
         ) == [label]
 
-    def test_gate_flag_appends_orchestrator_attached_label(self) -> None:
+    def test_gate_flag_appends_orchestrator_attached_labels(self) -> None:
         config = make_config()
         labels = LabelManager(config)
 
@@ -415,7 +419,8 @@ class TestProposedTechLeadGate:
             gate=True,
         )
 
-        assert composed[-1] == "proposed-tech-lead"
+        assert composed[-2:] == ("tech-lead-proposal", "awaiting-approval")
+        assert "approved" not in composed
         assert "ci" in composed
 
     def test_gate_flag_defaults_off(self) -> None:
@@ -430,10 +435,11 @@ class TestProposedTechLeadGate:
             destination_agent=DEST_AGENT,
         )
 
-        assert "proposed-tech-lead" not in composed
+        assert not {"tech-lead-proposal", "awaiting-approval"} & set(composed)
 
-    def test_gate_flag_never_launders_an_agent_proposed_gate(self) -> None:
-        """Even with gate=True, an agent-proposed gate label still fails."""
+    @pytest.mark.parametrize("label", ["awaiting-approval", "approved"])
+    def test_gate_flag_never_launders_an_agent_proposed_approval_label(self, label) -> None:
+        """Even with gate=True, an agent-proposed approval label still fails."""
         config = make_config()
         labels = LabelManager(config)
 
@@ -441,7 +447,7 @@ class TestProposedTechLeadGate:
             decision_issue_labels(
                 config,
                 anchor_labels=(),
-                agent_labels=("proposed-tech-lead",),
+                agent_labels=(label,),
                 labels=labels,
                 destination_agent=DEST_AGENT,
                 gate=True,

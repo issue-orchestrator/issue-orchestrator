@@ -38,6 +38,7 @@ from .tech_lead_launch_planning import (
     plan_tech_lead_launch_gate,
     plan_tech_lead_launch_revalidation,
 )
+from ..domain.tech_lead_run import WITHDRAWN_SUBJECT_NO_LONGER_ELIGIBLE
 from ..domain.tech_lead_session import TechLeadSessionFlavor
 
 if TYPE_CHECKING:
@@ -289,7 +290,7 @@ def plan_tech_lead_launch_queue(
         )
     if revalidated.withdrawn:
         launch_log.gate_skip(
-            [w.item for w in revalidated.withdrawn], "subject_no_longer_eligible"
+            [w.item for w in revalidated.withdrawn], WITHDRAWN_SUBJECT_NO_LONGER_ELIGIBLE
         )
 
     gate = plan_tech_lead_launch_gate(

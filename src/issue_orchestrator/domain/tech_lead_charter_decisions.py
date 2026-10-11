@@ -21,6 +21,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
+from .tech_lead_artifacts import TriageClass
 from .tech_lead_charter import (
     CharterAuthority,
     CharterBinding,
@@ -68,8 +69,9 @@ class CharterExecutionResult(str, Enum):
     REFUSED = "refused"
     #: The applier tried and failed, or its result is unknown (the apply raised).
     FAILED = "failed"
-    #: Never attempted: its completion withheld it behind a mandated action
-    #: that did not commit.
+    #: Never attempted: its completion withheld it, and the record's reason
+    #: says why (a mandated action that did not commit, a subject refused
+    #: earlier in the completion, or a raise that stopped the apply).
     WITHHELD = "withheld"
     #: The action liveness owner stopped retrying it (#7350).
     PARKED = "parked"
@@ -119,8 +121,19 @@ class TechLeadCharterDecision:
     #: error, or park reason); None when it applied.
     execution_reason: str | None = None
     execution_at: str | None = None
+    #: The blocked-item triage this action was (#7593): its class, and the
+    #: item's blocking state as the run observed it. The pair is the re-triage
+    #: watermark: an unchanged item whose triage is in force is not triaged again.
+    triage_class: TriageClass | None = None
+    triage_fingerprint: str | None = None
+    #: What the decided action rests on, as the tech lead cited it: a
+    #: ``resolve_block``'s spec, ADR and CUJ references (#7658). Empty for
+    #: kinds that cite none.
+    evidence: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        if (self.triage_class is None) != (self.triage_fingerprint is None):
+            raise ValueError("a triage record carries both its class and its fingerprint")
         # What became of a decision is told by the path its verdict took: an
         # approval lifecycle only for a gated verdict, an applier result only
         # for an executed one, so neither can vouch for the other (#7362).
@@ -149,6 +162,9 @@ class TechLeadCharterDecision:
         tracks_proposal: bool,
         proposal_issue_number: int | None = None,
         proposal_origin_action_id: str | None = None,
+        triage_class: TriageClass | None = None,
+        triage_fingerprint: str | None = None,
+        evidence: tuple[str, ...] = (),
     ) -> "TechLeadCharterDecision":
         """Freeze *verdict* into a record.
 
@@ -186,6 +202,9 @@ class TechLeadCharterDecision:
             lifecycle_updated_at=decided_at if lifecycle is not None else None,
             proposal_issue_number=proposal_issue_number,
             proposal_origin_action_id=proposal_origin_action_id,
+            triage_class=triage_class,
+            triage_fingerprint=triage_fingerprint,
+            evidence=evidence,
         )
 
     def is_about_issue(self, issue_number: int) -> bool:
@@ -216,6 +235,20 @@ class TechLeadCharterDecision:
             self.outcome is CharterOutcome.EXECUTED
             and self.execution is CharterExecutionResult.APPLIED
         ) or self.lifecycle is CharterProposalLifecycle.APPROVED_APPLIED
+
+    @property
+    def effect(self) -> str:
+        """What became of the action, in one word: the applier's linked result
+        for an executed decision (``applied``, ``withheld``, ...), the proposal
+        lifecycle for a gated one, ``unlinked`` until either is recorded, and
+        ``advice`` for advice-only."""
+        if self.execution is not None:
+            return self.execution.value
+        if self.lifecycle is not None:
+            return self.lifecycle.value
+        if self.outcome is CharterOutcome.ADVICE_ONLY:
+            return "advice"
+        return "unlinked"
 
     @property
     def effect_at(self) -> str:
@@ -279,6 +312,9 @@ class TechLeadCharterDecision:
             "execution": self.execution.value if self.execution else None,
             "execution_reason": self.execution_reason,
             "execution_at": self.execution_at,
+            "triage_class": self.triage_class.value if self.triage_class else None,
+            "triage_fingerprint": self.triage_fingerprint,
+            "evidence": list(self.evidence),
         }
 
     @classmethod
@@ -316,6 +352,9 @@ class TechLeadCharterDecision:
             execution=CharterExecutionResult(execution) if execution else None,
             execution_reason=data.get("execution_reason"),
             execution_at=data.get("execution_at"),
+            triage_class=TriageClass(triage) if (triage := data.get("triage_class")) else None,
+            triage_fingerprint=data.get("triage_fingerprint"),
+            evidence=tuple(str(item) for item in data.get("evidence") or ()),
         )
 
 

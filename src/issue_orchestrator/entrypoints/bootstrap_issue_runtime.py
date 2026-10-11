@@ -9,6 +9,7 @@ from ..control.fact_gatherer import FactGatherer
 from ..control.issue_run_evidence import IssueRunEvidenceService
 from ..control.published_review_custody import BranchPullRequestReader, PublishedReviewCustody
 from ..control.validated_work_preservation import ValidatedWorkPreservationService
+from ..control.validated_work_published_head import PullRequestCarriage
 from ..domain.issue_run_evidence import IssueRunRecord, RunTerminalBinding
 from ..ports.issue_run_evidence import IssueRunLedger
 from ..ports.event_sink import EventSink
@@ -37,7 +38,8 @@ def build_issue_runtime(*, state: OrchestratorState, ledger: IssueRunLedger,
         publish_recovery: IssuePublishRetryRuntime, events: EventSink,
         pull_requests: BranchPullRequestReader, stuck_sweep: FactGatherer | None,
         pending_work_claims: PendingWorkClaimStore,
-        base_branch: Callable[[int, Path], str | None]) -> IssueRuntimeLifecycleOwners:
+        base_branch: Callable[[int, Path], str | None],
+        repository: Path) -> IssueRuntimeLifecycleOwners:
     def live_runs(issue_number: int) -> tuple[IssueRunRecord, ...]:
         return tuple(IssueRunRecord(session.key, session.run_assets, session.run_assets.started_at, session.branch_name, RunTerminalBinding(session.terminal_id))
             for session in state.active_sessions if session.issue.number == issue_number)
@@ -45,7 +47,9 @@ def build_issue_runtime(*, state: OrchestratorState, ledger: IssueRunLedger,
     evidence = IssueRunEvidenceService(ledger, live_runs=live_runs, now=lambda: datetime.now(timezone.utc).isoformat())
     preservation = ValidatedWorkPreservationService(intake=intake, store=validated_work.store,
         custody=validated_work.custody, repair=validated_work.repair, working_copy=working_copy,
-        observer=validated_work.capture_observer, base_branch=base_branch)
+        observer=validated_work.capture_observer, base_branch=base_branch,
+        carriage=PullRequestCarriage(git=working_copy, observer=validated_work.capture_observer),
+        repository=repository)
     published_review = PublishedReviewCustody(validated_work.store, pull_requests)
     if stuck_sweep is not None:
         # The sweep asks the very owner the reset gate enforces (#7293).

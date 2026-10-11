@@ -35,6 +35,17 @@ When an issue contains an invalid cross-milestone dependency (not same milestone
 - Emit a warning/event for visibility.
 - Treat the dependency as **unsatisfied**, making the issue **blocked** (non-runnable) until corrected.
 
+**A closed dependency is never a violation (amended 2026-10-02, #7333).** Scope
+is checked only for an OPEN dependency: a closed one is satisfied whatever its
+milestone, in every gate (work, review, publish, merge), because it can no
+longer couple the two milestones' runnability. Checking scope first parked
+porchpin#326 (M3) behind #289 (M1) two weeks after #289 closed.
+
+The `blocked-cross-milestone` label is derived state with one owner
+(`control/dependency_scope_label.py`): it is added when the work gate reports a
+scope violation and removed when the gate no longer does. It is never left
+behind by an issue that has stopped violating scope.
+
 ## Rationale
 - Preserves the “local reasoning” property: you can understand a milestone’s runnability without scanning the entire repo.
 - Prevents accidental coupling across milestones.

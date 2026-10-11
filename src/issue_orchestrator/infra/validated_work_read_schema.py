@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -39,6 +39,8 @@ _REQUIRED_COLUMNS = {
             "reason",
             "finalization_phase",
             "published_head_sha",
+            "published_pr_number",
+            "published_branch",
             "resolved_by",
             "resolution_reason",
             "resolved_at",
@@ -76,8 +78,15 @@ _REQUIRED_COLUMNS = {
 
 def require_supported_validated_work_schema(conn: sqlite3.Connection) -> None:
     """Accept additive schema changes and reject missing facts needed by the mapper."""
+    require_validated_work_columns(conn, _REQUIRED_COLUMNS)
+
+
+def require_validated_work_columns(
+    conn: sqlite3.Connection, required_columns: Mapping[str, frozenset[str]]
+) -> None:
+    """Refuse a database missing any column a cold reader depends on."""
     missing: list[str] = []
-    for table, required in _REQUIRED_COLUMNS.items():
+    for table, required in required_columns.items():
         actual = {
             row["name"]
             for row in conn.execute(f"PRAGMA table_info({table})").fetchall()

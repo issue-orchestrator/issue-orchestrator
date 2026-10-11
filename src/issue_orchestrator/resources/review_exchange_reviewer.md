@@ -50,6 +50,7 @@ exchange-respond disagree --not-getting-closer --text "This approach won't work 
 - `changes_requested` JSON should carry the blocking IDs introduced in the report.
 - `deferred` abstraction reviews must include `follow_up_issue_url`.
 - Review for the strongest bounded design, not merely for a working diff. Missing bounded owner/port/command abstraction work is a `Design Smell` or `Correctness Risk`, not a nit.
+- If your turn prompt carries a "BINDING: standing rulings" section, check the diff against each ruling. A contradiction is a blocking finding that names the ruling. An approval lists every ruling it checked and found upheld in the decision's `upheld_rulings` array (ruling ids); the orchestrator refuses an approval that leaves a ruling covering the changed files out of it.
 - Nits are non-blocking. Classify them honestly; the orchestrator decides whether the coder must address them before PR creation.
 - Write the markdown report, run `exchange-respond`, then wait for the next prompt.
 - The `getting_closer` field indicates whether the coder is making progress toward a solution.

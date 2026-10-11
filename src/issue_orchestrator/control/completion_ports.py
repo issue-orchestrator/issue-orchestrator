@@ -3,6 +3,7 @@
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from ..domain.issue_delivery import MergedPullRequest
 from ..ports.pull_request_tracker import PRInfo
 from ..ports.working_copy import (
     BranchCommitMessagesResult,
@@ -33,6 +34,8 @@ class PRAdapter(Protocol):
     def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list[PRInfo]: ...
     def get_prs_for_branch(self, branch: str, state: str = "open") -> list[PRInfo]: ...
     def set_pr_base(self, pr_number: int, base: str) -> None: ...
+    def get_pr(self, pr_number: int) -> PRInfo | None: ...
+    def merged_pr_history(self, issue_number: int) -> tuple[MergedPullRequest, ...]: ...
 
 
 @runtime_checkable
@@ -60,6 +63,9 @@ class GitAdapter(Protocol):
         self, worktree: Path, paths: tuple[str, ...]
     ) -> BranchTextFilesResult: ...
     def branch_post_image_paths_against_base(
+        self, worktree: Path, base_ref: str
+    ) -> BranchPathsResult: ...
+    def branch_touched_paths_against_base(
         self, worktree: Path, base_ref: str
     ) -> BranchPathsResult: ...
     def branch_commit_messages_against_base(

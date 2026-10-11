@@ -8,7 +8,7 @@ from enum import Enum
 from typing import Any
 
 from .github_calls import EndpointClass, GitHubCallCounts
-from .livelock import RepeatingFailure
+from ...observation.no_progress import RepeatingFailure
 from .observation import RunEnd, StallFacts, TechLeadRunFact
 from .upgrade import UpgradeGrade, WriteKind
 

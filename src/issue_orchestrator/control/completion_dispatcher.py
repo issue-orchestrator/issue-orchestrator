@@ -46,8 +46,8 @@ class CompletedDecision:
     """A finished completion decision ready for the tick thread to apply.
 
     Exactly one of ``decision`` / ``error`` is set. ``error`` carries an
-    exception raised while deciding the outcome so the caller can surface it on
-    the tick thread (preserving the fail-loud behavior of the old inline path).
+    exception raised while deciding the outcome, from either dispatcher, so
+    the tick thread records it against its session (``CompletionContainment``).
     """
 
     session: "Session"
@@ -86,10 +86,14 @@ class SynchronousCompletionDispatcher:
         return False
 
     def dispatch(self, session: "Session", decide: "Callable[[], SessionDecision]") -> None:
-        # No try/except: a decide error propagates here exactly as it did on the
-        # old inline path. (The background dispatcher instead captures errors via
-        # the runner and surfaces them as CompletedDecision.error on drain.)
-        self._done.append(CompletedDecision(session=session, decision=decide(), error=None))
+        # A decide error is handed back as CompletedDecision.error, exactly as
+        # the background dispatcher does, so the one apply boundary confines it
+        # to its session (#8693 r1). A non-Exception BaseException still escapes.
+        try:
+            decided = CompletedDecision(session=session, decision=decide(), error=None)
+        except Exception as error:
+            decided = CompletedDecision(session=session, decision=None, error=error)
+        self._done.append(decided)
 
     def drain(self) -> list[CompletedDecision]:
         done = self._done

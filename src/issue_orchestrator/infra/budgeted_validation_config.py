@@ -5,11 +5,12 @@ this collection. The same schema parses runtime config and documents its fields.
 """
 
 import re
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ..domain.budgeted_validation import BudgetedValidationSuite, ValidationCadence
+from ..domain.budgeted_validation import CODE_CHANGE_KIND, BudgetedValidationSuite, ValidationCadence
+from ..domain.engine_activity import ENGINE_ACTIVITY_KIND, EngineActivityCadence
 
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
 NonemptyArgument = Annotated[str, Field(strict=True, min_length=1)]
@@ -18,8 +19,31 @@ NonemptyArgument = Annotated[str, Field(strict=True, min_length=1)]
 class ValidationCadenceSchema(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    kind: Literal["code_change"] = Field(CODE_CHANGE_KIND, description="`code_change` (default): due when io's code changed. `engine_activity`: due when a running engine has new activity (see below).")
     max_merges_since_success: PositiveInt = Field(10, description="Run when this many PRs have merged since the last successful suite run.")
     max_delay_hours: PositiveInt = Field(24, description="Maximum hours since successful coverage before changed code is due, even below the merge threshold.")
+
+    def to_domain(self) -> ValidationCadence:
+        return ValidationCadence(self.max_merges_since_success, self.max_delay_hours)
+
+
+class EngineActivityCadenceSchema(BaseModel):
+    """A suite that grades engine behaviour (the tech-lead improver): due on
+    engine activity, never on io merges, and never bisected."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["engine_activity"] = Field(description="Due when a running engine has new tech-lead decisions, completions or audit anomalies since the last successful run, independent of io merges.")
+    max_delay_hours: PositiveInt = Field(24, description="At most one scheduled run per this many hours; also how recently an engine must have run to be observed.")
+    probe_interval_minutes: PositiveInt = Field(60, description="While a window is open and no engine is active, re-observe the engines at most this often.")
+
+    def to_domain(self) -> EngineActivityCadence:
+        return EngineActivityCadence(self.max_delay_hours, self.probe_interval_minutes)
+
+
+CadenceSchema = Annotated[
+    ValidationCadenceSchema | EngineActivityCadenceSchema, Field(discriminator="kind")
+]
 
 
 class BudgetedValidationSuiteSchema(BaseModel):
@@ -32,7 +56,15 @@ class BudgetedValidationSuiteSchema(BaseModel):
     setup_command: list[NonemptyArgument] = Field(default_factory=list, description="Optional dependency setup command, run in each isolated checkout before tests.")
     timeout_seconds: PositiveInt = Field(3600, description="Deadline for one test command, including a bisection probe.")
     setup_timeout_seconds: PositiveInt = Field(900, description="Deadline for dependency setup in one checkout.")
-    cadence: ValidationCadenceSchema = Field(default_factory=lambda: ValidationCadenceSchema.model_validate({}))
+    cadence: CadenceSchema = Field(default_factory=lambda: ValidationCadenceSchema.model_validate({}))
+
+    @field_validator("cadence", mode="before")
+    @classmethod
+    def default_cadence_kind(cls, value: object) -> object:
+        """A cadence without a ``kind`` is the code-change cadence."""
+        if isinstance(value, dict) and "kind" not in value:
+            return {**value, "kind": CODE_CHANGE_KIND}
+        return value
 
     @field_validator("branch")
     @classmethod
@@ -44,7 +76,7 @@ class BudgetedValidationSuiteSchema(BaseModel):
     def to_domain(self, name: str) -> BudgetedValidationSuite:
         return BudgetedValidationSuite(
             name=name, command=tuple(self.command), setup_command=tuple(self.setup_command),
-            cadence=ValidationCadence(**self.cadence.model_dump()),
+            cadence=self.cadence.to_domain(),
             timeout_seconds=self.timeout_seconds, setup_timeout_seconds=self.setup_timeout_seconds,
             branch=self.branch, enabled=self.enabled, issue_agent_label=self.issue_agent_label,
         )
@@ -100,4 +132,14 @@ def budgeted_validation_reference() -> str:
                 continue
             default = definition.get("default", "required" if name == "command" else "[]")
             lines.append(f"| `{prefix}{name}` | `{default}` | {definition['description']} |")
+    lines += [
+        "", f"With `cadence.kind: {ENGINE_ACTIVITY_KIND}` the suite grades engine behaviour,",
+        "not io code: it is due only when an engine Control Center registers has new",
+        "activity since the last successful run, at most once per window, and a failure",
+        "is never bisected over io commits.", "",
+        "| Field | Default | Meaning |", "| --- | --- | --- |",
+    ]
+    for name, definition in EngineActivityCadenceSchema.model_json_schema()["properties"].items():
+        default = definition.get("default", "required")
+        lines.append(f"| `cadence.{name}` | `{default}` | {definition['description']} |")
     return "\n".join(lines) + "\n"

@@ -66,3 +66,30 @@ def test_the_board_snapshot_names_the_recorded_role(tmp_path):
     )
     info = builder._session_info(_investigation(tmp_path), datetime(2026, 9, 27, 12, 0, 0))
     assert info.agent_type == "agent:tech-lead"
+
+
+def test_a_focus_investigation_never_holds_its_work_item_out_of_the_run(sample_config, tmp_path):
+    """#7658: a failure investigation reads its focus item as evidence (its
+    scratch worktree) and is not the item's work. Its history entry must not
+    hold the item, or an item unblocked meanwhile (a resolve_block) never
+    launches again until a restart. The tech lead's own anchor still holds."""
+    from dataclasses import replace
+
+    from issue_orchestrator.history import issues_held_by_session_history
+
+    handler = make_handler(sample_config)
+    # The live shape: the investigation's issue is synthesized under the tech
+    # lead's own agent label, so only the scratch worktree tells them apart.
+    investigation = replace(
+        _investigation(tmp_path),
+        issue=Issue(42, "Investigate: focus (failed)", labels=["agent:tech-lead"]),
+        scratch_worktree=True,
+    )
+    focus = handler._create_history_entry(investigation, SessionStatus.COMPLETED, None)
+    anchor_session = replace(
+        _investigation(tmp_path), issue=Issue(43, "Health", labels=["agent:tech-lead"]),
+    )
+    anchor = handler._create_history_entry(anchor_session, SessionStatus.COMPLETED, None)
+
+    assert (focus.holds_issue, anchor.holds_issue) == (False, True)
+    assert issues_held_by_session_history([focus, anchor]) == frozenset({43})

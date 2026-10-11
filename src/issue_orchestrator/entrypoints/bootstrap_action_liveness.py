@@ -9,6 +9,7 @@ from ..control.action_liveness_escalation import ActionLivenessEscalation
 from ..control.planned_action_liveness import PlannedActionLiveness
 from ..execution.action_liveness_store import SQLiteActionLivenessStore
 from ..infra.repo_identity import state_dir
+from ..infra.runtime_identity import resolve_runtime_identity
 
 if TYPE_CHECKING:
     from ..control.action_results import SupportsApplyAction
@@ -46,6 +47,9 @@ def build_action_liveness(
             applier=action_applier,
             needs_human_label=label_manager.needs_human,
         ),
+        # The code a park is decided under (#7592): an engine on a newer commit
+        # re-tries each such park once.
+        engine_commit=resolve_runtime_identity().source_commit_sha,
     )
     return PlannedActionLiveness(
         owner, escalation_label=label_manager.needs_human, charter=charter

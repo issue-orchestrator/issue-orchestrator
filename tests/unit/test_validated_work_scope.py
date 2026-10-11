@@ -40,6 +40,7 @@ from issue_orchestrator.control.validated_work_capture import ValidatedWorkCusto
 from issue_orchestrator.control.validated_work_effects import FencedValidatedWorkEffects
 from issue_orchestrator.control.validated_work_escrow import EscrowReconciliation
 from issue_orchestrator.control.validated_work_preservation import ValidatedWorkPreservationService
+from issue_orchestrator.control.validated_work_published_head import PullRequestCarriage
 from issue_orchestrator.control.validated_work_scope_retirement import (
     RETIREMENT_ACTOR, OutOfScopeRecordRetirement, OutOfScopeRetirementSweep,
 )
@@ -86,7 +87,8 @@ from issue_orchestrator.ports.validated_work_drain import NullValidatedWorkScope
 from issue_orchestrator.ports.validated_work_capture_observer import ValidatedWorkCaptureObserver
 from tests.runtime_lifecycle_helpers import no_open_pull_requests
 from tests.unit.test_completion_evidence_intake import command, completion
-from tests.unit.validated_work_support import Liveness, Rig, capture, owned_intake
+from tests.unit.validated_work_support import Liveness, Rig, UnpublishedRecords, capture, owned_intake
+from tests.label_application_helpers import standing_while_present
 
 ISSUE = 410
 TECH_LEAD = "agent:tech-lead"
@@ -161,12 +163,15 @@ def _rig(tmp_path, agent_label):
         reader=labels, applier=labels, human_block=NO_OTHER_NEEDS_HUMAN_CAUSES)
     observer = Mock(spec=ValidatedWorkCaptureObserver)
     observer.observe.return_value = ValidatedWorkRemoteFacts(None, ())
+    observer.merged_pull_requests.return_value = ()
+    observer.issue_pull_requests.return_value = ()
     preservation = ValidatedWorkPreservationService(intake=intake, store=aggregate,
         custody=ValidatedWorkCustody(escrow, aggregate), repair=EscrowReconciliation(escrow=escrow, store=aggregate, intake=ledger),
         working_copy=wc, observer=observer,
         # No remote in this rig: the base is unreadable, so the kind alone
         # decides here (the ahead-of-base rule has its own tests).
-        base_branch=lambda _issue, _worktree: "main")
+        base_branch=lambda _issue, _worktree: "main",
+        carriage=PullRequestCarriage(git=wc, observer=observer), repository=repo)
     sessions = Mock()
     sessions.exists.return_value = False
     jobs = Mock()
@@ -479,7 +484,8 @@ def test_drain_scope_sweep_retires_records_no_publication_lane_selects(tmp_path,
     labels = Labels(issue=6914)
     intake = owned_intake(task)
     human = NeedsHumanBlock("needs-human", "tech-lead-needs-human", labels, labels.read_issue_labels,
-                            frozenset, SqlitePendingWorkClaimStore(tmp_path / "causes.sqlite"))
+                            frozenset, SqlitePendingWorkClaimStore(tmp_path / "causes.sqlite"),
+                            standing_while_present(labels.read_issue_labels))
     aggregate = AggregateRecoveryBlocks(repo_slug="owner/repo", records=store,
         admission=RankedEvidenceAdmission(store, intake), phases=store, authority=effects,
         gate=FileIssueDispositionMutationGate(tmp_path), labels=LabelManager(Config(repo="owner/repo")),
@@ -496,7 +502,7 @@ def test_drain_scope_sweep_retires_records_no_publication_lane_selects(tmp_path,
         queue=store, operation=Mock(), authority_refresh=Mock(),
         claim_maintenance=NullRetainedClaimMaintenance(), block_sweep=NullRecoveryBlockSweep(),
         scope_sweep=OutOfScopeRetirementSweep(source=store, store=store, execution=execution,
-                                              retirement=retirement, batch_size=5,
+                                              retirement=retirement, publication=UnpublishedRecords(), batch_size=5,
                                               liveness=drain_liveness(records=store)),
         batch_size=5, interval_seconds=1,
         liveness=drain_liveness(records=store),
@@ -550,7 +556,7 @@ def test_scope_sweep_reports_nothing_when_newer_evidence_lands_before_its_cas(tm
 
     store.retire_outside_scope = evidence_lands_first
     sweep = OutOfScopeRetirementSweep(source=store, store=store, execution=execution,
-                                      retirement=retirement, batch_size=5,
+                                      retirement=retirement, publication=UnpublishedRecords(), batch_size=5,
                                       liveness=drain_liveness(records=store))
 
     report = sweep.tick(lambda: RecoveryDrainMode.ACTIVE)
@@ -622,7 +628,7 @@ def _scope_rig(tmp_path, proof, *, issues=(6914,)):
     owner = liveness_owner(store=rig.rows, escalation=rig.escalation, clock=rig.clock,
                            policy=rig.policy)
     rig.sweep = OutOfScopeRetirementSweep(
-        source=store, store=store, execution=execution, retirement=retirement, batch_size=5,
+        source=store, store=store, execution=execution, retirement=retirement, publication=UnpublishedRecords(), batch_size=5,
         liveness=drain_liveness(
             owner,
             records=SimpleNamespace(
@@ -967,7 +973,7 @@ def test_porchpin_410_a_legacy_tech_lead_completion_is_retired_once_and_never_pr
         authority_refresh=Mock(),
         claim_maintenance=NullRetainedClaimMaintenance(), block_sweep=NullRecoveryBlockSweep(),
         scope_sweep=OutOfScopeRetirementSweep(source=store, store=store, execution=execution,
-                                              retirement=tech_lead.retirement, batch_size=5,
+                                              retirement=tech_lead.retirement, publication=UnpublishedRecords(), batch_size=5,
                                               liveness=drain_liveness(records=store)),
         batch_size=5, interval_seconds=1,
         liveness=drain_liveness(records=store),
@@ -991,3 +997,18 @@ def test_porchpin_410_a_legacy_tech_lead_completion_is_retired_once_and_never_pr
         if e.event_type is EventName.VALIDATED_WORK_ABANDONED
     ]
     assert len(retirements) == 1  # retired once, never re-judged
+
+
+def test_a_replayed_capture_of_a_retained_tech_lead_record_holds_nothing(tech_lead, monkeypatch):
+    """Review (#7552 r2): the retained-first shortcut must not bypass the
+    scope rule. A tech-lead completion admitted before the rule is still
+    retained; replaying its selected-run capture reports no recovery custody."""
+    _legacy_capture(tech_lead, monkeypatch)
+
+    batch = tech_lead.lifecycle.preserve_completed_terminal(
+        ISSUE, f"issue-{ISSUE}", "session-completion", run=tech_lead.run)
+
+    assert batch.captured_keys == frozenset()
+    assert batch.recovery_holds_captured_work is False
+    assert tech_lead.lifecycle.preserve_completed_run(
+        ISSUE, f"issue-{ISSUE}", "session-completion", run=tech_lead.run) is False

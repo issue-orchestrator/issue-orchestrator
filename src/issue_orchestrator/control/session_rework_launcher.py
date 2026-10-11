@@ -6,14 +6,11 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Callable, Protocol
 
 from ..domain.issue_run_evidence import ReworkTarget
 from ..domain.issue_key import IssueKey
-from ..domain.coder_prompt import (
-    CoderPromptAddendumUnavailable,
-    PreparedCoderPromptAddendum,
-)
+from ..domain.launch_prompt import LaunchPromptUnavailable, PreparedLaunchPrompt
 from ..domain.models import (
     AgentConfig,
     Issue,
@@ -32,9 +29,10 @@ from ..infra.logging_config import issue_log, log_context
 from ..ports import EventSink, RepositoryHost
 from ..ports.event_sink import make_run_scoped_event, make_trace_event
 from ..ports.session_output import SessionOutput
-from ..ports.coder_prompt import CoderPromptAddendumProvider
+from ..ports.launch_prompt import LaunchPromptProvider
 from ..ports.command_runner import CommandRunner
-from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions
+from ..ports.worktree_manager import WorktreeInfo, WorktreeManager, WorktreeReuseOptions
+from .session_worktree_briefing import rebase_conflict_warning
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
 from .scoped_rework_launch import ScopedReworkLaunch
 from .scoped_rework import note_scoped_rework_started
@@ -171,8 +169,11 @@ class ReworkLaunchDependencies:
     check_provider_ready: ProviderReadinessChecker
     session_secret_env: SessionSecretEnvFn
     resolve_stack_decision: StackDecisionResolverFn
-    coder_prompt_addendum: CoderPromptAddendumProvider
+    #: The coder addendum and the issue's standing rulings (#8141).
+    launch_prompt: LaunchPromptProvider
     scoped_rework: ScopedReworkLaunch
+    #: The launch-boundary consent check every coding launch asks (#7763 r22).
+    refuse_unapproved: Callable[[int], "LaunchResult | None"]
 
 
 @dataclass(frozen=True)
@@ -180,7 +181,7 @@ class _ReworkLaunchAdmission:
     """All non-mutating inputs required before rework worktree preparation."""
 
     stack_base_branch: str | None
-    coder_prompt: PreparedCoderPromptAddendum
+    coder_prompt: PreparedLaunchPrompt
 
 
 def _admit_rework_launch(
@@ -190,7 +191,7 @@ def _admit_rework_launch(
     session_name: str,
     issue_number: int,
     pr_number: int,
-    coder_prompt: PreparedCoderPromptAddendum,
+    coder_prompt: PreparedLaunchPrompt,
 ) -> _ReworkLaunchAdmission | LaunchResult:
     """Resolve non-mutating gates before worktree or queue mutations."""
     preflight_failure, stack_base_branch = _rework_preflight(
@@ -257,14 +258,14 @@ def _rework_preflight(
 
 def _rework_launch_identity(
     rework: PendingRework, deps: ReworkLaunchDependencies
-) -> "LaunchResult | tuple[AgentConfig, int, PreparedCoderPromptAddendum]":
+) -> "LaunchResult | tuple[AgentConfig, int, PreparedLaunchPrompt]":
     """Everything a rework launch must know before it reads anything remote.
 
     The agent it will run as, the issue it belongs to, required prompt input,
     and whether that agent's provider is usable. Prompt preparation comes first
     because provider refusal can write a shared blocked label and durable record.
-    All of this stays ahead of :func:`resolve_rework_pr`, avoiding a GitHub read
-    for any refused launch.
+    All of this stays ahead of :func:`resolve_rework_pr`; the prompt reads GitHub
+    only to hydrate an issue's standing rulings the engine has never seen.
     """
     agent_config = deps.config.agents.get(rework.agent_type)
     if not agent_config:
@@ -274,8 +275,8 @@ def _rework_launch_identity(
         return LaunchResult(
             None, False, f"Unresolved issue number for rework {rework.issue_key}"
         )
-    prepared_coder_prompt = deps.coder_prompt_addendum.prepare(kind=SessionKind.REWORK)
-    if isinstance(prepared_coder_prompt, CoderPromptAddendumUnavailable):
+    prepared_coder_prompt = deps.launch_prompt.prepare(kind=SessionKind.REWORK, issue_number=issue_number)
+    if isinstance(prepared_coder_prompt, LaunchPromptUnavailable):
         return LaunchResult.required_input_unavailable(prepared_coder_prompt.reason)
     if result := deps.check_provider_ready(agent_config, issue_number):
         return result
@@ -402,7 +403,7 @@ def launch_rework_session(
     run = ctx.run
     claude_project_dir = ctx.claude_project_dir
 
-    if failure := work_claim.hold_before_spawn(run, issue_number=issue_number):
+    if failure := deps.refuse_unapproved(issue_number) or work_claim.hold_before_spawn(run, issue_number=issue_number):
         return failure
 
     with abandon_claim_unless_spawned(work_claim, run) as spawn:
@@ -445,7 +446,7 @@ def launch_rework_session(
             claude_project_dir.exists(),
         )
 
-        existing_work = build_rework_existing_work(worktree_info.rebase_failed)
+        existing_work = build_rework_existing_work(worktree_info)
         if existing_work:
             logger.warning("[launch] Rebase failed for rework - agent will need to resolve merge conflicts")
 
@@ -521,7 +522,8 @@ def launch_rework_session(
             command,
         )
 
-        if failure := deps.scoped_rework.before_spawn(scoped.keys, run.identity):
+        # Consent once more at the terminal boundary (#7763 review r26 F1).
+        if failure := deps.refuse_unapproved(issue_number) or deps.scoped_rework.before_spawn(scoped.keys, run.identity):
             return failure
         session_created = deps.create_session(
             session_name,
@@ -669,16 +671,10 @@ def resolve_rework_pr_details(repository_host: RepositoryHost, issue_number: int
     return pr.number, pr.branch
 
 
-def build_rework_existing_work(rebase_failed: bool) -> str | None:
-    if not rebase_failed:
+def build_rework_existing_work(worktree_info: WorktreeInfo) -> str | None:
+    if not worktree_info.rebase_failed:
         return None
-    return (
-        "WARNING: This branch could not be rebased onto main due to merge conflicts. "
-        "The code is out of date. You should resolve the conflicts by running: "
-        "git fetch origin main && git rebase origin/main. "
-        "If conflicts occur, resolve them and continue with: git rebase --continue. "
-        "This is critical to ensure tests pass with the latest code."
-    )
+    return rebase_conflict_warning(worktree_info.base_branch)
 
 
 def update_rework_cycle_label(

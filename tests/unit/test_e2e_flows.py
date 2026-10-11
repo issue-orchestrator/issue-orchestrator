@@ -12,7 +12,7 @@ def test_flow_create_issue_includes_filter_label(monkeypatch):
     """Ensure flow adds filter label automatically."""
     called = {}
 
-    def fake_create(repo, title, labels, body=None):
+    def fake_create(repo, title, labels, body=None, on_created=None, ensure_labels=True):
         called["repo"] = repo
         called["title"] = title
         called["labels"] = labels
@@ -34,7 +34,7 @@ def test_flow_create_issue_no_duplicate_filter_label(monkeypatch):
     """Avoid adding filter label twice."""
     called = {}
 
-    def fake_create(repo, title, labels, body=None):
+    def fake_create(repo, title, labels, body=None, on_created=None, ensure_labels=True):
         called["labels"] = labels
         # Returns tuple of (IssueKey, issue_number)
         return Mock(stable_id=lambda: "123", scope=lambda: repo), 456
@@ -85,7 +85,7 @@ def test_cleanup_test_prs_for_issues_closes_only_matching_e2e_prs(monkeypatch):
 def test_flow_cleanup_closes_prs_before_issues(monkeypatch):
     calls: list[tuple[str, object]] = []
 
-    def fake_create(repo, title, labels, body=None):
+    def fake_create(repo, title, labels, body=None, on_created=None, ensure_labels=True):
         return Mock(stable_id=lambda: "123", scope=lambda: repo), 123
 
     def fake_cleanup_prs(repo, issue_numbers, labels):

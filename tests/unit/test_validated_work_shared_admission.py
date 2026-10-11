@@ -121,10 +121,10 @@ def test_two_ranked_claim_stores_rerank_after_concurrent_first_admission(custody
     barrier = Barrier(2)
 
     class ConcurrentStore(SqliteValidatedWorkStore):
-        def admit_selected(self, admission, expected_current, selection):
+        def admit_selected(self, admission, expected_current, selection, *, carried=None):
             if expected_current is None:
                 barrier.wait(timeout=10)
-            return super().admit_selected(admission, expected_current, selection)
+            return super().admit_selected(admission, expected_current, selection, carried=carried)
 
     ranked = [RankedEvidenceAdmission(
         full_receipt_store(custody, ConcurrentStore),

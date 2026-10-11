@@ -21,6 +21,7 @@ import logging
 import os
 import signal
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -216,10 +217,17 @@ def _install_shutdown_signal_handlers(
     ``infra.shutdown_signals``.
     """
     from ..infra.shutdown_signals import install_attributed_shutdown
+    from .engine_custody import SignalShutdowns, detach
+
+    # request_shutdown waits for the state lock a running tick holds: off the
+    # loop and detached, so the engine keeps serving meanwhile; the server
+    # stops after the last signalled request is applied (#8222). This path
+    # never escalates to a forced stop.
+    signals = SignalShutdowns()
 
     def _on_shutdown() -> None:
-        orchestrator.request_shutdown()
-        trigger_server_shutdown()
+        signals.admit()
+        detach(signals.apply(orchestrator.request_shutdown, trigger_server_shutdown))
 
     install_attributed_shutdown(
         loop=asyncio.get_running_loop(),
@@ -256,7 +264,7 @@ async def run(
         release_lock,
         touch_lock,
     )
-    from .engine_startup import EngineStartup
+    from .engine_startup import EngineStartup, record_engine_start
 
     _assert_expected_identity(repo_root)
 
@@ -274,6 +282,7 @@ async def run(
         config_fingerprint=config.config_fingerprint,
     )
     logger.info("Lock acquired: pid=%d, port=%s", lock_info.pid, lock_info.http_port)
+    record_engine_start(config, repo_root=repo_root, now=datetime.now(UTC))
 
     # Register cleanup on exit
     def cleanup():
@@ -341,11 +350,19 @@ def main() -> int:
     args = parse_args()
 
     # Configure logging
+    # The shared layout: ``io engine-audit`` parses this log back (#7490).
+    from ..infra.logging_config import (
+        ROTATING_LOG_DATEFMT,
+        ROTATING_LOG_FORMAT,
+        frame_root_handlers,
+    )
+
     logging.basicConfig(
         level=getattr(logging, args.log_level),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
+        format=ROTATING_LOG_FORMAT,
+        datefmt=ROTATING_LOG_DATEFMT,
     )
+    frame_root_handlers(ROTATING_LOG_FORMAT, ROTATING_LOG_DATEFMT)
 
     # Block SIGTERM/SIGINT process-wide BEFORE any thread is created, so the
     # dedicated sigwaitinfo consumer can read the *sender* of a shutdown signal.

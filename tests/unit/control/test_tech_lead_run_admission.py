@@ -900,6 +900,19 @@ def test_a_subject_closed_while_queued_is_withdrawn_before_launch():
     assert [w.reason for w in result.withdrawn] == [REASON_ISSUE_CLOSED]
 
 
+def test_a_subject_paused_for_reconciliation_is_withdrawn_before_launch():
+    """porchpin #410: every write the run makes reconciles against its subject,
+    and the pause refuses them all -- so the run is not started."""
+    from issue_orchestrator.control.reconciliation import RECONCILE_PAUSE_LABEL
+    from issue_orchestrator.domain.tech_lead_run import REASON_PAUSED_FOR_RECONCILIATION
+    queued = _investigation(42)
+
+    result = _revalidate([queued], [FakeIssue(42, labels=("blocked-failed", RECONCILE_PAUSE_LABEL))])
+
+    assert result.still_eligible == ()
+    assert [w.reason for w in result.withdrawn] == [REASON_PAUSED_FOR_RECONCILIATION]
+
+
 def test_a_subject_absent_from_the_filtered_board_is_not_withdrawn():
     """Absence is not evidence.
 

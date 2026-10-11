@@ -26,6 +26,7 @@ from tests.callback_endpoint_helpers import ready_callback_endpoint
 from tests.run_allocation_helpers import make_completion_processor
 from tests.unit.test_completion_evidence_intake import command, completion
 from tests.unit.test_validated_work_preservation import custody as custody
+from tests.label_application_helpers import standing_while_present
 
 
 @pytest.fixture
@@ -53,6 +54,8 @@ def prepare(rig, *, changed_validator=False, raw=None):
     config.validation.quick.cmd = "false" if changed_validator else "true"
     config.validation.quick.timeout_seconds = 30
     exchange, prs, labels = Mock(spec=ReviewExchangeRunner), Mock(spec=PRAdapter), Mock(spec=LabelAdapter)
+    # No merged PR refs the issue: an unclaimed completion is a whole delivery (#8689).
+    prs.merged_pr_history.return_value = ()
     processor = make_completion_processor(label_adapter=labels, pr_adapter=prs, git_adapter=rig.wc,
         session_output=FileSystemSessionOutput(), config=config, review_exchange_runner=exchange,
         agent_callback_endpoint=ready_callback_endpoint())
@@ -64,7 +67,8 @@ def prepare(rig, *, changed_validator=False, raw=None):
 
 def assert_no_effects(rig):
     assert rig.exchange.mock_calls == []
-    assert rig.prs.mock_calls == []
+    # Preparation may READ the issue's merged history (#8689); it never writes.
+    assert {call[0] for call in rig.prs.mock_calls} <= {"merged_pr_history"}
     assert rig.labels.mock_calls == []
 
 
@@ -156,17 +160,73 @@ def test_unbound_or_released_evidence_is_rejected(retained, field):
 
 
 
-def test_retained_record_cannot_request_the_configured_human_block(retained):
-    from issue_orchestrator.control.needs_human_block import SharedNeedsHumanBlock
+def _real_block(tmp_path, live, label="needs-human"):
+    """The production shared-block owner over a live label set and a real cause store."""
+    from issue_orchestrator.control.needs_human_block import NeedsHumanBlock
+    from issue_orchestrator.execution.pending_work_claim_store import SqlitePendingWorkClaimStore
+
+    class _Labels:
+        def add_label(self, number, name):
+            live.setdefault(number, set()).add(name)
+
+        def remove_label(self, number, name):
+            live.setdefault(number, set()).discard(name)
+
+    claims = SqlitePendingWorkClaimStore.for_repo(tmp_path / "claims")
+    block = NeedsHumanBlock(
+        needs_human_label=label, tech_lead_marker="tech-lead-needs-human", labels=_Labels(),
+        read_labels=lambda number: sorted(live.get(number, set())),
+        label_application=standing_while_present(lambda number: sorted(live.get(number, set()))),
+        quarantined_issue_numbers=claims.quarantined_issue_numbers, causes=claims,
+    )
+    return block, claims
+
+
+def test_a_retained_record_naming_the_human_block_in_pr_labels_still_publishes(retained, tmp_path):
+    """porchpin #364 (#7592, #7678): a review-exchange coder ran ``coding-done
+    completed --pr-labels needs-human``. Recovery refused that retained record
+    on every pass, so the validated work could never publish.
+
+    The reserved label never reaches the PR as a label, and no longer becomes
+    a block on the ISSUE: it is the agent asking a person to decide before the
+    PR merges, carried to the recovery completion as a merge hold.
+    """
     raw = json.loads(completion())
-    raw["pr_labels"] = ["operator-human-block"]
+    raw["pr_labels"] = ["needs-human", "size:small"]
+    rig = prepare(retained, raw=raw)
+    live: dict[int, set[str]] = {42: set()}
+    block, claims = _real_block(tmp_path, live)
+    rig.processor.needs_human_block = block
+
+    result = rig.owner.prepare(rig.row, rig.workspace, "Retained feature")
+
+    assert isinstance(result, PreparedRecoveryPublication), result
+    assert result.command.target_head_sha == rig.row.admission.evidence.identity.key.validated_head_sha
+    assert result.merge_hold_requested is True
+    assert claims.needs_human_causes(42) == frozenset()
+    assert live[42] == set()
+    assert_no_effects(rig)
+
+
+def test_a_retained_human_request_that_cannot_be_recorded_does_not_publish(retained, tmp_path):
+    """The escalation is not optional: a block owner that refuses it leaves the
+    attempt pending (and so retried), never a publish that dropped the request."""
+    from issue_orchestrator.control.needs_human_block import SharedNeedsHumanBlock
+    from issue_orchestrator.domain.human_block import BlockOutcome
+
+    raw = json.loads(completion())
+    raw["requested_actions"] = [*raw.get("requested_actions", []), "add_needs_human_label"]
     rig = prepare(retained, raw=raw)
     block = Mock(spec=SharedNeedsHumanBlock)
-    block.owns.side_effect = lambda label: label == "operator-human-block"
+    block.owns.return_value = False
+    block.acquire.return_value = BlockOutcome.FAILED
     rig.processor.needs_human_block = block
+
     result = rig.owner.prepare(rig.row, rig.workspace, "Retained feature")
+
     assert isinstance(result, RecoveryAttemptPending)
-    assert "reserved shared block" in result.message
+    assert "needs-human block" in result.message
+    assert block.acquire.call_count == 1
     assert_no_effects(rig)
 
 
@@ -256,3 +316,27 @@ def test_a_rate_limited_stack_gate_keeps_its_reset(retained):
     assert result.rate_limit == limited.rate_limit
     assert "stack gate read was rate limited" in result.message
     assert_no_effects(rig)
+
+
+def test_recovery_publishes_refs_for_an_unclaimed_record_on_an_issue_delivered_in_part(retained):
+    """#8689, the porchpin #525 path: recovery prepares a forced receipt that
+    omitted --partial. Merged PR #7 already refs #42, so the recovered PR
+    refs it too, and publication verification carries the typed claim."""
+    from datetime import datetime, timezone
+
+    from issue_orchestrator.domain.issue_delivery import MergedPullRequest
+
+    rig = prepare(retained)
+    rig.prs.merged_pr_history.return_value = (
+        MergedPullRequest(7, "Refs #42\n\nSlice 1", datetime(2026, 10, 5, tzinfo=timezone.utc)),
+    )
+    rig.prs.get_prs_for_branch.return_value = []
+
+    result = rig.owner.prepare(rig.row, rig.workspace, "Retained feature")
+
+    assert isinstance(result, PreparedRecoveryPublication)
+    assert result.command.content.partial_pr is True
+    assert result.command.content.body.splitlines()[0] == "Refs #42"
+    assert "Partial delivery (inferred)" in result.command.content.body
+    rig.prs.merged_pr_history.assert_called_with(42)
+    rig.prs.get_pr.assert_not_called()

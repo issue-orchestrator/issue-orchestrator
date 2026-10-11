@@ -7,10 +7,14 @@ Follows the testing patterns in tests/unit/CLAUDE.md:
 - Focus on behaviors and edge cases
 """
 
+import logging
+
 import pytest
 from unittest.mock import MagicMock
 
+from issue_orchestrator.domain.human_block import NeedsHumanCause
 from issue_orchestrator.control.pr_scanner import PRScanner
+from issue_orchestrator.observation.no_progress import WorkRefusal, refusal_of_text
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.models import PendingReview, PendingRework
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -392,6 +396,72 @@ class TestScanForReviewsFiltering:
         assert "Skipping stale review PR: pr=100 issue=42 reason=issue_blocked" in caplog.text
 
 
+    def test_a_merge_hold_on_the_pr_admits_its_review(
+        self, scanner, mock_repository,
+    ):
+        """#7678 / porchpin#379: a person deciding before the PR merges does
+        not hold its review; the issue carries no work block."""
+        from issue_orchestrator.control.human_gates import HumanGates
+        from issue_orchestrator.domain.human_block import NeedsHumanCause
+
+        block = MagicMock()
+        block.hold_causes.return_value = {100: frozenset({NeedsHumanCause.MERGE_DECISION})}
+        scanner.attach_human_gates(HumanGates.over(block, scanner._lm))
+        mock_repository.issues.append(
+            IssueBuilder().with_number(42).with_title("Asks the maintainer")
+            .with_labels("agent:developer", "pr-pending").build()
+        )
+        pr = make_pr_info(100, branch="42-feature", body="Closes #42", labels=["needs-code-review", "needs-human"])
+        mock_repository.prs["42-feature"] = [pr]
+
+        scan = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+
+        assert [review.pr_number for review in scan.reviews] == [100]
+
+    @pytest.mark.parametrize("cause", [NeedsHumanCause.MERGE_ESCALATION, None])
+    def test_a_work_hold_on_the_pr_still_withholds_review(
+        self, scanner, mock_repository, cause,
+    ):
+        """An engine escalation of the PR, or a label with no recorded cause,
+        holds the PR's work: no review."""
+        from issue_orchestrator.control.human_gates import HumanGates
+
+        block = MagicMock()
+        block.hold_causes.return_value = {100: frozenset({cause} if cause else set())}
+        scanner.attach_human_gates(HumanGates.over(block, scanner._lm))
+        mock_repository.issues.append(
+            IssueBuilder().with_number(42).with_title("Asks the maintainer")
+            .with_labels("agent:developer", "pr-pending").build()
+        )
+        pr = make_pr_info(100, branch="42-feature", body="Closes #42", labels=["needs-code-review", "needs-human"])
+        mock_repository.prs["42-feature"] = [pr]
+
+        scan = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+
+        assert scan.reviews == []
+
+    def test_an_issue_level_question_still_withholds_review(
+        self, scanner, mock_repository,
+    ):
+        """An agent's question on the ISSUE (a pre-work question, porchpin#262)
+        holds the work, its review included."""
+        from issue_orchestrator.control.human_gates import HumanGates
+
+        block = MagicMock()
+        block.hold_causes.return_value = {42: frozenset({NeedsHumanCause.AGENT_COMPLETION})}
+        scanner.attach_human_gates(HumanGates.over(block, scanner._lm))
+        mock_repository.issues.append(
+            IssueBuilder().with_number(42).with_title("Asks the maintainer")
+            .with_labels("agent:developer", "needs-human").build()
+        )
+        pr = make_pr_info(100, branch="42-feature", body="Closes #42", labels=["needs-code-review"])
+        mock_repository.prs["42-feature"] = [pr]
+
+        scan = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+
+        assert scan.reviews == []
+
+
 class TestScanForReviewsEvents:
     """Tests for event emission in review scanning."""
 
@@ -673,6 +743,29 @@ class TestScanForReworksFiltering:
         assert escalations == []
 
 
+class TestScanForReworksMergeHold:
+    """#7678: a PR's merge hold is no bar to its rework; a work hold is."""
+
+    @pytest.mark.parametrize(
+        ("cause", "reworked"),
+        [(NeedsHumanCause.MERGE_DECISION, True), (NeedsHumanCause.MERGE_ESCALATION, False), (None, False)],
+    )
+    def test_only_a_merge_hold_lets_the_rework_through(self, scanner, mock_repository, cause, reworked):
+        from issue_orchestrator.control.human_gates import HumanGates
+
+        block = MagicMock()
+        block.hold_causes.return_value = {100: frozenset({cause} if cause else set())}
+        scanner.attach_human_gates(HumanGates.over(block, scanner._lm))
+        add_issue_with_agent(mock_repository, 42, "agent:developer")
+        mock_repository.prs["42-feature"] = [make_pr_info(
+            100, branch="42-feature", body="Closes #42", labels=["needs-rework", "needs-human"],
+        )]
+
+        scan = scanner.scan_for_reworks(already_queued=[], active_sessions=[])
+
+        assert [r.pr_number for r in scan.reworks] == ([100] if reworked else [])
+
+
 class TestScanForReworksEscalation:
     """Tests for escalation logic in rework scanning."""
 
@@ -734,6 +827,25 @@ class TestScanForReworksEscalation:
 
         assert result == [], "Should skip rework when issue is blocked"
         assert escalations == []
+
+    def test_a_blocked_rework_is_logged_as_a_refusal_the_audit_counts(self, scanner, mock_repository, caplog):
+        """#7490: without the opt-in timeline trace, a blocked PR's rework
+        refused on every scan must still reach the log, at INFO, in the shape
+        the engine audit counts as refused work (as the review lane's does)."""
+        mock_repository.issues.append(
+            IssueBuilder().with_number(42).with_title("Issue 42").with_agent("agent:developer")
+            .with_labels("agent:developer", "needs-human").build()
+        )
+        mock_repository.prs["42-feature"] = [
+            make_pr_info(100, branch="42-feature", body="Closes #42", labels=["needs-rework"])
+        ]
+
+        with caplog.at_level(logging.INFO, logger="issue_orchestrator.control.pr_scanner"):
+            scanner.scan_for_reworks(already_queued=[], active_sessions=[])
+
+        [record] = [r for r in caplog.records if "rework PR" in r.getMessage()]
+        assert record.levelno == logging.INFO
+        assert refusal_of_text(record.getMessage()) == WorkRefusal("PR #100", ("#42",), "rework", "issue_blocked")
 
     def test_no_escalation_at_max_cycle(self, scanner, mock_repository, mock_config):
         """Does not escalate when exactly at max rework cycles."""

@@ -18,10 +18,14 @@ from pathlib import Path
 
 import pytest
 
+from issue_orchestrator.adapters.worktree._worktree_hooks import (
+    PRE_PUSH_REFS_PLACEHOLDER,
+)
 from issue_orchestrator.entrypoints.bootstrap import (
     ISSUE_ORCHESTRATOR_PYTHON_ENV,
     export_orchestrator_python,
 )
+from issue_orchestrator.infra.hooks.pre_push_refs import pre_push_refs_shell
 
 
 _HOOK_PATH = (
@@ -58,29 +62,35 @@ def _run_hook_fragment(
     """Execute only the python-resolution + invoke part of the bundled hook.
 
     The full hook does more (test-skipping guard, etc.) that we don't want
-    to exercise here. We take everything through the third ``fi`` in the
+    to exercise here. Only the shared pre-push ref functions are substituted
+    in; the interpreter placeholder stays raw so the fallback chain is what
+    runs. We take everything through the fourth top-level ``fi`` in the
     script, which is a structural boundary: the first two close the
     Python-resolution if/elif chain and the empty-check, the third closes
-    the dirty-tree guard invocation. Using a structural marker means
-    changes to log strings don't break the slice; changes to the *shape*
-    of the hook (which SHOULD invalidate the test) still do.
+    the delete-only skip, the fourth closes the dirty-tree guard invocation.
+    Using a structural marker means changes to log strings don't break the
+    slice; changes to the *shape* of the hook (which SHOULD invalidate the
+    test) still do. The shell functions' own ``fi`` lines are indented.
     """
-    script = _HOOK_PATH.read_text().splitlines()
-    fi_indices = [
-        idx for idx, line in enumerate(script) if line.strip() == "fi"
-    ]
-    if len(fi_indices) < 3:
+    template = _HOOK_PATH.read_text().replace(
+        PRE_PUSH_REFS_PLACEHOLDER, pre_push_refs_shell().rstrip()
+    )
+    script = template.splitlines()
+    fi_indices = [idx for idx, line in enumerate(script) if line == "fi"]
+    if len(fi_indices) < 4:
         raise AssertionError(
-            "bundled pre-push hook no longer has the expected three ``fi`` "
+            "bundled pre-push hook no longer has the expected four ``fi`` "
             "closings — update this slice or the hook; don't just keep "
             "scrolling."
         )
-    end = fi_indices[2] + 1  # slice-end exclusive; include the third fi
+    end = fi_indices[3] + 1  # slice-end exclusive; include the fourth fi
     fragment = "\n".join(script[:end]) + "\n"
     return subprocess.run(
         ["/bin/bash", "-c", fragment],
         cwd=worktree,
         env=env,
+        # No ref lines: a push that is not delete-only, so the guard runs.
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         # 30s matches the bump applied to test_worktree_prepush_hooks.py

@@ -27,6 +27,7 @@ from ..domain.tech_lead_run import TechLeadRunScopeKind
 from ..domain.tech_lead_run_artifacts import TechLeadRunArtifacts, kinds_from_values
 from ..domain.tech_lead_run_record import TechLeadRunPhase, TechLeadRunRecord
 from ..domain.tech_lead_session import TechLeadSessionFlavor
+from ..ports.engine_audit import TechLeadRunHistoryRead
 from .repo_identity import state_dir
 from .sqlite_connection import open_sqlite
 
@@ -224,6 +225,22 @@ class SqliteTechLeadRunRecordStore:
             return ()
         return tuple(record for record in map(_record_from_row, rows) if record)
 
+    def all_runs(self) -> TechLeadRunHistoryRead:
+        """Every recorded run, oldest started first, for a cold reader (#7490).
+
+        Unlike :meth:`recent`, a failed read raises (the reader decides what
+        an unreadable history means) and rows this build cannot parse are
+        COUNTED, so a reader can tell a complete history from one with holes.
+        """
+        rows = self._get_connection().execute(
+            "SELECT * FROM tech_lead_run_records ORDER BY started_at ASC"
+        ).fetchall()
+        decoded = [_record_from_row(row) for row in rows]
+        return TechLeadRunHistoryRead(
+            records=tuple(record for record in decoded if record is not None),
+            unreadable=sum(record is None for record in decoded),
+        )
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
@@ -326,4 +343,9 @@ def _record_from_row(row: sqlite3.Row) -> Optional[TechLeadRunRecord]:
         return None
 
 
-__all__ = ["SqliteTechLeadRunRecordStore"]
+#: The table a cold reader (``io improver``, #7490) needs in a snapshot
+#: before opening this store on it (opening creates a missing table).
+AUDIT_TABLES = ("tech_lead_run_records",)
+
+
+__all__ = ["AUDIT_TABLES", "SqliteTechLeadRunRecordStore"]

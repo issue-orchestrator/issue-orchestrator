@@ -85,6 +85,33 @@
         });
     }
 
+    // Reads one message off a channel several message families share (a
+    // window's postMessage stream). ``undefined``: the value names none of
+    // the discriminated union's members, so it is not this reader's message
+    // and nothing is reported. Otherwise the payload validated against the
+    // union, or ``null`` after one diagnostic. The member tags come from the
+    // generated contract, so callers never hand-write them.
+    function fromUnionMember(value, unionSchemaName, source) {
+        const union = validators.SCHEMAS[unionSchemaName];
+        if (!union || !union.discriminator || !Array.isArray(union.oneOf)) {
+            return _reject({
+                schemaName: unionSchemaName,
+                source: source || 'value',
+                detail: 'schema is not a discriminated union',
+                errors: [],
+            });
+        }
+        const tag = union.discriminator.propertyName;
+        const tags = union.oneOf.map(member => {
+            const name = String(member.$ref || '').split('/').pop();
+            const property = ((validators.SCHEMAS[name] || {}).properties || {})[tag] || {};
+            return property.const;
+        });
+        const candidate = value !== null && typeof value === 'object' ? value[tag] : undefined;
+        if (!tags.includes(candidate)) return undefined;
+        return fromValue(value, unionSchemaName, source);
+    }
+
     // Parses raw JSON text and validates it. Returns the payload, or null.
     function parse(rawText, schemaName, source) {
         const label = source || 'json text';
@@ -186,14 +213,21 @@
     // Returns a string, never a payload: nothing here can reach a
     // renderer. Callers pass their own fallback for a body that is
     // absent, unreadable, or not JSON.
+    //
+    // A Control Center failure pairs a machine ``error`` code with a human
+    // ``detail`` (``passthrough_failed`` + why the engine did not answer,
+    // #8222), so a non-empty string ``detail`` wins when both are present:
+    // the code alone tells the operator nothing they can act on.
     async function errorMessage(response, fallback) {
         const status = response && response.status;
         const defaultText = fallback || 'HTTP ' + (status || 'error');
         if (!response || typeof response.text !== 'function') return defaultText;
         try {
             const body = JSON.parse(await response.text());
+            const hasDetailText = body && typeof body === 'object'
+                && typeof body.detail === 'string' && body.detail.trim() !== '';
             const message = body && typeof body === 'object'
-                ? body.error || body.detail
+                ? (hasDetailText ? body.detail : body.error || body.detail)
                 : null;
             return String(message || defaultText);
         } catch (_) {
@@ -222,6 +256,7 @@
         fromEventData,
         fromInlineScript,
         fromResponse,
+        fromUnionMember,
         fromValue,
         parse,
         setViolationReporter,

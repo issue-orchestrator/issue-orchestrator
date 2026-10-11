@@ -26,6 +26,7 @@ from .review_validity import (
     evaluate_review_validity,
     evaluate_review_withholding,
 )
+from .human_gates import HumanGates
 
 if TYPE_CHECKING:
     from .label_manager import LabelManager
@@ -93,6 +94,7 @@ def review_launch_validity(
     repository_host: RepositoryHost,
     label_manager: "LabelManager",
     recovery_holds: RecoveryHolds,
+    gates: HumanGates,
 ) -> ReviewLaunchCheck:
     """Load current review facts and decide whether launch is still valid."""
     current_issue = repository_host.get_issue(review.issue_number)
@@ -107,6 +109,7 @@ def review_launch_validity(
             label_manager=label_manager,
             issue=current_issue,
             pr=current_pr,
+            gates=gates,
         )
         return ReviewLaunchCheck(validity, held_by_recovery=False)
     withholding = evaluate_review_withholding(
@@ -115,6 +118,7 @@ def review_launch_validity(
         issue=current_issue,
         pr=current_pr,
         block_label=label_manager.recovery_pending,
+        gates=gates,
     )
     if not withholding.withheld_only_by_block:
         return ReviewLaunchCheck(withholding.current, held_by_recovery=False)

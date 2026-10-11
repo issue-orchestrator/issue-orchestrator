@@ -3,7 +3,9 @@
 from hashlib import sha256
 from pathlib import Path
 
-from ..domain.validated_work_store import AncestryRelation, CommitReference, EvidenceRow
+from ..domain.validated_work_store import (
+    PUBLICATION_PIN_PREFIXES, AncestryRelation, CommitReference, EvidenceRow,
+)
 from ..ports.git import Git
 from .completion_intake_artifacts import read_regular
 
@@ -24,6 +26,13 @@ class IntakeDispositionVerification:
             result.returncode == 0
             and result.stdout.strip() == reference.key.validated_head_sha
         )
+
+    def retain(self, reference: CommitReference) -> bool:
+        if not reference.pinned_ref.startswith(PUBLICATION_PIN_PREFIXES):
+            return False
+        sha = reference.key.validated_head_sha
+        self._git.run(self._repo, ["update-ref", "--no-deref", reference.pinned_ref, sha, "0" * 40], check=False)
+        return self._exists(reference)
 
     def compare(
         self, left: CommitReference, right: CommitReference
