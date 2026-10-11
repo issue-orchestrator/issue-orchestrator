@@ -298,7 +298,11 @@ def test_engine_keeps_serving_while_a_command_waits_for_the_tick(
         time.sleep(0.3)  # let the command reach the lock wait
         # A second command for the same lock is accepted and waits as well; the
         # probe is a request the engine answers without the lock.
-        probe = httpx.get(f"{live_engine.base_url}/api/no-such-route-8222", timeout=2)
+        # The probe proves the loop is free, not that it is fast: a loop blocked
+        # by the waiting command could not answer until finish.set() below,
+        # however long the timeout. A short timeout only adds a latency bar a
+        # loaded CI runner can miss (#9477 CI: ReadTimeout on the first case).
+        probe = httpx.get(f"{live_engine.base_url}/api/no-such-route-8222", timeout=10)
         assert probe.status_code == 404  # answered: the loop is free
         assert waiting.is_alive(), "the command must still be waiting for the tick"
         finish.set()
