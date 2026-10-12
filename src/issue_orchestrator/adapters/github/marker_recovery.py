@@ -126,6 +126,23 @@ def prove_open_marker_issue(client: "GitHubHttpClient", *, marker: str) -> Marke
     return None
 
 
+def open_issue_bodies_containing(client: "GitHubHttpClient", *, needle: str) -> list[tuple[int, str]]:
+    """Every OPEN issue whose body holds ``needle``, with its body (#8986):
+    uncached and complete or loud, like :func:`prove_open_marker_issue`."""
+    if not needle.strip():
+        raise ValueError("an open-issue body read needs a needle")
+    found: list[tuple[int, str]] = []
+    for payload in client.list_issues(
+        state="open", limit=AUTHORITATIVE_SCAN_LIMIT, use_cache=False, exhaustive=True
+    ):
+        if not isinstance(payload, dict):
+            continue
+        body, number = payload.get("body"), payload.get("number")
+        if isinstance(body, str) and needle in body and number:
+            found.append((int(number), body))
+    return found
+
+
 def _marker_issue(payload: object, marker: str) -> MarkerIssue | None:
     if not isinstance(payload, dict):
         return None

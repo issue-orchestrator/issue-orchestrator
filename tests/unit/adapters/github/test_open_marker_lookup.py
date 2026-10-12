@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from issue_orchestrator.adapters.github.marker_recovery import prove_open_marker_issue
+from issue_orchestrator.adapters.github.marker_recovery import open_issue_bodies_containing, prove_open_marker_issue
 
 
 class FakeClient:
@@ -35,3 +35,25 @@ def test_a_miss_is_none() -> None:
 def test_an_empty_marker_is_refused() -> None:
     with pytest.raises(ValueError):
         prove_open_marker_issue(FakeClient([]), marker=" ")  # type: ignore[arg-type]
+
+
+def test_open_bodies_holding_a_needle_are_read_uncached_and_completely() -> None:
+    """#8986: every open issue's body, whatever its title or labels."""
+    client = FakeClient([
+        {"number": 3, "body": "x"},
+        {"number": 5, "body": "<!-- d:{} -->\nbody"},
+        {"number": 7, "body": None},
+        {"number": 9, "body": "notes\n<!-- d:{} -->"},
+    ])
+
+    found = open_issue_bodies_containing(client, needle="<!-- d:")  # type: ignore[arg-type]
+
+    assert found == [(5, "<!-- d:{} -->\nbody"), (9, "notes\n<!-- d:{} -->")]
+    [call] = client.calls
+    assert "labels" not in call and call["state"] == "open"
+    assert call["use_cache"] is False and call["exhaustive"] is True
+
+
+def test_an_empty_needle_is_refused() -> None:
+    with pytest.raises(ValueError):
+        open_issue_bodies_containing(FakeClient([]), needle=" ")  # type: ignore[arg-type]

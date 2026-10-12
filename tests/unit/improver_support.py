@@ -369,6 +369,8 @@ class FakeIssueHost:
         self.stale_listing = False
         self.create_calls = 0
         self.next_number = 9000
+        #: The bodies of open issues it did not file (an operator's, an older run's).
+        self.bodies: dict[int, str] = {}
 
     def list_open_issue_labels_complete(self):  # type: ignore[no-untyped-def]
         created = {c["number"] for c in self.created}
@@ -377,6 +379,14 @@ class FakeIssueHost:
     def find_open_issue_by_marker(self, *, marker):  # type: ignore[no-untyped-def]
         """Uncached, by body: sees what the (stale, retitled) listing does not."""
         return next((c["number"] for c in self.created if marker in c["body"]), None)
+
+    def open_issue_bodies_containing(self, needle):  # type: ignore[no-untyped-def]
+        """Uncached, by body: sees what the (stale, retitled) listing does not."""
+        from issue_orchestrator.ports.engine_audit import OpenIssueBody
+
+        is_open = {i.number for i in self.open}
+        bodies = {**self.bodies, **{c["number"]: c["body"] for c in self.created}}
+        return [OpenIssueBody(number=n, body=b) for n, b in sorted(bodies.items()) if n in is_open and needle in b]
 
     def find_issue_by_marker(self, *, title, marker, authoritative=False):  # type: ignore[no-untyped-def]
         assert authoritative

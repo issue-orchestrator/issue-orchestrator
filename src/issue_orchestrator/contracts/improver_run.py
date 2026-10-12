@@ -96,6 +96,47 @@ class EffectStatus(StrEnum):
     COMMENTED = "commented"
 
 
+class CodeSiteRecord(_Closed):
+    """One function (or class, or name) of the engine source, named in full:
+    its module's dotted path and its qualified name."""
+
+    module: tuple[str, ...] = Field(min_length=1)
+    symbol: tuple[str, ...] = Field(min_length=1)
+
+
+class CitedLineRecord(_Closed):
+    """A line of a run-dir file a design finding cites, other than engine source."""
+
+    path: str
+    line: int
+    quote: str
+
+
+class DefectProfileRecord(_Closed):
+    """Where one finding's defect lives and what it was seen on, as a LATER
+    run compares it (#8986): a
+    :class:`~..domain.improver_defects.DefectProfile` without what names
+    something only within its own run (a toolbox call number)."""
+
+    design: bool
+    sites: tuple[CodeSiteRecord, ...] = ()
+    items: tuple[int, ...] = ()
+    records: tuple[str, ...] = ()
+    cited: tuple[CitedLineRecord, ...] = ()
+    quotes: tuple[str, ...] = ()
+
+
+class FiledDefect(_Closed):
+    """The defect an improver issue is about, as its body's first line
+    records it (#8986): which run filed it, about which engine, and the
+    finding's profile."""
+
+    run_id: str = Field(min_length=1)
+    engine_id: str = Field(min_length=1)
+    audited_repo: str = Field(min_length=1)
+    profile: DefectProfileRecord
+
+
 class EffectReceipt(_Closed):
     """What the orchestrator did on GitHub for one accepted finding."""
 
@@ -103,6 +144,12 @@ class EffectReceipt(_Closed):
     #: The finding's identity across runs (output + anomaly keys + case id);
     #: an open issue whose title carries it is the same finding.
     key: str
+    #: Where the finding's defect lives and what it was seen on (#8986): its
+    #: issue records it, and an open issue about the same defect gets this
+    #: finding's evidence instead of a second issue. None for a proposed
+    #: change to the improver, and on a receipt planned before profiles were
+    #: recorded.
+    profile: DefectProfileRecord | None = None
     status: EffectStatus
     issue_number: int | None = None
     at: AwareDatetime | None = None
@@ -259,9 +306,13 @@ __all__ = [
     "DEFAULT_IMPROVER_AGENT",
     "DEFAULT_IMPROVER_MODELS",
     "IMPROVER_RUN_SCHEMA_VERSION",
+    "CitedLineRecord",
+    "CodeSiteRecord",
+    "DefectProfileRecord",
     "EffectReceipt",
     "EffectStatus",
     "ExamScore",
+    "FiledDefect",
     "FindingSupport",
     "HeatConflictRecord",
     "SameDefectRecord",

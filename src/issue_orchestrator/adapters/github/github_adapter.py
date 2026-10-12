@@ -25,7 +25,7 @@ from ...ports.pull_request_tracker import (
     StatusCheckRollupRead,
     StatusCheckRollupState,
 )
-from ...ports.engine_audit import OpenIssueLabels
+from ...ports.engine_audit import OpenIssueBody, OpenIssueLabels
 from ...ports.repository_host import DependencyIssueSnapshot, RepositoryHostError
 from ...ports.comment_receipt import IssueCommentReceipt
 from ...infra import gh_audit
@@ -39,7 +39,12 @@ from .http_client import (
     build_github_auth,
     classify_github_http_failure,
 )
-from .marker_recovery import find_marker_issue, prove_marker_issue, prove_open_marker_issue
+from .marker_recovery import (
+    find_marker_issue,
+    open_issue_bodies_containing,
+    prove_marker_issue,
+    prove_open_marker_issue,
+)
 from .repo import get_repo_from_git, GitRepoError
 from .cache import GitHubCache
 from .adapter_cache import GitHubAdapterCacheSupport
@@ -608,6 +613,14 @@ class GitHubAdapter(GitHubIntegrationBranchMixin):
         none (uncached, complete or raising)."""
         found = prove_open_marker_issue(self._client, marker=marker)
         return found.number if found is not None else None
+
+    def open_issue_bodies_containing(self, needle: str) -> list[OpenIssueBody]:
+        """Every open issue whose body carries ``needle``, with its body
+        (uncached, complete or raising)."""
+        return [
+            OpenIssueBody(number=number, body=body)
+            for number, body in open_issue_bodies_containing(self._client, needle=needle)
+        ]
 
     def get_default_branch(self) -> str:
         """The repository's real default branch (cached; GitHub is authoritative)."""

@@ -12,6 +12,7 @@ from issue_orchestrator.control.improver_effects import (
     IMPROVER_LABEL,
     OPERATOR_DECISION_LABEL,
     TARGET_OPERATOR_LABEL,
+    EffectIdentity,
     finding_key,
     planned_effects,
     title_token,
@@ -21,7 +22,7 @@ from issue_orchestrator.execution.improver_effect_applier import ImproverEffects
 from issue_orchestrator.domain.host_rate_limit import HostRateLimit
 from issue_orchestrator.ports.engine_audit import OpenIssueLabels
 from issue_orchestrator.ports.repository_host import RepositoryHostRateLimitedError
-from tests.unit.improver_support import OPEN_TRACKER, FakeIssueHost, MemoryRunStore, example
+from tests.unit.improver_support import OPEN_TRACKER, FakeEngineSource, FakeIssueHost, MemoryRunStore, example
 
 NOW = datetime(2026, 9, 28, 19, 0, tzinfo=UTC)
 
@@ -45,7 +46,8 @@ def _run(
         run_id=run_id, started_at=NOW, finished_at=NOW, outcome=outcome, detail="",
         engine_id=engine.engine_id, audited_repo=audited_repo, outputs_repo=outputs_repo,
         run_dir=str(run_dir), engine_commit=merged["engine_commit"],
-        effects=planned_effects(findings, engine) if outcome is RunOutcome.ACCEPTED else (),
+        effects=planned_effects(findings, EffectIdentity(engine, FakeEngineSource()))
+        if outcome is RunOutcome.ACCEPTED else (),
     )
     store.record(record)
     return record
@@ -452,11 +454,11 @@ def test_a_design_renamed_by_a_merge_keeps_its_effect_key(tmp_path: Path) -> Non
 
     plain = {**example("exam_case"), "design_findings": [_DESIGN]}
     renamed = {**example("exam_case"), "design_findings": [{**_DESIGN, "id": "approval-by-label-removal-h2"}]}
-    engine = _engine("porchpin/porchpin")
+    identity = EffectIdentity(_engine("porchpin/porchpin"), FakeEngineSource())
 
-    [_, as_written] = planned_effects(ImproverFindings.model_validate_json(json.dumps(plain)), engine)
+    [_, as_written] = planned_effects(ImproverFindings.model_validate_json(json.dumps(plain)), identity)
     [_, after_merge] = planned_effects(
-        ImproverFindings.model_validate_json(json.dumps(renamed)), engine,
+        ImproverFindings.model_validate_json(json.dumps(renamed)), identity,
         {"approval-by-label-removal-h2": "approval-by-label-removal"},
     )
 

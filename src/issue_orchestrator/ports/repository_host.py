@@ -9,6 +9,7 @@ issues, PRs, and labels. It combines IssueTracker, LabelSet, and
 PullRequestTracker into a single interface.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -20,6 +21,7 @@ from .pull_request_tracker import PullRequestTracker
 
 if TYPE_CHECKING:
     from ..domain.issue_key import IssueKey
+    from .engine_audit import OpenIssueBody
 
 
 RepositoryHostErrorKind = Literal["http", "transport", "other"]
@@ -274,6 +276,15 @@ class RepositoryHost(IssueTracker, LabelSet, PullRequestTracker, IntegrationBran
         Authoritative over every open issue, whatever its title or labels
         became: None proves there is none, and a read that cannot prove it
         raises. Uncached, so an issue filed a moment ago is seen.
+        """
+        ...
+
+    def open_issue_bodies_containing(self, needle: str) -> Sequence["OpenIssueBody"]:
+        """Every OPEN issue whose body holds ``needle``, with its body (#8986).
+
+        Complete over every open issue, whatever its title or labels became,
+        or raising: never a partial list. Uncached, so an issue filed a
+        moment ago is seen.
         """
         ...
 
