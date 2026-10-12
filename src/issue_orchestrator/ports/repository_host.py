@@ -270,8 +270,9 @@ class RepositoryHost(IssueTracker, LabelSet, PullRequestTracker, IntegrationBran
         """
         ...
 
-    def find_open_issue_by_marker(self, *, marker: str) -> int | None:
-        """The OPEN issue whose body holds ``marker`` (#7490).
+    def find_open_issue_by_marker(self, *, marker: str) -> "OpenIssueBody | None":
+        """The OPEN issue whose body holds ``marker`` (#7490), with its title,
+        labels and body as read (#8986).
 
         Authoritative over every open issue, whatever its title or labels
         became: None proves there is none, and a read that cannot prove it

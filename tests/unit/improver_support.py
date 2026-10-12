@@ -376,20 +376,21 @@ class FakeIssueHost:
     def find_open_issue_by_marker(self, *, marker):  # type: ignore[no-untyped-def]
         """Read fresh, by body: sees what the application's (stale) open-issue
         read does not, but never an issue closed since (one left out of ``open``)."""
-        is_open = {i.number for i in self.open}
-        return next((c["number"] for c in self.created if c["number"] in is_open and marker in c["body"]), None)
+        return next((i for i in self._open_bodies() if marker in i.body), None)
 
     def list_open_issue_bodies_complete(self):  # type: ignore[no-untyped-def]
+        created = {c["number"] for c in self.created}
+        return [i for i in self._open_bodies() if not (self.stale_listing and i.number in created)]
+
+    def _open_bodies(self):  # type: ignore[no-untyped-def]
         """Every open issue with its title, labels and body (an empty body for
         one whose body the test does not give)."""
         from issue_orchestrator.ports.engine_audit import OpenIssueBody
 
-        created = {c["number"]: c["body"] for c in self.created}
-        bodies = {**self.bodies, **created}
+        bodies = {**self.bodies, **{c["number"]: c["body"] for c in self.created}}
         return [
             OpenIssueBody(number=i.number, title=i.title, labels=i.labels, body=bodies.get(i.number, ""))
             for i in self.open
-            if not (self.stale_listing and i.number in created)
         ]
 
     def find_issue_by_marker(self, *, title, marker, authoritative=False):  # type: ignore[no-untyped-def]

@@ -451,6 +451,34 @@ def test_a_run_owed_with_an_earlier_one_comments_on_the_issue_that_one_just_file
     assert _effect(later, CRASH_H2) == (EffectStatus.COMMENTED, _filed_for(host, CRASH_H1))
 
 
+def _crash_h1_alone() -> dict:
+    """Heat 1 with nothing but #8693's design finding."""
+    first = _heat(1)
+    return {**first, "findings": [], "design_findings": [d for d in first["design_findings"] if d["id"] == CRASH_H1]}
+
+
+def test_an_issue_a_fresh_read_proves_open_carries_its_defect_for_every_run_after(tmp_path: Path) -> None:
+    """r3 F3: the application's read does not show A's issue yet. B, with
+    A's key, finds it by its marker and comments there; C words A's defect
+    under another key and comments there too: what the fresh read proved,
+    defect and all, is an open issue for every receipt after B's."""
+    store, host = MemoryRunStore(tmp_path), _host()
+    _apply(store, host, "a", _crash_h1_alone())
+    crash = _filed_for(host, CRASH_H1)
+    host.stale_listing = True
+    _record(store, "b", _crash_h1_alone())
+    _record(store, "c", _heat(2))
+
+    applied = ImproverEffects(store=store, host=host, outputs_repo=OUTPUTS, clock=lambda: NOW).apply_pending()
+
+    runs = {r.run_id: r for r in applied}
+    assert _effect(runs["b"], CRASH_H1) == (EffectStatus.COMMENTED, crash)
+    assert _effect(runs["c"], CRASH_H2) == (EffectStatus.COMMENTED, crash)
+    assert _filed_for(host, CRASH_H1) == crash
+    assert not any(CRASH_H2 in c["title"] for c in host.created)
+    assert [n for n, _ in host.comments].count(crash) == 2
+
+
 def _recovered(tmp_path: Path, *, closed_since: bool) -> tuple[dict[str, ImproverRunRecord], FakeIssueHost, int]:
     """Run A's POST filed #8693's issue, then its response was lost, and the
     application's open-issue read does not show it yet; run B (heat 2, the same defect under
@@ -458,10 +486,7 @@ def _recovered(tmp_path: Path, *, closed_since: bool) -> tuple[dict[str, Improve
     batch is applied again."""
     store, host = MemoryRunStore(tmp_path), _host()
     host.stale_listing = True
-    first = _heat(1)
-    _record(store, "a", {**first, "findings": [], "design_findings": [
-        d for d in first["design_findings"] if d["id"] == CRASH_H1
-    ]})
+    _record(store, "a", _crash_h1_alone())
     _record(store, "b", _heat(2))
     effects = ImproverEffects(store=store, host=host, outputs_repo=OUTPUTS, clock=lambda: NOW)
     host.lose_create_result = RuntimeError("connection reset")

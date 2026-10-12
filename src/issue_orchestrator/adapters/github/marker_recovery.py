@@ -23,6 +23,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ...ports.engine_audit import OpenIssueBody
+
 if TYPE_CHECKING:
     from .http_client import GitHubHttpClient
 
@@ -110,17 +112,18 @@ def prove_marker_issue(
     return None
 
 
-def prove_open_marker_issue(client: "GitHubHttpClient", *, marker: str) -> MarkerIssue | None:
-    """AUTHORITATIVE over every OPEN issue: ``None`` means no open issue has
-    ``marker`` in its body, whatever its title or labels became. Read fresh
-    and complete or loud, like :func:`prove_marker_issue`, but scoped to open
-    issues and walked by cursor, so an issue closing mid-walk cannot shift
-    the one carrying ``marker`` past a page boundary (#8986)."""
+def prove_open_marker_issue(client: "GitHubHttpClient", *, marker: str) -> OpenIssueBody | None:
+    """AUTHORITATIVE over every OPEN issue: the first with ``marker`` in its
+    body, as read (#8986), whatever its title or labels became; ``None``
+    means there is none. Read fresh and complete or loud, like
+    :func:`prove_marker_issue`, but scoped to open issues and walked by
+    cursor, so an issue closing mid-walk cannot shift the one carrying
+    ``marker`` past a page boundary."""
     if not marker.strip():
         raise ValueError("an open-issue marker lookup needs a marker")
-    for number, _title, _labels, body in client.list_open_issue_bodies_complete():
+    for number, title, labels, body in client.list_open_issue_bodies_complete():
         if marker in body:
-            return MarkerIssue(number=number)
+            return OpenIssueBody(number=number, title=title, labels=labels, body=body)
     return None
 
 

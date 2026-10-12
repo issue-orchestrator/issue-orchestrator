@@ -35,8 +35,9 @@ the folded finding's claim is shown on that finding's issue
 (:func:`support_note`).
 
 Deduplication is against OPEN issues (:class:`OpenIssues`): every filed
-issue's title carries the finding's identity (``[improver:<key>]``), so a
-finding an open issue already carries — filed by an earlier run, or by this
+issue's title carries the finding's identity (``[improver:<key>]``), and so
+does its body's marker whatever the title became, so a finding an open issue
+already carries — filed by an earlier run, or by this
 one before a crash lost its receipt — gets its evidence commented there
 instead of a second issue. A comment carries a marker for its run and
 finding, so it is posted once.
@@ -92,7 +93,7 @@ from ..domain.improver_defects import (
     same_defect,
     stall_profile,
 )
-from ..ports.engine_audit import OpenIssueBody, OpenIssueLabels
+from ..ports.engine_audit import OpenIssueBody
 
 #: Every improver issue carries this label, so an operator can find them all.
 IMPROVER_LABEL = "improver"
@@ -245,14 +246,14 @@ def planned_effects(
 @dataclass(frozen=True)
 class FileImproverIssue:
     """File one new issue for a finding. ``marker`` is in its body, so a
-    creation whose result was lost can be proven filed or absent; so is
-    ``defect``, the defect the issue is about (None for a proposed change)."""
+    creation whose result was lost can be proven filed or absent; its first
+    line records the defect the issue is about too (none for a proposed
+    change)."""
 
     title: str
     marker: str
     body: str
     labels: tuple[str, ...]
-    defect: FiledDefect | None = None
 
 
 @dataclass(frozen=True)
@@ -295,36 +296,45 @@ def filed_defect(body: str) -> FiledDefect | None:
 
 
 class OpenIssues:
-    """What the effects are deduplicated against, read once per application:
-    every open issue's title and labels, and the defect each one's body
-    records (#8986). An application adds each issue it files."""
+    """What the effects are deduplicated against: every open issue the
+    application knows, with its title, labels and body, and the defect its
+    body records (#8986). Every fact enters through :meth:`add`: the
+    application's one read, an issue a fresh read proves open, and each
+    issue the application files, so key and defect deduplication see the
+    same issues whichever path proved them."""
 
-    def __init__(self, listed: Iterable[OpenIssueLabels], defects: Mapping[int, FiledDefect]) -> None:
-        self._listed = {i.number: i for i in listed}
-        self._defects = dict(defects)
+    def __init__(self) -> None:
+        self._issues: dict[int, OpenIssueBody] = {}
+        self._defects: dict[int, FiledDefect] = {}
 
     @classmethod
     def read(cls, issues: Iterable[OpenIssueBody]) -> OpenIssues:
-        """The open issues as one complete read of the host shows them: each
-        one's title and labels, and the defect its body records."""
-        snapshot = tuple(issues)
-        defects: dict[int, FiledDefect] = {}
-        for issue in snapshot:
-            try:
-                defect = filed_defect(issue.body)
-            except ValueError as error:
-                raise ValueError(f"open issue #{issue.number}'s defect marker records no defect: {error}") from error
-            if defect is not None:
-                defects[issue.number] = defect
-        return cls((OpenIssueLabels(number=i.number, title=i.title, labels=i.labels) for i in snapshot), defects)
+        """The open issues one complete read of the host shows."""
+        open_issues = cls()
+        for issue in issues:
+            open_issues.add(issue)
+        return open_issues
+
+    def add(self, issue: OpenIssueBody) -> None:
+        """``issue``, proven open now; what is read of it replaces what was."""
+        try:
+            defect = filed_defect(issue.body)
+        except ValueError as error:
+            raise ValueError(f"open issue #{issue.number}'s defect marker records no defect: {error}") from error
+        self._issues[issue.number] = issue
+        if defect is None:
+            self._defects.pop(issue.number, None)
+        else:
+            self._defects[issue.number] = defect
 
     def is_open(self, number: int) -> bool:
-        return number in self._listed
+        return number in self._issues
 
     def carrying(self, key: str) -> int | None:
-        """The open issue whose title carries the finding ``key``."""
-        token = title_token(key)
-        return next((n for n, i in sorted(self._listed.items()) if token in i.title), None)
+        """The open issue that carries the finding ``key``: by the token in
+        its title, or by the marker in its body whatever its title became."""
+        token, marker = title_token(key), finding_marker(key)
+        return next((n for n, i in sorted(self._issues.items()) if token in i.title or marker in i.body), None)
 
     def same_defect(self, run: ImproverRunRecord, receipt: EffectReceipt) -> tuple[int, ...]:
         """The open issues an EARLIER run filed about the receipt's defect on
@@ -345,16 +355,6 @@ class OpenIssues:
             and (filed.engine_id, filed.audited_repo) == (run.engine_id, run.audited_repo)
             and same_defect(mine, recorded_profile(filed.profile, f"#{number}"))
         )
-
-    def filed(self, issue: OpenIssueLabels, defect: FiledDefect | None) -> None:
-        """An issue this application filed, or proved filed and open, is open now."""
-        self._listed[issue.number] = issue
-        if defect is not None:
-            self._defects[issue.number] = defect
-
-    def with_issue(self, issue: OpenIssueLabels) -> OpenIssues:
-        """These open issues and ``issue``, proven open by its body marker."""
-        return OpenIssues((*self._listed.values(), issue), self._defects)
 
 
 def plan_effect(
@@ -398,7 +398,6 @@ def plan_effect(
         marker=marker,
         body=f"{_first_line(marker, defect)}\n{issue_body(run, finding)}",
         labels=(*labels, TARGET_OPERATOR_LABEL) if route is EffectRoute.TARGET_OPERATOR else labels,
-        defect=defect,
     )
 
 
@@ -425,7 +424,6 @@ def _plan_design_effect(
         marker=marker,
         body=f"{_first_line(marker, defect)}\n{design_issue_body(run, design)}",
         labels=DESIGN_LABELS,
-        defect=defect,
     )
 
 

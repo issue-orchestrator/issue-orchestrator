@@ -24,7 +24,7 @@ def test_it_reads_every_open_issue_body_whatever_its_title_or_labels() -> None:
 
     found = prove_open_marker_issue(client, marker="<!-- m -->")  # type: ignore[arg-type]
 
-    assert found is not None and found.number == 5
+    assert found is not None and (found.number, found.title, found.body) == (5, "Issue 5", "<!-- m -->\nbody")
     assert client.reads == 1
 
 

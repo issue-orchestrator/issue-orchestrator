@@ -603,11 +603,10 @@ class GitHubAdapter(GitHubIntegrationBranchMixin):
         )
         return found.number if found is not None else None
 
-    def find_open_issue_by_marker(self, *, marker: str) -> int | None:
-        """The open issue whose body carries ``marker``; None proves there is
-        none (read fresh, cursor-paged, complete or raising)."""
-        found = prove_open_marker_issue(self._client, marker=marker)
-        return found.number if found is not None else None
+    def find_open_issue_by_marker(self, *, marker: str) -> OpenIssueBody | None:
+        """The open issue whose body carries ``marker``, as read; None proves
+        there is none (read fresh, cursor-paged, complete or raising)."""
+        return prove_open_marker_issue(self._client, marker=marker)
 
     def get_default_branch(self) -> str:
         """The repository's real default branch (cached; GitHub is authoritative)."""
