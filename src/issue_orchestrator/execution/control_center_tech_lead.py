@@ -16,7 +16,9 @@ working without any engine.
 A running engine that misses one read is shown as what it last reported, as of
 when (``last_known``), or as unknown when nothing was ever read (#8988). Either
 way the page's total is then not a number: a count the page cannot vouch for is
-never shown as one, least of all as 0.
+never shown as one, least of all as 0. What an engine last reported belongs to
+that engine's life: page reads run concurrently, so a read that lands after its
+engine stopped, restarted or was read again more recently is never remembered.
 """
 
 from __future__ import annotations
@@ -32,8 +34,11 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol, Sequence
 from pydantic import ValidationError
 
 from ..contracts.ui_openapi_models import (
+    ControlCenterTechLeadAvailableRepoPayload,
+    ControlCenterTechLeadLastKnownRepoPayload,
     ControlCenterTechLeadPayload,
     ControlCenterTechLeadRepoPayload,
+    ControlCenterTechLeadUnreportedRepoPayload,
     TechLeadPageSectionPayload,
     TechLeadProposalCommandPayload,
     TechLeadProposalOutcomePayload,
@@ -44,7 +49,7 @@ from .orchestrator_http_api import post_orchestrator_json, probe_orchestrator_js
 
 if TYPE_CHECKING:
     from ..infra.repo_registry import RegisteredRepo
-    from ..ports.repository_engine_supervisor import SupervisorOps
+    from ..ports.repository_engine_supervisor import SupervisorOps, SupervisorStatus
 
 logger = logging.getLogger(__name__)
 
@@ -96,28 +101,96 @@ class HttpEngineTechLeadTransport:
         )
 
 
+@dataclass(frozen=True)
+class RunningEngine:
+    """One life of a repository's running engine, as the supervisor saw it.
+
+    A restarted engine is another life, even on the same port: its process,
+    start time and instance tell them apart (#8988).
+    """
+
+    port: int
+    pid: int | None
+    started_at: str | None
+    instance_id: str | None
+
+    @classmethod
+    def observed(cls, status: "SupervisorStatus") -> "RunningEngine | None":
+        if status.state != "running" or not status.port:
+            return None
+        return cls(port=status.port, pid=status.pid, started_at=status.started_at, instance_id=status.instance_id)
+
+
+@dataclass(frozen=True)
+class SectionRead:
+    """One page read of one engine life's section, issued before its I/O."""
+
+    repo_key: str
+    engine: RunningEngine
+    generation: int
+
+
+@dataclass
+class _EngineLifeMemory:
+    """What one engine life reported, from the first read that observed it."""
+
+    engine: RunningEngine
+    since: int
+    section: TechLeadPageSectionPayload | None = None
+    section_read: int = 0
+
+
 class TechLeadSectionMemory:
     """Each repository's last section its running engine reported (#8988).
 
     Lives as long as the Control Center process, across page reads, so one
     missed read shows what the engine last reported instead of nothing.
+
+    Page reads run concurrently on the route's thread pool and their engine
+    reads land in any order, so every read takes a :class:`SectionRead` before
+    its I/O and the memory decides, atomically, what its answer may change:
+    only a read of the current engine life commits, and only if no newer read
+    has already committed. An engine seen stopped, or seen as another life,
+    voids its earlier life's report and every read of it still in flight.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()  # page reads run on the route's thread pool
-        self._sections: dict[str, TechLeadPageSectionPayload] = {}
+        self._generation = 0
+        self._lives: dict[str, _EngineLifeMemory] = {}
 
-    def remember(self, repo_key: str, section: TechLeadPageSectionPayload) -> None:
+    def engine_stopped(self, repo_key: str) -> None:
+        """No engine runs for *repo_key*: nothing it reported outlives it."""
         with self._lock:
-            self._sections[repo_key] = section
+            self._generation += 1
+            self._lives.pop(repo_key, None)
 
-    def recall(self, repo_key: str) -> TechLeadPageSectionPayload | None:
+    def begin_read(self, repo_key: str, engine: RunningEngine) -> SectionRead:
+        """Observe *engine* running and take this read's place in the order."""
         with self._lock:
-            return self._sections.get(repo_key)
+            self._generation += 1
+            life = self._lives.get(repo_key)
+            if life is None or life.engine != engine:
+                self._lives[repo_key] = _EngineLifeMemory(engine=engine, since=self._generation)
+            return SectionRead(repo_key, engine, self._generation)
 
-    def forget(self, repo_key: str) -> None:
+    def answered(self, read: SectionRead, section: TechLeadPageSectionPayload) -> None:
+        """*read*'s engine answered: remember it, unless the read is stale."""
         with self._lock:
-            self._sections.pop(repo_key, None)
+            life = self._current_life(read)
+            if life is not None and read.generation > life.section_read:
+                life.section, life.section_read = section, read.generation
+
+    def last_report(self, read: SectionRead) -> TechLeadPageSectionPayload | None:
+        """What *read*'s engine life last reported, if that life is current."""
+        with self._lock:
+            life = self._current_life(read)
+            return life.section if life is not None else None
+
+    def _current_life(self, read: SectionRead) -> _EngineLifeMemory | None:
+        life = self._lives.get(read.repo_key)
+        # A life observed after this read began replaced the read's own.
+        return life if life is not None and life.since <= read.generation else None
 
 
 #: A running engine whose backlog this read did not learn.
@@ -166,9 +239,10 @@ class ControlCenterTechLead:
         number = payload.proposal_issue_number
         if repo is None:
             raise UnknownTechLeadRepositoryError(repo_key)
-        port = self._running_port(repo)
-        if port is None:
+        engine = self._running_engine(repo)
+        if engine is None:
             return _refused(503, number, "The repository's engine is not running; approve on GitHub instead")
+        port = engine.port
         answer = self.transport.send_command(port, payload.model_dump(mode="json"))
         if isinstance(answer, EngineCommandFailure):
             logger.warning("[tech-lead] engine command failed: %s", answer.detail)
@@ -190,28 +264,29 @@ class ControlCenterTechLead:
     def _repo_row(self, repo: "RegisteredRepo") -> ControlCenterTechLeadRepoPayload:
         key = configured_repository_key(repo.path)
         name = repo.name or Path(repo.path).name
-        port = self._running_port(repo)
-        if port is None:
+        engine = self._running_engine(repo)
+        if engine is None:
             # Only a running engine's missed read is bridged: a restarted one
             # reports afresh.
-            self.memory.forget(key)
-            return ControlCenterTechLeadRepoPayload(
+            self.memory.engine_stopped(key)
+            return ControlCenterTechLeadUnreportedRepoPayload(
                 repo_key=key, name=name, availability="engine_not_running",
                 detail="Engine not running: start it to see what waits here.", section=None,
             )
-        answer = self._read_section(repo, port)
+        read = self.memory.begin_read(key, engine)
+        answer = self._read_section(repo, engine.port)
         if isinstance(answer, TechLeadPageSectionPayload):
-            self.memory.remember(key, answer)
-            return ControlCenterTechLeadRepoPayload(
+            self.memory.answered(read, answer)
+            return ControlCenterTechLeadAvailableRepoPayload(
                 repo_key=key, name=name, availability="available", detail="", section=answer,
             )
-        last = self.memory.recall(key)
+        last = self.memory.last_report(read)
         if last is None:
-            return ControlCenterTechLeadRepoPayload(
+            return ControlCenterTechLeadUnreportedRepoPayload(
                 repo_key=key, name=name, availability="unavailable", detail=f"{answer}.", section=None,
             )
         # Its generated_at is the as-of time the page shows with it.
-        return ControlCenterTechLeadRepoPayload(
+        return ControlCenterTechLeadLastKnownRepoPayload(
             repo_key=key, name=name, availability="last_known", detail=f"{answer}.", section=last,
         )
 
@@ -226,7 +301,7 @@ class ControlCenterTechLead:
             logger.warning("[tech-lead] engine for %s answered its section off-contract", repo.path)
             return _OFF_CONTRACT
 
-    def _running_port(self, repo: "RegisteredRepo") -> int | None:
+    def _running_engine(self, repo: "RegisteredRepo") -> RunningEngine | None:
         path = Path(repo.path)
         if not path.exists():
             return None
@@ -237,8 +312,9 @@ class ControlCenterTechLead:
             ).instances
         ) or [self.supervisor.status(path)]
         for status in statuses:
-            if status.state == "running" and status.port:
-                return status.port
+            engine = RunningEngine.observed(status)
+            if engine is not None:
+                return engine
         return None
 
 
@@ -257,9 +333,7 @@ def _waiting_count(rows: Sequence[ControlCenterTechLeadRepoPayload]) -> int | No
     if any(row.availability in _RUNNING_UNREPORTED for row in rows):
         return None
     return sum(
-        row.section.waiting_count
-        for row in rows
-        if row.availability == "available" and row.section is not None
+        row.section.waiting_count for row in rows if isinstance(row, ControlCenterTechLeadAvailableRepoPayload)
     )
 
 
@@ -274,6 +348,8 @@ __all__ = [
     "ControlCenterTechLead",
     "EngineTechLeadTransport",
     "HttpEngineTechLeadTransport",
+    "RunningEngine",
+    "SectionRead",
     "TechLeadCommandResult",
     "TechLeadSectionMemory",
     "UnknownTechLeadRepositoryError",

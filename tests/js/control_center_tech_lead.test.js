@@ -434,3 +434,50 @@ test('the badge state carries an unknown count as null, worded, after a refresh 
 
     assert.deepEqual(badges, [{ count: null, text: 'What waits on you is unknown; 1 repository not reporting' }]);
 });
+
+// r1 F2: availability decides whether a row carries a section, in the
+// generated contract, so a row the renderer could not paint never reaches it.
+const DISAGREEING_ROWS = [
+    ['last_known without a section', lastKnown(section([]), { section: null })],
+    ['available without a section', repo(null)],
+    ['unavailable with a section', repo(section([item(8)]), { availability: 'unavailable', detail: 'The engine is running but did not answer.' })],
+    ['engine_not_running with a section', repo(section([item(8)]), { availability: 'engine_not_running', detail: 'Engine not running.' })],
+    ['last_known without a reason', lastKnown(section([]), { detail: '' })],
+    ['unavailable without a reason', repo(null, { availability: 'unavailable', detail: '' })],
+];
+
+test('load refuses a row whose availability and section disagree (r1 F2)', async () => {
+    const violations = [];
+    contractJson.setViolationReporter(violation => violations.push(violation));
+    try {
+        for (const [name, row] of DISAGREEING_ROWS) {
+            const p = { ...page([repo(section([]))]), repos: [row] };
+            assert.equal(await view(async () => response(200, p)).load(), null, name);
+        }
+    } finally {
+        contractJson.setViolationReporter(null);
+    }
+    assert.equal(violations.length, DISAGREEING_ROWS.length);
+});
+
+test('a refused row is the unavailable state, with its badge, never a paint (r1 F2)', async () => {
+    const badges = [];
+    const v = createView({
+        fetch: async () => response(200, { ...page([]), waiting_count: null, unreported_count: 1, repos: [lastKnown(section([]), { section: null })] }),
+        contractJson,
+        onBadgeChange: () => badges.push(v.badgeState()),
+    });
+    const dom = domHarness();
+    v.bind(dom.root);
+    contractJson.setViolationReporter(() => {});
+    try {
+        await v.refresh();
+    } finally {
+        contractJson.setViolationReporter(null);
+    }
+
+    assert.equal(v.latest(), null);
+    assert.deepEqual(badges, [{ count: null, text: 'Unable to check what waits on you' }]);
+    assert.match(dom.nodes['#techLeadWaitingList'].lastHtml, /Unable to check what waits on you/);
+    assert.equal(dom.nodes['#techLeadWaitingHeading'].textContent, 'Waiting on you');
+});

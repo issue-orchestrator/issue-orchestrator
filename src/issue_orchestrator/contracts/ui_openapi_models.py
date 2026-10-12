@@ -202,6 +202,36 @@ class ConfigDialogPayload(BaseModel):
     config_text: str
     title: str
 
+class ControlCenterTechLeadAvailableRepoPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    availability: Literal['available']
+    detail: str
+    name: str
+    repo_key: str
+    section: TechLeadPageSectionPayload
+
+    @field_validator('repo_key')
+    @classmethod
+    def _validate_repo_key_pattern(cls, value: Any) -> Any:
+        if value is not None and re.search('^repo-[0-9a-f]{64}$', value) is None:
+            raise ValueError("repo_key must match '^repo-[0-9a-f]{64}$'")
+        return value
+
+class ControlCenterTechLeadLastKnownRepoPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    availability: Literal['last_known']
+    detail: str = Field(..., min_length=1)
+    name: str
+    repo_key: str
+    section: TechLeadPageSectionPayload
+
+    @field_validator('repo_key')
+    @classmethod
+    def _validate_repo_key_pattern(cls, value: Any) -> Any:
+        if value is not None and re.search('^repo-[0-9a-f]{64}$', value) is None:
+            raise ValueError("repo_key must match '^repo-[0-9a-f]{64}$'")
+        return value
+
 class ControlCenterTechLeadPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     generated_at: str
@@ -209,13 +239,13 @@ class ControlCenterTechLeadPayload(BaseModel):
     unreported_count: int = Field(..., ge=0, strict=True)
     waiting_count: int | None = Field(..., ge=0, strict=True)
 
-class ControlCenterTechLeadRepoPayload(BaseModel):
+class ControlCenterTechLeadUnreportedRepoPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    availability: Literal['available', 'last_known', 'engine_not_running', 'unavailable']
-    detail: str
+    availability: Literal['unavailable', 'engine_not_running']
+    detail: str = Field(..., min_length=1)
     name: str
     repo_key: str
-    section: TechLeadPageSectionPayload | None
+    section: None
 
     @field_validator('repo_key')
     @classmethod
@@ -2114,6 +2144,8 @@ class WorktreeAuditResponsePayload(BaseModel):
 CodingAttemptPayload: TypeAlias = RunningCodingAttemptPayload | CompletedCodingAttemptPayload | PublishFailedCodingAttemptPayload | BlockedCodingAttemptPayload | FailedCodingAttemptPayload | MissingCodingEvidencePayload
 
 ControlCenterRecoveryRowsPayload: TypeAlias = RecoveryAvailablePayload | RecoveryEmptyPayload | RecoveryUnavailablePayload
+
+ControlCenterTechLeadRepoPayload: TypeAlias = ControlCenterTechLeadAvailableRepoPayload | ControlCenterTechLeadLastKnownRepoPayload | ControlCenterTechLeadUnreportedRepoPayload
 
 DialogActionCommandPayload: TypeAlias = OpenPathCommandPayload | OpenSessionRecordingCommandPayload | CopySessionRecordingCommandPayload | ViewClaudeLogCommandPayload | OpenOrchestratorLogCommandPayload | OpenSessionDiagnosticsCommandPayload
 

@@ -1673,8 +1673,26 @@
         }
       },
       "ControlCenterTechLeadRepoPayload": {
+        "description": "One configured repository on the Control Center's Tech lead page. Its availability decides whether it carries a section (#8988): a row cannot claim a report it does not have, nor carry one it says it lacks.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ControlCenterTechLeadAvailableRepoPayload"
+          },
+          {
+            "$ref": "#/components/schemas/ControlCenterTechLeadLastKnownRepoPayload"
+          },
+          {
+            "$ref": "#/components/schemas/ControlCenterTechLeadUnreportedRepoPayload"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "availability"
+        }
+      },
+      "ControlCenterTechLeadAvailableRepoPayload": {
         "type": "object",
         "additionalProperties": false,
+        "description": "The engine answered this read: section is what it reports now.",
         "required": [
           "repo_key",
           "name",
@@ -1691,28 +1709,80 @@
             "type": "string"
           },
           "availability": {
-            "type": "string",
-            "enum": [
-              "available",
-              "last_known",
-              "engine_not_running",
-              "unavailable"
-            ],
-            "description": "available: the engine answered this read. last_known: the engine is running but did not answer, and section is what it last reported (its generated_at is the as-of time, #8988). unavailable: it did not answer and nothing is known. engine_not_running: no engine to ask."
+            "const": "available"
           },
           "detail": {
             "type": "string"
           },
           "section": {
-            "description": "The engine's section when available, its last reported one when last_known, otherwise null.",
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/TechLeadPageSectionPayload"
-              },
-              {
-                "type": "null"
-              }
+            "$ref": "#/components/schemas/TechLeadPageSectionPayload"
+          }
+        }
+      },
+      "ControlCenterTechLeadLastKnownRepoPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "The engine is running but did not answer this read: section is what this engine last reported, and its generated_at is the as-of time (#8988).",
+        "required": [
+          "repo_key",
+          "name",
+          "availability",
+          "detail",
+          "section"
+        ],
+        "properties": {
+          "repo_key": {
+            "type": "string",
+            "pattern": "^repo-[0-9a-f]{64}$"
+          },
+          "name": {
+            "type": "string"
+          },
+          "availability": {
+            "const": "last_known"
+          },
+          "detail": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Why this read did not answer."
+          },
+          "section": {
+            "$ref": "#/components/schemas/TechLeadPageSectionPayload"
+          }
+        }
+      },
+      "ControlCenterTechLeadUnreportedRepoPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Nothing is known of the repository's backlog. unavailable: its engine is running but did not answer and has reported nothing in its current life. engine_not_running: no engine to ask.",
+        "required": [
+          "repo_key",
+          "name",
+          "availability",
+          "detail",
+          "section"
+        ],
+        "properties": {
+          "repo_key": {
+            "type": "string",
+            "pattern": "^repo-[0-9a-f]{64}$"
+          },
+          "name": {
+            "type": "string"
+          },
+          "availability": {
+            "enum": [
+              "unavailable",
+              "engine_not_running"
             ]
+          },
+          "detail": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Why nothing is known."
+          },
+          "section": {
+            "type": "null"
           }
         }
       },

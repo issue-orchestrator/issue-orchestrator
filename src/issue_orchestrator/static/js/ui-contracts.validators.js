@@ -709,6 +709,65 @@
                 }
             ]
         },
+        "ControlCenterTechLeadAvailableRepoPayload": {
+            "additionalProperties": false,
+            "properties": {
+                "availability": {
+                    "const": "available"
+                },
+                "detail": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "repo_key": {
+                    "pattern": "^repo-[0-9a-f]{64}$",
+                    "type": "string"
+                },
+                "section": {
+                    "$ref": "#/components/schemas/TechLeadPageSectionPayload"
+                }
+            },
+            "required": [
+                "repo_key",
+                "name",
+                "availability",
+                "detail",
+                "section"
+            ],
+            "type": "object"
+        },
+        "ControlCenterTechLeadLastKnownRepoPayload": {
+            "additionalProperties": false,
+            "properties": {
+                "availability": {
+                    "const": "last_known"
+                },
+                "detail": {
+                    "minLength": 1,
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "repo_key": {
+                    "pattern": "^repo-[0-9a-f]{64}$",
+                    "type": "string"
+                },
+                "section": {
+                    "$ref": "#/components/schemas/TechLeadPageSectionPayload"
+                }
+            },
+            "required": [
+                "repo_key",
+                "name",
+                "availability",
+                "detail",
+                "section"
+            ],
+            "type": "object"
+        },
         "ControlCenterTechLeadPayload": {
             "additionalProperties": false,
             "properties": {
@@ -742,18 +801,32 @@
             "type": "object"
         },
         "ControlCenterTechLeadRepoPayload": {
+            "discriminator": {
+                "propertyName": "availability"
+            },
+            "oneOf": [
+                {
+                    "$ref": "#/components/schemas/ControlCenterTechLeadAvailableRepoPayload"
+                },
+                {
+                    "$ref": "#/components/schemas/ControlCenterTechLeadLastKnownRepoPayload"
+                },
+                {
+                    "$ref": "#/components/schemas/ControlCenterTechLeadUnreportedRepoPayload"
+                }
+            ]
+        },
+        "ControlCenterTechLeadUnreportedRepoPayload": {
             "additionalProperties": false,
             "properties": {
                 "availability": {
                     "enum": [
-                        "available",
-                        "last_known",
-                        "engine_not_running",
-                        "unavailable"
-                    ],
-                    "type": "string"
+                        "unavailable",
+                        "engine_not_running"
+                    ]
                 },
                 "detail": {
+                    "minLength": 1,
                     "type": "string"
                 },
                 "name": {
@@ -764,14 +837,7 @@
                     "type": "string"
                 },
                 "section": {
-                    "oneOf": [
-                        {
-                            "$ref": "#/components/schemas/TechLeadPageSectionPayload"
-                        },
-                        {
-                            "type": "null"
-                        }
-                    ]
+                    "type": "null"
                 }
             },
             "required": [
