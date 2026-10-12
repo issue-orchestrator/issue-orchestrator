@@ -122,8 +122,16 @@
 .tl-card-meta,
 .tl-when,
 .tl-reason,
-.tl-empty {
+.tl-empty,
+.tl-as-of {
     color: var(--text-secondary);
+}
+
+/* A repository's last report, shown when its running engine missed a read
+   (#8988): the words say it is not current; the styling only quiets it. */
+.tl-as-of {
+    font-size: 0.85em;
+    font-weight: normal;
 }
 
 .tl-details dl {

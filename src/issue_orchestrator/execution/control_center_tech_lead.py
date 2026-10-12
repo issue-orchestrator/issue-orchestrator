@@ -12,12 +12,18 @@ that owns the proposal's repository.
 A repository whose engine is not running is a row that says so, not an error:
 the page still shows every other repository, and approving on GitHub keeps
 working without any engine.
+
+A running engine that misses one read is shown as what it last reported, as of
+when (``last_known``), or as unknown when nothing was ever read (#8988). Either
+way the page's total is then not a number: a count the page cannot vouch for is
+never shown as one, least of all as 0.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -90,6 +96,36 @@ class HttpEngineTechLeadTransport:
         )
 
 
+class TechLeadSectionMemory:
+    """Each repository's last section its running engine reported (#8988).
+
+    Lives as long as the Control Center process, across page reads, so one
+    missed read shows what the engine last reported instead of nothing.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()  # page reads run on the route's thread pool
+        self._sections: dict[str, TechLeadPageSectionPayload] = {}
+
+    def remember(self, repo_key: str, section: TechLeadPageSectionPayload) -> None:
+        with self._lock:
+            self._sections[repo_key] = section
+
+    def recall(self, repo_key: str) -> TechLeadPageSectionPayload | None:
+        with self._lock:
+            return self._sections.get(repo_key)
+
+    def forget(self, repo_key: str) -> None:
+        with self._lock:
+            self._sections.pop(repo_key, None)
+
+
+#: A running engine whose backlog this read did not learn.
+_RUNNING_UNREPORTED = frozenset({"last_known", "unavailable"})
+_NO_ANSWER = "The engine is running but did not answer"
+_OFF_CONTRACT = "The engine's answer was not understood (version mismatch?)"
+
+
 @dataclass(frozen=True)
 class TechLeadCommandResult:
     status_code: int
@@ -105,15 +141,17 @@ class ControlCenterTechLead:
     supervisor: "SupervisorOps"
     list_repos: Callable[[], Sequence["RegisteredRepo"]]
     transport: EngineTechLeadTransport
+    #: The Control Center's one memory: the owner itself is built per request.
+    memory: TechLeadSectionMemory
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
 
     def page(self) -> ControlCenterTechLeadPayload:
         rows = [self._repo_row(repo) for repo in self.list_repos()]
         return ControlCenterTechLeadPayload(
-            waiting_count=sum(row.section.waiting_count for row in rows if row.section is not None),
-            # A repository that did not report has an UNKNOWN backlog: the
-            # count is then a lower bound and the page must not say all-clear.
-            unreported_count=sum(1 for row in rows if row.section is None),
+            waiting_count=_waiting_count(rows),
+            # A repository that did not report now has an UNKNOWN backlog: the
+            # page must not say all-clear.
+            unreported_count=sum(1 for row in rows if row.availability != "available"),
             generated_at=self.clock().isoformat(),
             repos=rows,
         )
@@ -154,27 +192,39 @@ class ControlCenterTechLead:
         name = repo.name or Path(repo.path).name
         port = self._running_port(repo)
         if port is None:
+            # Only a running engine's missed read is bridged: a restarted one
+            # reports afresh.
+            self.memory.forget(key)
             return ControlCenterTechLeadRepoPayload(
                 repo_key=key, name=name, availability="engine_not_running",
                 detail="Engine not running: start it to see what waits here.", section=None,
             )
+        answer = self._read_section(repo, port)
+        if isinstance(answer, TechLeadPageSectionPayload):
+            self.memory.remember(key, answer)
+            return ControlCenterTechLeadRepoPayload(
+                repo_key=key, name=name, availability="available", detail="", section=answer,
+            )
+        last = self.memory.recall(key)
+        if last is None:
+            return ControlCenterTechLeadRepoPayload(
+                repo_key=key, name=name, availability="unavailable", detail=f"{answer}.", section=None,
+            )
+        # Its generated_at is the as-of time the page shows with it.
+        return ControlCenterTechLeadRepoPayload(
+            repo_key=key, name=name, availability="last_known", detail=f"{answer}.", section=last,
+        )
+
+    def _read_section(self, repo: "RegisteredRepo", port: int) -> TechLeadPageSectionPayload | str:
+        """The engine's section, validated against the contract, or why not."""
         raw = self.transport.read_section(port)
         if raw is None:
-            return ControlCenterTechLeadRepoPayload(
-                repo_key=key, name=name, availability="unavailable",
-                detail="The engine is running but did not answer.", section=None,
-            )
+            return _NO_ANSWER
         try:
-            section = TechLeadPageSectionPayload.model_validate(raw)
+            return TechLeadPageSectionPayload.model_validate(raw)
         except ValidationError:
             logger.warning("[tech-lead] engine for %s answered its section off-contract", repo.path)
-            return ControlCenterTechLeadRepoPayload(
-                repo_key=key, name=name, availability="unavailable",
-                detail="The engine's answer was not understood (version mismatch?).", section=None,
-            )
-        return ControlCenterTechLeadRepoPayload(
-            repo_key=key, name=name, availability="available", detail="", section=section,
-        )
+            return _OFF_CONTRACT
 
     def _running_port(self, repo: "RegisteredRepo") -> int | None:
         path = Path(repo.path)
@@ -192,11 +242,25 @@ class ControlCenterTechLead:
         return None
 
 
-def build_control_center_tech_lead(supervisor: "SupervisorOps") -> ControlCenterTechLead:
+def build_control_center_tech_lead(
+    supervisor: "SupervisorOps", memory: TechLeadSectionMemory
+) -> ControlCenterTechLead:
     """Composition for the Control Center: the registry's repositories, over HTTP."""
     from ..infra import repo_registry
 
-    return ControlCenterTechLead(supervisor, repo_registry.list_repos, HttpEngineTechLeadTransport())
+    return ControlCenterTechLead(supervisor, repo_registry.list_repos, HttpEngineTechLeadTransport(), memory)
+
+
+def _waiting_count(rows: Sequence[ControlCenterTechLeadRepoPayload]) -> int | None:
+    """What waits across the engines that reported now, or ``None`` when a
+    running engine did not: its backlog is unknown, so the total is too."""
+    if any(row.availability in _RUNNING_UNREPORTED for row in rows):
+        return None
+    return sum(
+        row.section.waiting_count
+        for row in rows
+        if row.availability == "available" and row.section is not None
+    )
 
 
 def _refused(status: int, number: int, detail: str) -> TechLeadCommandResult:
@@ -211,6 +275,7 @@ __all__ = [
     "EngineTechLeadTransport",
     "HttpEngineTechLeadTransport",
     "TechLeadCommandResult",
+    "TechLeadSectionMemory",
     "UnknownTechLeadRepositoryError",
     "build_control_center_tech_lead",
 ]

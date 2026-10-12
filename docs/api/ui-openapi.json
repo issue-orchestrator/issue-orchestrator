@@ -1694,14 +1694,17 @@
             "type": "string",
             "enum": [
               "available",
+              "last_known",
               "engine_not_running",
               "unavailable"
-            ]
+            ],
+            "description": "available: the engine answered this read. last_known: the engine is running but did not answer, and section is what it last reported (its generated_at is the as-of time, #8988). unavailable: it did not answer and nothing is known. engine_not_running: no engine to ask."
           },
           "detail": {
             "type": "string"
           },
           "section": {
+            "description": "The engine's section when available, its last reported one when last_known, otherwise null.",
             "oneOf": [
               {
                 "$ref": "#/components/schemas/TechLeadPageSectionPayload"
@@ -1724,13 +1727,14 @@
         ],
         "properties": {
           "waiting_count": {
-            "type": "integer",
-            "minimum": 0
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "description": "What waits on the operator across the repositories that reported, or null when a running engine did not report now (unavailable or last_known): the count is then unknown, never a number (#8988)."
           },
           "unreported_count": {
             "type": "integer",
             "minimum": 0,
-            "description": "Configured repositories whose engine did not report: waiting_count is then a lower bound, never an all-clear."
+            "description": "Configured repositories whose engine did not report now (last_known included): when only stopped engines did, waiting_count is a lower bound, never an all-clear."
           },
           "generated_at": {
             "type": "string"
@@ -1774,8 +1778,9 @@
             "const": "cc-tech-lead-waiting"
           },
           "count": {
-            "type": "integer",
-            "minimum": 0
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "description": "The waiting count, or null when it is unknown (#8988): the text says why."
           },
           "text": {
             "type": "string",

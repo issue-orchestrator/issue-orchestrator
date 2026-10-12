@@ -207,11 +207,11 @@ class ControlCenterTechLeadPayload(BaseModel):
     generated_at: str
     repos: list[ControlCenterTechLeadRepoPayload]
     unreported_count: int = Field(..., ge=0, strict=True)
-    waiting_count: int = Field(..., ge=0, strict=True)
+    waiting_count: int | None = Field(..., ge=0, strict=True)
 
 class ControlCenterTechLeadRepoPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    availability: Literal['available', 'engine_not_running', 'unavailable']
+    availability: Literal['available', 'last_known', 'engine_not_running', 'unavailable']
     detail: str
     name: str
     repo_key: str
@@ -1950,7 +1950,7 @@ class TechLeadWaitingItemPayload(BaseModel):
 
 class TechLeadWaitingMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    count: int = Field(..., ge=0, strict=True)
+    count: int | None = Field(..., ge=0, strict=True)
     text: str = Field(..., min_length=1)
     type: Literal['cc-tech-lead-waiting']
 

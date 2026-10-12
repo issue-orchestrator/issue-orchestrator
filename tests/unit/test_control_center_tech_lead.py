@@ -1,8 +1,9 @@
 """The Control Center's cross-repo Tech lead page (#7763).
 
 Aggregation over configured repositories, engine-not-running rows, fail-closed
-validation of each engine's answer, and the command proxy — through the owner
-and through the CC routes.
+validation of each engine's answer, a running engine's last report when it
+misses a read (#8988), and the command proxy — through the owner and through
+the CC routes.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from issue_orchestrator.entrypoints.control_api_repo_support import (
 from issue_orchestrator.execution.engine_command_failure import EngineCommandFailure, EngineCommandFailureKind
 from issue_orchestrator.execution.control_center_tech_lead import (
     ControlCenterTechLead,
+    TechLeadSectionMemory,
     UnknownTechLeadRepositoryError,
 )
 from issue_orchestrator.infra.repo_identity import configured_repository_key
@@ -33,7 +35,7 @@ from issue_orchestrator.ports.repository_engine_supervisor import (
 )
 
 
-def _section(repository: str, waiting: int) -> dict:
+def _section(repository: str, waiting: int, generated_at: str = "now") -> dict:
     item = {
         "kind": "proposal", "number": 10, "operation": "reset_retry", "title": "t",
         "recommendation": "r", "approval_effect": "e", "link": "https://x", "waiting_since": "",
@@ -42,7 +44,7 @@ def _section(repository: str, waiting: int) -> dict:
         "approval_steps": [], "operator_steps": [],
     }
     return {
-        "repository": repository, "generated_at": "now", "waiting_count": waiting,
+        "repository": repository, "generated_at": generated_at, "waiting_count": waiting,
         "run": {"has_run": False, "label": "", "phase": "", "phase_label": "", "started_at": "", "ended_at": "", "detail": ""},
         "waiting": [dict(item, number=10 + index) for index in range(waiting)],
         "doing": [], "parked": [], "triaged": [], "case_files": [],
@@ -72,11 +74,14 @@ class _Transport:
         return self.answer
 
 
-def _owner(tmp_path, ports: dict[str, int | None], transport: _Transport) -> tuple[ControlCenterTechLead, dict[str, str]]:
+def _owner(
+    tmp_path, ports: dict[str, int | None], transport: _Transport, memory: TechLeadSectionMemory | None = None,
+) -> tuple[ControlCenterTechLead, dict[str, str]]:
+    """*ports* is read on every page read, so a test can stop or start an engine."""
     repos, keys = [], {}
-    for name, port in ports.items():
+    for name in ports:
         path = tmp_path / name
-        path.mkdir()
+        path.mkdir(exist_ok=True)
         repos.append(RegisteredRepo(path=str(path), name=name))
         keys[name] = configured_repository_key(str(path))
     supervisor = MagicMock()
@@ -87,7 +92,7 @@ def _owner(tmp_path, ports: dict[str, int | None], transport: _Transport) -> tup
         return MultiInstanceStatus(repo_root=str(path), instances=[status])
 
     supervisor.status_all_instances.side_effect = all_instances
-    return ControlCenterTechLead(supervisor, lambda: repos, transport), keys
+    return ControlCenterTechLead(supervisor, lambda: repos, transport, memory or TechLeadSectionMemory()), keys
 
 
 def test_page_sums_waiting_across_running_engines_and_names_stopped_ones(tmp_path) -> None:
@@ -112,9 +117,84 @@ def test_an_engine_answering_off_contract_is_unavailable_not_trusted(tmp_path) -
 
     page = owner.page()
 
-    assert page.waiting_count == 0
-    assert page.unreported_count == 2  # zero known, never an all-clear
+    assert page.waiting_count is None  # unknown, never an all-clear (#8988)
+    assert page.unreported_count == 2
     assert [row.availability for row in page.repos] == ["unavailable", "unavailable"]
+    assert [row.detail for row in page.repos] == [
+        "The engine's answer was not understood (version mismatch?).",
+        "The engine is running but did not answer.",
+    ]
+
+
+def test_a_running_engine_that_misses_a_read_shows_its_last_report_and_no_count(tmp_path) -> None:
+    """#8988: one missed read is what the engine last reported, as of when,
+    and the page's total is unknown rather than the other engines' sum."""
+    transport = _Transport(sections={8001: _section("o/a", 2, "2026-10-08T12:00:00+00:00"), 8002: _section("o/b", 1)})
+    owner, _ = _owner(tmp_path, {"a": 8001, "b": 8002}, transport)
+    assert owner.page().waiting_count == 3
+
+    transport.sections[8001] = None  # a's engine is busy and misses this read
+    page = owner.page()
+
+    a = next(row for row in page.repos if row.name == "a")
+    assert a.availability == "last_known"
+    assert a.detail == "The engine is running but did not answer."
+    assert a.section is not None and a.section.generated_at == "2026-10-08T12:00:00+00:00"
+    assert [item.number for item in a.section.waiting] == [10, 11]
+    assert page.waiting_count is None
+    assert page.unreported_count == 1
+
+    transport.sections[8001] = _section("o/a", 0, "2026-10-08T12:00:30+00:00")  # it answers again
+    page = owner.page()
+    assert [row.availability for row in page.repos] == ["available", "available"]
+    assert page.waiting_count == 1 and page.unreported_count == 0
+
+
+def test_an_off_contract_answer_also_falls_back_to_the_last_report(tmp_path) -> None:
+    transport = _Transport(sections={8001: _section("o/a", 1)})
+    owner, _ = _owner(tmp_path, {"a": 8001}, transport)
+    owner.page()
+    transport.sections[8001] = {"not": "the contract"}
+
+    (row,) = owner.page().repos
+
+    assert row.availability == "last_known"
+    assert row.detail == "The engine's answer was not understood (version mismatch?)."
+    assert row.section is not None and row.section.waiting_count == 1
+
+
+def test_the_last_report_outlives_the_per_request_owner(tmp_path) -> None:
+    """The Control Center builds the owner per request; the memory is its one."""
+    memory = TechLeadSectionMemory()
+    transport = _Transport(sections={8001: _section("o/a", 1)})
+    first, _ = _owner(tmp_path, {"a": 8001}, transport, memory)
+    first.page()
+    transport.sections[8001] = None
+
+    second, _ = _owner(tmp_path, {"a": 8001}, transport, memory)
+
+    assert [row.availability for row in second.page().repos] == ["last_known"]
+
+
+def test_a_stopped_engine_is_not_bridged_by_its_last_report(tmp_path) -> None:
+    """Only a running engine's missed read shows its last report: once the
+    engine stops, what it reported before is forgotten, so a restarted engine
+    that has not answered yet is unknown, not its previous life's page."""
+    ports: dict[str, int | None] = {"a": 8001}
+    transport = _Transport(sections={8001: _section("o/a", 1)})
+    owner, _ = _owner(tmp_path, ports, transport)
+    owner.page()
+
+    ports["a"] = None
+    stopped = owner.page()
+    assert [(row.availability, row.section) for row in stopped.repos] == [("engine_not_running", None)]
+    assert stopped.waiting_count == 0 and stopped.unreported_count == 1  # a stopped engine stays a lower bound
+
+    ports["a"] = 8001
+    transport.sections[8001] = None
+    restarted = owner.page()
+    assert [(row.availability, row.section) for row in restarted.repos] == [("unavailable", None)]
+    assert restarted.waiting_count is None
 
 
 def test_command_reaches_only_the_owning_engine(tmp_path) -> None:
@@ -177,6 +257,11 @@ def test_cc_routes_serve_the_page_and_proxy_the_command(cc) -> None:
     client, keys, transport = cc
     page = client.get("/api/control-center/tech-lead")
     assert page.status_code == 200 and page.json()["waiting_count"] == 1
+
+    transport.sections[8001] = None  # the engine misses the next read
+    stale = client.get("/api/control-center/tech-lead").json()
+    assert stale["waiting_count"] is None  # serialized as unknown, never 0
+    assert [(repo["availability"], repo["section"]["waiting_count"]) for repo in stale["repos"]] == [("last_known", 1)]
 
     command = client.post(f"/api/control-center/repositories/{keys['a']}/tech-lead/proposals",
                           json={"proposal_issue_number": 10, "decision": "decline"})

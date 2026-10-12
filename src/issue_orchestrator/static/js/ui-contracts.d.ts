@@ -171,11 +171,11 @@ export interface ControlCenterTechLeadPayload {
   generated_at: string;
   repos: ControlCenterTechLeadRepoPayload[];
   unreported_count: number;
-  waiting_count: number;
+  waiting_count: number | null;
 }
 
 export interface ControlCenterTechLeadRepoPayload {
-  availability: "available" | "engine_not_running" | "unavailable";
+  availability: "available" | "last_known" | "engine_not_running" | "unavailable";
   detail: string;
   name: string;
   repo_key: string;
@@ -1805,7 +1805,7 @@ export interface TechLeadWaitingItemPayload {
 }
 
 export interface TechLeadWaitingMessage {
-  count: number;
+  count: number | null;
   text: string;
   type: "cc-tech-lead-waiting";
 }

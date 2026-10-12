@@ -18,9 +18,13 @@ const section = (waiting, extra = {}) => ({
     health_review: { enabled: true, interval_minutes: 60, last_at: '', next_due_at: '', label: 'Every 60 min' },
     ...extra,
 });
+// As the Control Center builds it: a running engine that did not report now
+// (unavailable or last_known) makes the total unknown (#8988).
 const page = (repos) => ({
-    waiting_count: repos.reduce((n, r) => n + (r.section ? r.section.waiting_count : 0), 0),
-    unreported_count: repos.filter(r => !r.section).length,
+    waiting_count: repos.some(r => r.availability === 'unavailable' || r.availability === 'last_known')
+        ? null
+        : repos.reduce((n, r) => n + (r.availability === 'available' ? r.section.waiting_count : 0), 0),
+    unreported_count: repos.filter(r => r.availability !== 'available').length,
     generated_at: 'now', repos,
 });
 const repo = (sec, extra = {}) => ({ repo_key: KEY, name: 'a', availability: 'available', detail: '', section: sec, ...extra });
@@ -263,6 +267,7 @@ test('a failed or off-contract refresh after an all-clear shows "unable to check
         await v.refresh();
         assert.equal(v.latest(), null);
         assert.equal(badges.at(-1).text, 'Unable to check what waits on you');
+        assert.equal(badges.at(-1).count, null);  // #8988: unknown, never a count of 0
         assert.match(dom.nodes['#techLeadWaitingList'].lastHtml, /Unable to check what waits on you/);
         assert.doesNotMatch(dom.nodes['#techLeadWaitingList'].lastHtml, /Nothing waiting/);
         if (approve) assert.equal(dom.active().name, 'waiting heading');
@@ -354,4 +359,78 @@ test('the integration delivery PR is a labelled card linking the PR, with what t
     assert.match(card, /<strong>Status:<\/strong> Ready for you to merge/);
     assert.match(card, /#476, #479, #511/);
     assert.doesNotMatch(card, /<button/);
+});
+
+
+const OTHER_KEY = 'repo-' + 'b'.repeat(64);
+const AS_OF = '2026-10-08T12:00:00+00:00';
+const lastKnown = (sec, extra = {}) => repo({ ...sec, generated_at: AS_OF }, {
+    repo_key: OTHER_KEY, name: 'porchpin', availability: 'last_known',
+    detail: 'The engine is running but did not answer.', ...extra,
+});
+
+test('a running repository that did not report makes the count unknown, never 0 (#8988)', () => {
+    const p = page([repo(section([])), repo(null, { repo_key: OTHER_KEY, name: 'porchpin', availability: 'unavailable', detail: 'The engine is running but did not answer.' })]);
+    assert.equal(p.waiting_count, null);
+    const html = view().renderPage(p);
+    assert.equal(html.waitingHeading, 'Waiting on you (unknown)');
+    assert.doesNotMatch(html.waiting, /Nothing is waiting on you|Nothing reported as waiting/);
+    assert.match(html.waiting, /what waits on you is not fully known/);
+    assert.match(html.waiting, /<strong>porchpin<\/strong>: The engine is running but did not answer\./);
+    assert.equal(view().badgeText(null, 1), 'What waits on you is unknown; 1 repository not reporting');
+    assert.equal(view().badgeText(null, 2), 'What waits on you is unknown; 2 repositories not reporting');
+});
+
+test('a last-known section shows wherever it appears with its as-of time; a current one does not (#8988)', () => {
+    const doing = [{ decision_id: 'd1', action_kind: 'kill_hung_session', action_label: 'kill hung session', target_number: 402,
+        link: 'https://github.com/o/a/issues/402', outcome: 'applied', outcome_label: 'Applied', at: 'now', reason: '', in_flight: false }];
+    const watched = { triaged: [{ issue_number: 403, link: 'https://github.com/o/a/issues/403', triage_label: 'Explained', reason: 'r' }] };
+    const p = page([repo(section([item(7)])), lastKnown(section([item(8)], { doing, ...watched }))]);
+    const html = view().renderPage(p);
+    const stamp = `(last reported <time datetime="${AS_OF}">${AS_OF}</time>)`;
+
+    assert.equal(html.waitingHeading, 'Waiting on you (unknown)');
+    // The not-reporting list says why, and as of when.
+    assert.ok(html.waiting.includes(`<li><strong>porchpin</strong>: The engine is running but did not answer. <span class="tl-as-of">${stamp}</span></li>`), html.waiting);
+    // Its card is still listed, marked, with its decision buttons named as before...
+    const cards = html.waiting.split('<li><article').slice(1);
+    const stale = cards.find(card => card.includes('#8 Proposal 8'));
+    assert.ok(stale.includes(`<span class="tl-repo">porchpin</span> <span class="tl-as-of">${stamp}</span>`), stale);
+    assert.match(stale, /aria-label="Approve proposal #8 in porchpin"/);
+    // ...while the current repository's card carries no as-of.
+    const current = cards.find(card => card.includes('#7 Proposal 7'));
+    assert.doesNotMatch(current, /tl-as-of/);
+    assert.ok(html.doing.includes(`porchpin <span class="tl-as-of">${stamp}</span>`), html.doing);
+    assert.ok(html.watching.includes(`<h3>porchpin <span class="tl-as-of">${stamp}</span></h3>`), html.watching);
+    assert.ok(html.runStrip.includes(`porchpin <span class="tl-as-of">${stamp}</span>: Running`), html.runStrip);
+    assert.ok(html.runStrip.includes('a: Running'), html.runStrip);
+});
+
+test('load accepts an unknown count and a last-known repository in contract shape (#8988)', async () => {
+    const p = page([lastKnown(section([item(8)]))]);
+    const loaded = await view(async () => response(200, p)).load();
+    assert.equal(loaded.waiting_count, null);
+    assert.equal(loaded.repos[0].availability, 'last_known');
+    contractJson.setViolationReporter(() => {});
+    try {
+        // The total is a non-negative integer or null: nothing else is a count.
+        assert.equal(await view(async () => response(200, { ...p, waiting_count: 'unknown' })).load(), null);
+        assert.equal(await view(async () => response(200, { ...p, waiting_count: -1 })).load(), null);
+    } finally {
+        contractJson.setViolationReporter(null);
+    }
+});
+
+test('the badge state carries an unknown count as null, worded, after a refresh (#8988)', async () => {
+    const badges = [];
+    const v = createView({
+        fetch: async () => response(200, page([lastKnown(section([item(8)]))])),
+        contractJson,
+        onBadgeChange: () => badges.push(v.badgeState()),
+    });
+    v.bind(domHarness().root);
+
+    await v.refresh();
+
+    assert.deepEqual(badges, [{ count: null, text: 'What waits on you is unknown; 1 repository not reporting' }]);
 });

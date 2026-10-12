@@ -105,9 +105,18 @@ def test_a_goal_pilot_label_action_can_never_write_an_approval(orchestrator) -> 
 
 def test_the_real_engine_serves_its_tech_lead_page_section(orchestrator) -> None:
     """#7763 review r20 F2: the page runs against the real (unhashable)
-    Orchestrator; its merge-hold reader is the engine's own, built once."""
-    orchestrator.deps.action_applier.tech_lead_approvals.record_scope((), {})
+    Orchestrator; its merge-hold reader is the engine's own, built once.
 
+    #8988: what it serves is what the engine's tick published, so before the
+    first tick the page is unknown, not empty."""
+    from issue_orchestrator.infra.tech_lead_page_snapshot import TechLeadPageNotObserved
+
+    orchestrator.deps.action_applier.tech_lead_approvals.record_scope((), {})
+    with pytest.raises(TechLeadPageNotObserved):
+        orchestrator.tech_lead_page_section()
+
+    with patch("issue_orchestrator.infra.orchestrator._run_tick_impl", return_value=(1, True)):
+        orchestrator.tick()
     section = orchestrator.tech_lead_page_section()
 
     assert section.waiting_count == 0 and section.waiting == []

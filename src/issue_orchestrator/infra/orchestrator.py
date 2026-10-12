@@ -42,7 +42,8 @@ from ..control.worktree_manager import get_worktree_path, get_session_name, extr
 logger = logging.getLogger(__name__)
 
 
-from .tech_lead_proposal_facade import proposal_command, tech_lead_page_section, TechLeadProposalCommand, TechLeadProposalCommandOutcome
+from .tech_lead_proposal_facade import proposal_command, publish_tech_lead_page, tech_lead_page_section, TechLeadProposalCommand, TechLeadProposalCommandOutcome
+from .tech_lead_page_snapshot import TechLeadPageSnapshot
 from .config import Config
 from ..ports.issue import Issue
 from ..domain.models import (
@@ -155,6 +156,10 @@ class Orchestrator:
     # a test that needs to observe the boundary substitutes an instrumented
     # lock instead of reaching into internals.
     state_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+    # What the Tech lead page is built from, as the tick last captured it: the
+    # page route reads this and never the state lock, so a long planning
+    # cycle cannot make the page miss its answer (#8988).
+    tech_lead_page: TechLeadPageSnapshot = field(default_factory=TechLeadPageSnapshot, repr=False)
     _external_close_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _external_resources_closed: bool = field(default=False, init=False, repr=False)
     _last_backup_check: float = field(default=0.0, init=False)
@@ -571,6 +576,7 @@ class Orchestrator:
                 self._run_planning_cycle,
                 self._emit_heartbeat_if_needed,
             )
+            publish_tech_lead_page(self)
         # Check if we should auto-trigger E2E tests
         self._maybe_trigger_e2e()
         self._check_e2e_completion()

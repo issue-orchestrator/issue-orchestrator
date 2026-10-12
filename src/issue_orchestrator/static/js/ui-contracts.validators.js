@@ -727,7 +727,10 @@
                 },
                 "waiting_count": {
                     "minimum": 0,
-                    "type": "integer"
+                    "type": [
+                        "integer",
+                        "null"
+                    ]
                 }
             },
             "required": [
@@ -744,6 +747,7 @@
                 "availability": {
                     "enum": [
                         "available",
+                        "last_known",
                         "engine_not_running",
                         "unavailable"
                     ],
@@ -8262,7 +8266,10 @@
             "properties": {
                 "count": {
                     "minimum": 0,
-                    "type": "integer"
+                    "type": [
+                        "integer",
+                        "null"
+                    ]
                 },
                 "text": {
                     "minLength": 1,
