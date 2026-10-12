@@ -53,8 +53,14 @@ HAND_OFF = "operator-approval-does-not-carry-the-pr-hand-off"  # #8694, heat 1 (
 ROUTE_PR = "decision-approval-cannot-route-the-pr-327"  # #8691, heat 2 (stall)
 #: Heat 1's stall finding about #327 too, through another owner.
 NON_PARTIAL = "non-partial-receipt-publishes-closing-pr-on-partially-delivered-issue"
-#: Heat 2's stall findings with the effect key of one of heat 1's: merged by key.
-KEY_MERGED = {"flaky-check-rerun-has-no-action-450", "provisioning-handover-179-undated-marker"}
+#: Heat 1's stall finding about #450 (#8688).
+WATERMARK = "triage-watermark-survives-block-lift-and-reblock"
+#: Heat 2's stall finding with the effect key of WATERMARK, about another defect (#8985).
+FLAKY_CHECK = "flaky-check-rerun-has-no-action-450"
+#: Heat 2's stall finding with the effect key of heat 1's, naming no cause: the same finding.
+PROVISIONING_H1 = "handed-over-provisioning-block-onset-unretained"
+#: Heat 2's stall findings with the effect key of one of heat 1's: carried on that one's issue.
+KEY_MERGED = {FLAKY_CHECK, "provisioning-handover-179-undated-marker"}
 #: As the prompt now asks (#8700): where the hand-off defect lives.
 HAND_OFF_OWNER = "issue_orchestrator.control.tech_lead_operator_decision:OperatorDecisionExecutor"
 
@@ -107,6 +113,32 @@ def test_as_written_the_two_design_findings_citing_one_code_line_are_one_issue()
 
     assert [(s.design.id, s.finding_id) for s in merged.same_defects] == [(CRASH_H2, CRASH_H1)]
     assert HAND_OFF in _filed(merged) and CRASH_H2 not in _filed(merged)
+
+
+def test_another_defect_with_a_kept_findings_effect_key_is_shown_on_its_issue_not_counted_as_support() -> None:
+    """#8985: heat 2's flaky-check finding has the effect key of heat 1's
+    triage-watermark finding (one output on one anomaly, #450) but names
+    another root-cause owner and another reproduction: another defect. It is
+    no support for the triage-watermark finding, and all it claims is shown
+    on that finding's issue. Heat 2's #179 finding, naming no cause, is the
+    same finding as heat 1's and supports it."""
+    first, second = (ImproverFindings.model_validate_json(json.dumps(_heat(n))) for n in (1, 2))
+    watermark = next(f for f in first.findings if f.id == WATERMARK)
+    flaky = next(f for f in second.findings if f.id == FLAKY_CHECK)
+    assert IDENTITY.stall_key(watermark) == IDENTITY.stall_key(flaky)
+
+    merged = _merge(_heat(1), _heat(2))
+
+    assert merged.support[WATERMARK] == (1,)
+    assert merged.support[PROVISIONING_H1] == (1, 2)
+    [conflict] = [c for c in merged.conflicts if FLAKY_CHECK in c.reason]
+    assert (conflict.finding_id, conflict.heat) == (WATERMARK, 2)
+    assert flaky.root_cause is not None and flaky.reproduction is not None and flaky.proposal is not None
+    for claimed in (
+        flaky.root_cause.owner, flaky.root_cause.why, flaky.reproduction.harness,
+        flaky.reproduction.planted_state, *flaky.reproduction.assertions, flaky.proposal,
+    ):
+        assert claimed in conflict.claim, claimed
 
 
 def test_an_item_both_are_about_does_not_relate_findings_on_different_code() -> None:
