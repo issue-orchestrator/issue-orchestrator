@@ -39,12 +39,7 @@ from .http_client import (
     build_github_auth,
     classify_github_http_failure,
 )
-from .marker_recovery import (
-    find_marker_issue,
-    open_issue_bodies_containing,
-    prove_marker_issue,
-    prove_open_marker_issue,
-)
+from .marker_recovery import find_marker_issue, prove_marker_issue, prove_open_marker_issue
 from .repo import get_repo_from_git, GitRepoError
 from .cache import GitHubCache
 from .adapter_cache import GitHubAdapterCacheSupport
@@ -610,17 +605,9 @@ class GitHubAdapter(GitHubIntegrationBranchMixin):
 
     def find_open_issue_by_marker(self, *, marker: str) -> int | None:
         """The open issue whose body carries ``marker``; None proves there is
-        none (uncached, complete or raising)."""
+        none (read fresh, cursor-paged, complete or raising)."""
         found = prove_open_marker_issue(self._client, marker=marker)
         return found.number if found is not None else None
-
-    def open_issue_bodies_containing(self, needle: str) -> list[OpenIssueBody]:
-        """Every open issue whose body carries ``needle``, with its body
-        (uncached, complete or raising)."""
-        return [
-            OpenIssueBody(number=number, body=body)
-            for number, body in open_issue_bodies_containing(self._client, needle=needle)
-        ]
 
     def get_default_branch(self) -> str:
         """The repository's real default branch (cached; GitHub is authoritative)."""
@@ -1303,6 +1290,14 @@ class GitHubAdapter(GitHubIntegrationBranchMixin):
         return [
             OpenIssueLabels(number=number, title=title, labels=labels)
             for number, title, labels in self._client.list_open_issue_labels_complete()
+        ]
+
+    def list_open_issue_bodies_complete(self) -> list[OpenIssueBody]:
+        """Every open issue with its title, labels and body, read fresh and
+        cursor-paged; raises rather than truncating (#8986)."""
+        return [
+            OpenIssueBody(number=number, title=title, labels=labels, body=body)
+            for number, title, labels, body in self._client.list_open_issue_bodies_complete()
         ]
 
     def list_open_prs_complete(self) -> list[PRInfo]:

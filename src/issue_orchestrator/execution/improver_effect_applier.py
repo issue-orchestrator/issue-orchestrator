@@ -5,14 +5,13 @@ still owes effects, oldest first, it asks the policy what each finding needs
 (:func:`~..control.improver_effects.plan_effect`) and does it through the
 repository-host port, recording the receipt on the run as it goes.
 
-Open issues are listed once per application, with the defect each open
-improver issue's body records (#8986), so a finding an open issue already
-carries (filed by an earlier run, or by this one before a crash lost its
-receipt), or one about the defect of an issue an earlier run filed, is
-commented there, never filed twice. A comment is posted only if its marker
-is not already on the issue. A rate limit stops the batch with
-the rest pending; any other failure stops it too, kept as the receipt's
-``error`` until an application succeeds.
+Open issues are read once per application, each with the defect its body
+records (#8986), so a finding an open issue already carries (filed by an
+earlier run, or by this one before a crash lost its receipt), or one about
+the defect of an issue an earlier run filed, is commented there, never filed
+twice. A comment is posted only if its marker is not already on the issue. A
+rate limit stops the batch with the rest pending; any other failure stops it
+too, kept as the receipt's ``error`` until an application succeeds.
 """
 
 from __future__ import annotations
@@ -29,7 +28,6 @@ from ..contracts.improver_run import (
     RunOutcome,
 )
 from ..control.improver_effects import (
-    DEFECT_MARKER,
     IMPROVER_LABEL,
     CommentImproverEvidence,
     OpenIssues,
@@ -53,15 +51,13 @@ class ImproverIssueHost(Protocol):
 
     def issue_comment_marker_present(self, issue_number: int, marker: str) -> bool: ...
 
-    def list_open_issue_labels_complete(self) -> Sequence[OpenIssueLabels]: ...
-
     def find_issue_by_marker(
         self, *, title: str, marker: str, authoritative: bool = False
     ) -> int | None: ...
 
     def find_open_issue_by_marker(self, *, marker: str) -> int | None: ...
 
-    def open_issue_bodies_containing(self, needle: str) -> Sequence[OpenIssueBody]: ...
+    def list_open_issue_bodies_complete(self) -> Sequence[OpenIssueBody]: ...
 
 
 class ImproverEffects:
@@ -100,10 +96,7 @@ class ImproverEffects:
         if not owing:
             return ()
         try:
-            open_issues = OpenIssues.read(
-                self._host.list_open_issue_labels_complete(),
-                self._host.open_issue_bodies_containing(DEFECT_MARKER),
-            )
+            open_issues = OpenIssues.read(self._host.list_open_issue_bodies_complete())
         except Exception as error:
             first = owing[0]
             return (self._stopped(first, first.effects.index(first.pending_effects[0]), error),)

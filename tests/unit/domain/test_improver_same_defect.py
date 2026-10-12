@@ -453,7 +453,7 @@ def test_a_run_owed_with_an_earlier_one_comments_on_the_issue_that_one_just_file
 
 def _recovered(tmp_path: Path, *, closed_since: bool) -> tuple[dict[str, ImproverRunRecord], FakeIssueHost, int]:
     """Run A's POST filed #8693's issue, then its response was lost, and the
-    open listing does not show it yet; run B (heat 2, the same defect under
+    application's open-issue read does not show it yet; run B (heat 2, the same defect under
     another key) is owed with it. The issue is closed (or not) before the
     batch is applied again."""
     store, host = MemoryRunStore(tmp_path), _host()

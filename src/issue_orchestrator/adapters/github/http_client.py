@@ -2612,12 +2612,37 @@ class GitHubHttpClient:
     ) -> list[tuple[int, str, tuple[str, ...]]]:
         """Every open issue's number, title and labels, or an error: never a partial list.
 
-        Walks GraphQL ``issues(states: OPEN)`` by CURSOR, like
-        :meth:`list_open_prs_complete`: an issue closing mid-walk cannot shift
-        another past a page boundary the way offset pagination does (#7490).
         An issue with more labels than one page carries is refused rather than
         reported with some of them.
         """
+        return [
+            self._open_issue_labels(node)
+            for node in self._open_issue_nodes(
+                "number title labels(first: 100) { totalCount nodes { name } }",
+                page_cap=page_cap, caller="list_open_issue_labels_complete",
+            )
+        ]
+
+    def list_open_issue_bodies_complete(
+        self, *, page_cap: int = 20
+    ) -> list[tuple[int, str, tuple[str, ...], str]]:
+        """Every open issue's number, title, labels and body, or an error:
+        never a partial list (#8986). Read fresh, so an issue filed a moment
+        ago is seen; what an authoritative open-issue marker lookup walks."""
+        return [
+            (*self._open_issue_labels(node), self._open_issue_body(node))
+            for node in self._open_issue_nodes(
+                "number title body labels(first: 100) { totalCount nodes { name } }",
+                page_cap=page_cap, caller="list_open_issue_bodies_complete",
+            )
+        ]
+
+    def _open_issue_nodes(self, fields: str, *, page_cap: int, caller: str) -> Iterator[object]:
+        """Every open issue's ``fields``, walking GraphQL ``issues(states: OPEN)``
+        by CURSOR, like :meth:`list_open_prs_complete`: an issue closing
+        mid-walk cannot shift another past a page boundary the way offset
+        pagination does (#7490). A missing connection, a page without a
+        cursor or a walk longer than ``page_cap`` pages raises."""
         owner, repo = self._config.repo.split("/", 1)
         query = """
         query($owner: String!, $repo: String!, $after: String) {
@@ -2625,32 +2650,32 @@ class GitHubHttpClient:
                 issues(states: OPEN, first: 100, after: $after,
                        orderBy: {field: CREATED_AT, direction: ASC}) {
                     pageInfo { hasNextPage endCursor }
-                    nodes { number title labels(first: 100) { totalCount nodes { name } } }
+                    nodes { %s }
                 }
             }
         }
-        """
-        issues: list[tuple[int, str, tuple[str, ...]]] = []
+        """ % fields
         after: str | None = None
         for _page in range(page_cap):
-            result = self._graphql(
-                query, {"owner": owner, "repo": repo, "after": after},
-                caller="list_open_issue_labels_complete",
-            )
+            result = self._graphql(query, {"owner": owner, "repo": repo, "after": after}, caller=caller)
             connection = ((result.get("data") or {}).get("repository") or {}).get("issues")
             if not isinstance(connection, dict) or not isinstance(connection.get("nodes"), list):
                 raise self._incomplete_open_issues("returned no issues connection")
-            for node in connection["nodes"]:
-                issues.append(self._open_issue_labels(node))
+            yield from connection["nodes"]
             page_info = connection.get("pageInfo")
             if not isinstance(page_info, dict) or type(page_info.get("hasNextPage")) is not bool:
                 raise self._incomplete_open_issues("returned no pageInfo.hasNextPage")
             if not page_info["hasNextPage"]:
-                return issues
+                return
             after = page_info.get("endCursor")
             if not isinstance(after, str) or not after:
                 raise self._incomplete_open_issues("reported another page without a cursor")
         raise self._incomplete_open_issues(f"exceeded the {page_cap * 100}-issue page cap")
+
+    def _open_issue_body(self, node: object) -> str:
+        if not isinstance(node, dict) or not isinstance(node.get("body"), str):
+            raise self._incomplete_open_issues(f"returned a node without its body: {node!r}")
+        return node["body"]
 
     def _open_issue_labels(self, node: object) -> tuple[int, str, tuple[str, ...]]:
         if (

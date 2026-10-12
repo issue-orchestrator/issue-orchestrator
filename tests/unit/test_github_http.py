@@ -36,6 +36,7 @@ from issue_orchestrator.adapters.github.http_client import (
     resolve_github_token,
     validate_github_token,
 )
+from issue_orchestrator.adapters.github.marker_recovery import prove_open_marker_issue
 from issue_orchestrator.adapters.github.tokens import (
     GitHubAppAuthConfig,
     GitHubAuthSource,
@@ -3029,6 +3030,69 @@ def test_open_issue_labels_walk_by_cursor_so_a_closure_mid_walk_skips_nothing() 
         (1, "Issue 1", ()), (2, "Issue 2", ()), (3, "Issue 3", ("needs-human",)), (4, "Issue 4", ())
     ]
     assert [r["after"] for r in requests] == [None, "2"]
+
+
+_MARKER = "<!-- io-improver-finding:k -->"
+
+
+def _issue_closing_after_page_one() -> tuple[GitHubHttpClient, list[dict]]:
+    """150 open issues; issue 101 carries ``_MARKER``. Issue 1 closes once
+    page 1 is served. Offset paging would move 101 onto the page already
+    read and report a short page 2."""
+    open_issues = list(range(1, 151))
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        graphql = _graphql_body(request)
+        assert "body" in graphql["query"]
+        variables = graphql["variables"]
+        requests.append(variables)
+        after = int(variables["after"]) if variables["after"] else 0
+        page = [n for n in open_issues if n > after][:100]
+        if after == 0:
+            open_issues.remove(1)
+        more = bool(page) and any(n > page[-1] for n in open_issues)
+        return httpx.Response(200, json={"data": {"repository": {"issues": {
+            "pageInfo": {"hasNextPage": more, "endCursor": str(page[-1]) if page else None},
+            "nodes": [
+                {**_issue_node(n), "body": f"{_MARKER}\nthe defect" if n == 101 else ""} for n in page
+            ],
+        }}}})
+
+    return _client_with_transport(httpx.MockTransport(handler)), requests
+
+
+def test_open_issue_bodies_walk_by_cursor_so_a_closure_mid_walk_skips_nothing() -> None:
+    """#8986 r2 F2: a cursor names the last issue already read, so 101 is read on page 2."""
+    client, requests = _issue_closing_after_page_one()
+
+    issues = client.list_open_issue_bodies_complete()
+
+    assert [number for number, *_ in issues] == list(range(1, 151))
+    assert issues[100] == (101, "Issue 101", (), f"{_MARKER}\nthe defect")
+    assert [r["after"] for r in requests] == [None, "100"]
+
+
+def test_the_open_marker_lookup_finds_a_marker_a_closure_mid_walk_would_shift() -> None:
+    """The marker lookup's None proves no open issue carries the marker: it
+    never says so of 101, open throughout the walk."""
+    client, _ = _issue_closing_after_page_one()
+
+    found = prove_open_marker_issue(client, marker=_MARKER)
+
+    assert found is not None and found.number == 101
+
+
+def test_open_issue_bodies_refuse_a_node_without_its_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"repository": {"issues": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": [_issue_node(1)],
+        }}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match="without its body"):
+        client.list_open_issue_bodies_complete()
 
 
 @pytest.mark.parametrize(

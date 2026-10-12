@@ -171,7 +171,7 @@ def test_open_issues_that_cannot_be_listed_stop_the_batch_on_its_first_owed_effe
     def unlisted():  # type: ignore[no-untyped-def]
         raise RuntimeError("graphql down")
 
-    host.list_open_issue_labels_complete = unlisted  # type: ignore[method-assign]
+    host.list_open_issue_bodies_complete = unlisted  # type: ignore[method-assign]
 
     [run] = _effects(store, host).apply_pending()
 

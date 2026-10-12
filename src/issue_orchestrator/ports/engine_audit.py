@@ -55,9 +55,11 @@ class OpenIssueLabels:
 
 @dataclass(frozen=True, slots=True)
 class OpenIssueBody:
-    """One open issue and its body, as the host stores it."""
+    """One open issue, its title and labels, and its body, as the host stores them."""
 
     number: int
+    title: str
+    labels: tuple[str, ...]
     body: str
 
 

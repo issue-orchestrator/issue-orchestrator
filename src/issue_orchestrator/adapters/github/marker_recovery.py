@@ -112,35 +112,16 @@ def prove_marker_issue(
 
 def prove_open_marker_issue(client: "GitHubHttpClient", *, marker: str) -> MarkerIssue | None:
     """AUTHORITATIVE over every OPEN issue: ``None`` means no open issue has
-    ``marker`` in its body, whatever its title or labels became. Uncached and
-    complete or loud, like :func:`prove_marker_issue`, but scoped to open
-    issues so it reads a few pages instead of the repository's history."""
+    ``marker`` in its body, whatever its title or labels became. Read fresh
+    and complete or loud, like :func:`prove_marker_issue`, but scoped to open
+    issues and walked by cursor, so an issue closing mid-walk cannot shift
+    the one carrying ``marker`` past a page boundary (#8986)."""
     if not marker.strip():
         raise ValueError("an open-issue marker lookup needs a marker")
-    for payload in client.list_issues(
-        state="open", limit=AUTHORITATIVE_SCAN_LIMIT, use_cache=False, exhaustive=True
-    ):
-        found = _marker_issue(payload, marker)
-        if found is not None:
-            return found
+    for number, _title, _labels, body in client.list_open_issue_bodies_complete():
+        if marker in body:
+            return MarkerIssue(number=number)
     return None
-
-
-def open_issue_bodies_containing(client: "GitHubHttpClient", *, needle: str) -> list[tuple[int, str]]:
-    """Every OPEN issue whose body holds ``needle``, with its body (#8986):
-    uncached and complete or loud, like :func:`prove_open_marker_issue`."""
-    if not needle.strip():
-        raise ValueError("an open-issue body read needs a needle")
-    found: list[tuple[int, str]] = []
-    for payload in client.list_issues(
-        state="open", limit=AUTHORITATIVE_SCAN_LIMIT, use_cache=False, exhaustive=True
-    ):
-        if not isinstance(payload, dict):
-            continue
-        body, number = payload.get("body"), payload.get("number")
-        if isinstance(body, str) and needle in body and number:
-            found.append((int(number), body))
-    return found
 
 
 def _marker_issue(payload: object, marker: str) -> MarkerIssue | None:

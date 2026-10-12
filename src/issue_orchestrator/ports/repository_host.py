@@ -279,12 +279,12 @@ class RepositoryHost(IssueTracker, LabelSet, PullRequestTracker, IntegrationBran
         """
         ...
 
-    def open_issue_bodies_containing(self, needle: str) -> Sequence["OpenIssueBody"]:
-        """Every OPEN issue whose body holds ``needle``, with its body (#8986).
+    def list_open_issue_bodies_complete(self) -> Sequence["OpenIssueBody"]:
+        """Every OPEN issue, with its title, labels and body (#8986).
 
-        Complete over every open issue, whatever its title or labels became,
-        or raising: never a partial list. Uncached, so an issue filed a
-        moment ago is seen.
+        Complete or raising, never a partial list: walked by cursor, so an
+        issue closing mid-walk cannot shift another past a page boundary.
+        Read fresh, so an issue filed a moment ago is seen.
         """
         ...
 

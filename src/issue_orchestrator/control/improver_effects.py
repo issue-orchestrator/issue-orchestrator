@@ -304,18 +304,19 @@ class OpenIssues:
         self._defects = dict(defects)
 
     @classmethod
-    def read(cls, listed: Iterable[OpenIssueLabels], bodies: Iterable[OpenIssueBody]) -> OpenIssues:
-        """The open issues as the host lists them, with the defect each
-        body records (the bodies holding :data:`DEFECT_MARKER`)."""
+    def read(cls, issues: Iterable[OpenIssueBody]) -> OpenIssues:
+        """The open issues as one complete read of the host shows them: each
+        one's title and labels, and the defect its body records."""
+        snapshot = tuple(issues)
         defects: dict[int, FiledDefect] = {}
-        for issue in bodies:
+        for issue in snapshot:
             try:
                 defect = filed_defect(issue.body)
             except ValueError as error:
                 raise ValueError(f"open issue #{issue.number}'s defect marker records no defect: {error}") from error
             if defect is not None:
                 defects[issue.number] = defect
-        return cls(listed, defects)
+        return cls((OpenIssueLabels(number=i.number, title=i.title, labels=i.labels) for i in snapshot), defects)
 
     def is_open(self, number: int) -> bool:
         return number in self._listed
