@@ -122,6 +122,16 @@ class RunningEngine:
 
 
 @dataclass(frozen=True)
+class EngineObservation:
+    """One page read's look at a repository's engine, ordered before the
+    supervisor is asked: page reads ask concurrently, and their answers land
+    in any order."""
+
+    repo_key: str
+    generation: int
+
+
+@dataclass(frozen=True)
 class SectionRead:
     """One page read of one engine life's section, issued before its I/O."""
 
@@ -132,12 +142,20 @@ class SectionRead:
 
 @dataclass
 class _EngineLifeMemory:
-    """What one engine life reported, from the first read that observed it."""
+    """What one engine life reported, from the observation that first saw it."""
 
     engine: RunningEngine
     since: int
     section: TechLeadPageSectionPayload | None = None
     section_read: int = 0
+
+
+@dataclass
+class _RepositoryMemory:
+    """The newest observation applied to one repository, and its engine life."""
+
+    applied: int = 0
+    life: _EngineLifeMemory | None = None
 
 
 class TechLeadSectionMemory:
@@ -146,33 +164,46 @@ class TechLeadSectionMemory:
     Lives as long as the Control Center process, across page reads, so one
     missed read shows what the engine last reported instead of nothing.
 
-    Page reads run concurrently on the route's thread pool and their engine
-    reads land in any order, so every read takes a :class:`SectionRead` before
-    its I/O and the memory decides, atomically, what its answer may change:
-    only a read of the current engine life commits, and only if no newer read
-    has already committed. An engine seen stopped, or seen as another life,
-    voids its earlier life's report and every read of it still in flight.
+    Page reads run concurrently on the route's thread pool, and neither the
+    supervisor's answers nor the engines' land in the order they were asked.
+    So a read takes its place in the order before it asks anything
+    (:meth:`observe`), and the memory decides, atomically, what each answer
+    may change. Whether the engine runs, and which life it is, is applied only
+    if no newer observation already was: a stale one answers its own read but
+    never replaces or clears a newer life. A section is remembered only for
+    the current life, and only if no newer read already was. An engine seen
+    stopped, or seen as another life, voids its earlier life's report and
+    every read of it still in flight. The memory keeps one small entry per
+    repository it has been asked about.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()  # page reads run on the route's thread pool
         self._generation = 0
-        self._lives: dict[str, _EngineLifeMemory] = {}
+        self._repositories: dict[str, _RepositoryMemory] = {}
 
-    def engine_stopped(self, repo_key: str) -> None:
-        """No engine runs for *repo_key*: nothing it reported outlives it."""
+    def observe(self, repo_key: str) -> EngineObservation:
+        """Take a read's place in the order, before it asks the supervisor."""
         with self._lock:
             self._generation += 1
-            self._lives.pop(repo_key, None)
+            return EngineObservation(repo_key, self._generation)
 
-    def begin_read(self, repo_key: str, engine: RunningEngine) -> SectionRead:
-        """Observe *engine* running and take this read's place in the order."""
+    def engine_stopped(self, observation: EngineObservation) -> None:
+        """*observation* found no engine: unless a newer observation already
+        applied, nothing the engine reported outlives it."""
         with self._lock:
-            self._generation += 1
-            life = self._lives.get(repo_key)
-            if life is None or life.engine != engine:
-                self._lives[repo_key] = _EngineLifeMemory(engine=engine, since=self._generation)
-            return SectionRead(repo_key, engine, self._generation)
+            repository = self._newest(observation)
+            if repository is not None:
+                repository.life = None
+
+    def engine_running(self, observation: EngineObservation, engine: RunningEngine) -> SectionRead:
+        """*observation* found *engine* running: unless a newer observation
+        already applied, it is the repository's current life."""
+        with self._lock:
+            repository = self._newest(observation)
+            if repository is not None and (repository.life is None or repository.life.engine != engine):
+                repository.life = _EngineLifeMemory(engine=engine, since=observation.generation)
+            return SectionRead(observation.repo_key, engine, observation.generation)
 
     def answered(self, read: SectionRead, section: TechLeadPageSectionPayload) -> None:
         """*read*'s engine answered: remember it, unless the read is stale."""
@@ -187,10 +218,23 @@ class TechLeadSectionMemory:
             life = self._current_life(read)
             return life.section if life is not None else None
 
+    def _newest(self, observation: EngineObservation) -> _RepositoryMemory | None:
+        """The repository's memory to apply *observation* to, or ``None``
+        when a newer observation already applied."""
+        repository = self._repositories.setdefault(observation.repo_key, _RepositoryMemory())
+        if observation.generation <= repository.applied:
+            return None
+        repository.applied = observation.generation
+        return repository
+
     def _current_life(self, read: SectionRead) -> _EngineLifeMemory | None:
-        life = self._lives.get(read.repo_key)
-        # A life observed after this read began replaced the read's own.
-        return life if life is not None and life.since <= read.generation else None
+        repository = self._repositories.get(read.repo_key)
+        life = repository.life if repository is not None else None
+        # A life first observed after this read's observation replaced the
+        # read's own, even one that looks the same.
+        if life is None or life.engine != read.engine or life.since > read.generation:
+            return None
+        return life
 
 
 #: A running engine whose backlog this read did not learn.
@@ -264,16 +308,17 @@ class ControlCenterTechLead:
     def _repo_row(self, repo: "RegisteredRepo") -> ControlCenterTechLeadRepoPayload:
         key = configured_repository_key(repo.path)
         name = repo.name or Path(repo.path).name
+        observation = self.memory.observe(key)
         engine = self._running_engine(repo)
         if engine is None:
             # Only a running engine's missed read is bridged: a restarted one
             # reports afresh.
-            self.memory.engine_stopped(key)
+            self.memory.engine_stopped(observation)
             return ControlCenterTechLeadUnreportedRepoPayload(
                 repo_key=key, name=name, availability="engine_not_running",
                 detail="Engine not running: start it to see what waits here.", section=None,
             )
-        read = self.memory.begin_read(key, engine)
+        read = self.memory.engine_running(observation, engine)
         answer = self._read_section(repo, engine.port)
         if isinstance(answer, TechLeadPageSectionPayload):
             self.memory.answered(read, answer)
@@ -346,6 +391,7 @@ def _refused(status: int, number: int, detail: str) -> TechLeadCommandResult:
 
 __all__ = [
     "ControlCenterTechLead",
+    "EngineObservation",
     "EngineTechLeadTransport",
     "HttpEngineTechLeadTransport",
     "RunningEngine",

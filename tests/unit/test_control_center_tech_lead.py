@@ -2,8 +2,9 @@
 
 Aggregation over configured repositories, engine-not-running rows, fail-closed
 validation of each engine's answer, a running engine's last report when it
-misses a read (#8988) — including page reads that overlap — and the command
-proxy, through the owner and through the CC routes.
+misses a read (#8988) — including page reads whose supervisor and engine
+answers overlap — and the command proxy, through the owner and through the CC
+routes.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ from issue_orchestrator.ports.repository_engine_supervisor import (
     MultiInstanceStatus,
     SupervisorStatus,
 )
+from tests.unit.threading_helpers import ThreadResult, join_or_fail, run_in_thread, wait_for_event
 
 
 def _section(repository: str, waiting: int, generated_at: str = "now") -> dict:
@@ -67,20 +69,35 @@ _NO_ANSWER = EngineCommandFailure(
 
 
 @dataclass
+class _HeldCalls:
+    """Holds the next call for a key in flight until released, as a slow
+    supervisor or engine holds a page read: its answer is already decided."""
+
+    gates: dict[object, tuple[threading.Event, threading.Event]] = field(default_factory=dict)
+
+    def hold_next(self, key: object) -> tuple[threading.Event, threading.Event]:
+        gate = self.gates[key] = (threading.Event(), threading.Event())
+        return gate
+
+    def pass_through(self, key: object) -> None:
+        gate = self.gates.pop(key, None)
+        if gate is not None:
+            started, release = gate
+            started.set()
+            wait_for_event(release, 5, label="the held call's release")
+
+
+@dataclass
 class _Transport:
     sections: dict[int, dict | None] = field(default_factory=dict)
     answer: tuple[int, dict] | EngineCommandFailure | None = None
     commands: list[tuple[int, dict]] = field(default_factory=list)
-    #: A port whose next read is held in flight: (started, release).
-    held: dict[int, tuple[threading.Event, threading.Event]] = field(default_factory=dict)
+    #: Section reads held in flight, by port.
+    held: _HeldCalls = field(default_factory=_HeldCalls)
 
     def read_section(self, port):
         answer = self.sections.get(port)  # what the engine answers as the read starts
-        gate = self.held.pop(port, None)
-        if gate is not None:
-            started, release = gate
-            started.set()
-            assert release.wait(5), "the held read was never released"
+        self.held.pass_through(port)
         return answer
 
     def send_command(self, port, body):
@@ -90,10 +107,12 @@ class _Transport:
 
 def _owner(
     tmp_path, ports: dict[str, int | SupervisorStatus | None], transport: _Transport,
-    memory: TechLeadSectionMemory | None = None,
+    memory: TechLeadSectionMemory | None = None, status_calls: _HeldCalls | None = None,
 ) -> tuple[ControlCenterTechLead, dict[str, str]]:
     """*ports* is read on every page read, so a test can stop, start or
-    restart an engine: a port alone, or the supervisor's full status."""
+    restart an engine: a port alone, or the supervisor's full status.
+    *status_calls* holds a supervisor answer, by repository name."""
+    held_status = status_calls or _HeldCalls()
     repos, keys = [], {}
     for name in ports:
         path = tmp_path / name
@@ -106,6 +125,7 @@ def _owner(
         engine = ports[path.name]
         if not isinstance(engine, SupervisorStatus):
             engine = SupervisorStatus(state="running" if engine else "stopped", port=engine)
+        held_status.pass_through(path.name)  # what it saw is decided; it lands later
         return MultiInstanceStatus(repo_root=str(path), instances=[engine])
 
     supervisor.status_all_instances.side_effect = all_instances
@@ -231,22 +251,17 @@ def test_a_restarted_engine_never_shows_its_previous_lifes_report(tmp_path) -> N
 
 
 @contextmanager
-def _page_read_in_flight(owner: ControlCenterTechLead, transport: _Transport, port: int) -> Iterator[list]:
-    """One page read on its own thread, its read of *port* held in flight for
-    the block, as an engine slow to answer holds it; it lands on exit, and the
-    list then holds the page that read served."""
-    started, release = threading.Event(), threading.Event()
-    transport.held[port] = (started, release)
-    served: list = []
-    thread = threading.Thread(target=lambda: served.append(owner.page()))
-    thread.start()
+def _page_read_held(owner: ControlCenterTechLead, calls: _HeldCalls, key: object) -> Iterator[ThreadResult]:
+    """One page read on its own thread, its call for *key* held in flight for
+    the block; it lands on exit, and the result then holds the page it served."""
+    started, release = calls.hold_next(key)
+    thread, served = run_in_thread(owner.page)
     try:
-        assert started.wait(5), "the page read never reached the engine"
+        wait_for_event(started, 5, label="the page read reaching the held call")
         yield served
     finally:
         release.set()
-        thread.join(5)
-    assert not thread.is_alive() and len(served) == 1
+        join_or_fail(thread, 5, label="the held page read")
 
 
 @pytest.mark.parametrize("restart_read_first", [False, True], ids=["lands-first", "restart-reads-first"])
@@ -259,7 +274,7 @@ def test_a_read_landing_after_its_engine_stopped_is_not_remembered(tmp_path, res
     transport = _Transport(sections={8001: _section("o/a", 2, "2026-10-12T10:00:00+00:00")})
     owner, _ = _owner(tmp_path, ports, transport)
 
-    with _page_read_in_flight(owner, transport, 8001) as slow:
+    with _page_read_held(owner, transport.held, 8001) as slow:
         ports["a"] = None
         assert [row.availability for row in owner.page().repos] == ["engine_not_running"]
         ports["a"] = 8001
@@ -267,7 +282,7 @@ def test_a_read_landing_after_its_engine_stopped_is_not_remembered(tmp_path, res
         if restart_read_first:
             assert [(row.availability, row.section) for row in owner.page().repos] == [("unavailable", None)]
 
-    assert [row.availability for row in slow[0].repos] == ["available"]
+    assert [row.availability for row in slow.unwrap().repos] == ["available"]
     (row,) = owner.page().repos
     assert (row.availability, row.section) == ("unavailable", None)
 
@@ -278,12 +293,12 @@ def test_an_older_read_landing_last_does_not_replace_a_newer_report(tmp_path) ->
     transport = _Transport(sections={8001: _section("o/a", 2, "2026-10-12T10:00:00+00:00")})
     owner, _ = _owner(tmp_path, {"a": 8001}, transport)
 
-    with _page_read_in_flight(owner, transport, 8001) as older:
+    with _page_read_held(owner, transport.held, 8001) as older:
         transport.sections[8001] = _section("o/a", 1, "2026-10-12T10:00:10+00:00")
         (newer,) = owner.page().repos
         assert newer.section is not None and newer.section.generated_at == "2026-10-12T10:00:10+00:00"
 
-    (served,) = older[0].repos
+    (served,) = older.unwrap().repos
     assert served.section is not None and served.section.generated_at == "2026-10-12T10:00:00+00:00"
     transport.sections[8001] = None
     page = owner.page()
@@ -291,6 +306,69 @@ def test_an_older_read_landing_last_does_not_replace_a_newer_report(tmp_path) ->
     assert row.availability == "last_known"
     assert row.section is not None and row.section.generated_at == "2026-10-12T10:00:10+00:00"
     assert row.section.waiting_count == 1
+
+
+def test_a_stale_running_observation_does_not_outlive_a_newer_stop(tmp_path) -> None:
+    """r2 F1: page read A asks the supervisor first and sees the engine
+    running, but its answer lands after read B saw the engine stopped. A
+    still serves what it read, but the stop is newer: when the engine runs
+    again and misses a read, A's answer is not its last report."""
+    ports: dict[str, int | SupervisorStatus | None] = {"a": 8001}
+    status_calls = _HeldCalls()
+    transport = _Transport(sections={8001: _section("o/a", 2)})
+    owner, _ = _owner(tmp_path, ports, transport, status_calls=status_calls)
+
+    with _page_read_held(owner, status_calls, "a") as stale:
+        ports["a"] = None
+        assert [row.availability for row in owner.page().repos] == ["engine_not_running"]
+
+    assert [row.availability for row in stale.unwrap().repos] == ["available"]
+    ports["a"] = 8001
+    transport.sections[8001] = None
+    (row,) = owner.page().repos
+    assert (row.availability, row.section) == ("unavailable", None)
+
+
+def test_a_stale_stopped_observation_does_not_clear_a_newer_life(tmp_path) -> None:
+    """r2 F1: page read A asks first and sees no engine, but its answer lands
+    after read B saw the engine started and read its report. The newer life
+    stays: its next missed read shows what B read."""
+    ports: dict[str, int | SupervisorStatus | None] = {"a": None}
+    status_calls = _HeldCalls()
+    transport = _Transport(sections={8001: _section("o/a", 2, "2026-10-12T10:00:00+00:00")})
+    owner, _ = _owner(tmp_path, ports, transport, status_calls=status_calls)
+
+    with _page_read_held(owner, status_calls, "a") as stale:
+        ports["a"] = 8001
+        assert [row.availability for row in owner.page().repos] == ["available"]
+
+    assert [row.availability for row in stale.unwrap().repos] == ["engine_not_running"]
+    transport.sections[8001] = None
+    (row,) = owner.page().repos
+    assert row.availability == "last_known"
+    assert row.section is not None and row.section.generated_at == "2026-10-12T10:00:00+00:00"
+
+
+def test_a_stale_observation_of_an_earlier_life_does_not_replace_a_newer_one(tmp_path) -> None:
+    """r2 F1: page read A sees the engine's earlier life, but its answer
+    lands after read B saw the restarted life and read its report. The newer
+    life stays current, report and all."""
+    before = SupervisorStatus(state="running", port=8001, pid=100, started_at="2026-10-12T10:00:00+00:00")
+    after = SupervisorStatus(state="running", port=8001, pid=200, started_at="2026-10-12T10:05:00+00:00")
+    ports: dict[str, int | SupervisorStatus | None] = {"a": before}
+    status_calls = _HeldCalls()
+    transport = _Transport(sections={8001: _section("o/a", 2, "2026-10-12T10:05:10+00:00")})
+    owner, _ = _owner(tmp_path, ports, transport, status_calls=status_calls)
+
+    with _page_read_held(owner, status_calls, "a") as stale:
+        ports["a"] = after
+        assert [row.availability for row in owner.page().repos] == ["available"]
+
+    assert [row.availability for row in stale.unwrap().repos] == ["available"]
+    transport.sections[8001] = None
+    (row,) = owner.page().repos
+    assert row.availability == "last_known"
+    assert row.section is not None and row.section.generated_at == "2026-10-12T10:05:10+00:00"
 
 
 _KEY = "repo-" + "a" * 64
