@@ -346,7 +346,7 @@ class OpenIssues:
         )
 
     def filed(self, issue: OpenIssueLabels, defect: FiledDefect | None) -> None:
-        """An issue this application filed (or proved filed) is open now."""
+        """An issue this application filed, or proved filed and open, is open now."""
         self._listed[issue.number] = issue
         if defect is not None:
             self._defects[issue.number] = defect

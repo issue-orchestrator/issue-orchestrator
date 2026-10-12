@@ -193,11 +193,17 @@ class ImproverEffects:
                 }
             )
         if receipt.create_attempted_at is not None:
-            # An earlier POST's result was lost. Prove by the body marker,
-            # over every issue open or closed, whether it filed one.
-            number = self._host.find_issue_by_marker(
-                title=command.title, marker=command.marker, authoritative=True
-            )
+            # An earlier POST's result was lost. Prove by the body marker
+            # whether it filed one: among the open issues, then over every
+            # issue. One found only there is not proven open, so it is never
+            # an open issue a later finding's evidence is commented on.
+            number = self._host.find_open_issue_by_marker(marker=command.marker)
+            if number is None:
+                recovered = self._host.find_issue_by_marker(
+                    title=command.title, marker=command.marker, authoritative=True
+                )
+                if recovered is not None:
+                    return _filed(receipt, recovered, self._clock())
         else:
             # Another run may have filed the same finding a moment ago (the
             # open listing need not show it yet), or an operator may have
@@ -220,13 +226,18 @@ class ImproverEffects:
                 raise RuntimeError(f"creating the improver issue for {receipt.finding_id} returned no issue number")
             number = created["number"]
         open_issues.filed(OpenIssueLabels(number=number, title=command.title, labels=command.labels), command.defect)
-        return receipt.model_copy(
-            update={
-                "status": EffectStatus.FILED, "issue_number": number,
-                "at": self._clock(), "detail": "", "error": None,
-                "create_attempted_at": receipt.create_attempted_at or self._clock(),
-            }
-        )
+        return _filed(receipt, number, self._clock())
+
+
+def _filed(receipt: EffectReceipt, number: int, now: datetime) -> EffectReceipt:
+    """``receipt`` done: its finding's issue is ``number``."""
+    return receipt.model_copy(
+        update={
+            "status": EffectStatus.FILED, "issue_number": number,
+            "at": now, "detail": "", "error": None,
+            "create_attempted_at": receipt.create_attempted_at or now,
+        }
+    )
 
 
 def _carrying(number: int, key: str) -> OpenIssueLabels:

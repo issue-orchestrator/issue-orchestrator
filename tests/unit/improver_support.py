@@ -377,8 +377,10 @@ class FakeIssueHost:
         return [i for i in self.open if not (self.stale_listing and i.number in created)]
 
     def find_open_issue_by_marker(self, *, marker):  # type: ignore[no-untyped-def]
-        """Uncached, by body: sees what the (stale, retitled) listing does not."""
-        return next((c["number"] for c in self.created if marker in c["body"]), None)
+        """Uncached, by body: sees what the (stale, retitled) listing does not,
+        but never an issue closed since (one left out of ``open``)."""
+        is_open = {i.number for i in self.open}
+        return next((c["number"] for c in self.created if c["number"] in is_open and marker in c["body"]), None)
 
     def open_issue_bodies_containing(self, needle):  # type: ignore[no-untyped-def]
         """Uncached, by body: sees what the (stale, retitled) listing does not."""

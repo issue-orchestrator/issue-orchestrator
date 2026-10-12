@@ -451,6 +451,50 @@ def test_a_run_owed_with_an_earlier_one_comments_on_the_issue_that_one_just_file
     assert _effect(later, CRASH_H2) == (EffectStatus.COMMENTED, _filed_for(host, CRASH_H1))
 
 
+def _recovered(tmp_path: Path, *, closed_since: bool) -> tuple[dict[str, ImproverRunRecord], FakeIssueHost, int]:
+    """Run A's POST filed #8693's issue, then its response was lost, and the
+    open listing does not show it yet; run B (heat 2, the same defect under
+    another key) is owed with it. The issue is closed (or not) before the
+    batch is applied again."""
+    store, host = MemoryRunStore(tmp_path), _host()
+    host.stale_listing = True
+    first = _heat(1)
+    _record(store, "a", {**first, "findings": [], "design_findings": [
+        d for d in first["design_findings"] if d["id"] == CRASH_H1
+    ]})
+    _record(store, "b", _heat(2))
+    effects = ImproverEffects(store=store, host=host, outputs_repo=OUTPUTS, clock=lambda: NOW)
+    host.lose_create_result = RuntimeError("connection reset")
+    [lost] = effects.apply_pending()
+    [crash] = [c["number"] for c in host.created]
+    assert lost.run_id == "a" and lost.effects[0].create_attempted_at is not None
+    host.lose_create_result = None
+    if closed_since:
+        host.open = [i for i in host.open if i.number != crash]
+    return {r.run_id: r for r in effects.apply_pending()}, host, crash
+
+
+def test_an_issue_recovered_after_a_lost_create_and_closed_since_takes_no_later_evidence(tmp_path: Path) -> None:
+    """Recovery proves A filed the issue over every issue, open or closed;
+    only one proven open is an open issue. B's evidence is never commented
+    on the closed issue: B files the defect anew."""
+    applied, host, crash = _recovered(tmp_path, closed_since=True)
+
+    assert _effect(applied["a"], CRASH_H1) == (EffectStatus.FILED, crash)
+    status, filed = _effect(applied["b"], CRASH_H2)
+    assert status is EffectStatus.FILED and filed not in (None, crash)
+    assert filed == _filed_for(host, CRASH_H2)
+    assert not any(n == crash for n, _ in host.comments)
+
+
+def test_an_issue_recovered_after_a_lost_create_and_still_open_carries_its_defect(tmp_path: Path) -> None:
+    applied, host, crash = _recovered(tmp_path, closed_since=False)
+
+    assert _effect(applied["a"], CRASH_H1) == (EffectStatus.FILED, crash)
+    assert _effect(applied["b"], CRASH_H2) == (EffectStatus.COMMENTED, crash)
+    assert not any(CRASH_H2 in c["title"] for c in host.created)
+
+
 def test_a_later_design_finding_about_an_open_stall_findings_defect_comments_there(tmp_path: Path) -> None:
     """#8691 (a stall finding) was filed first; the hand-off design finding
     names its owner and is about its item, so a later run comments on it."""
