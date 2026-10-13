@@ -5,6 +5,10 @@ import time
 import base64
 from pathlib import Path
 
+import pytest
+
+from issue_orchestrator.domain.launch_prompt_delivery import MAX_EXEC_ARGUMENT_BYTES, LaunchCommandTooLong
+from issue_orchestrator.execution.agent_runner import AgentRunner, AgentSpec
 from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin, _SessionRecord, _SubprocessRegistry
 from issue_orchestrator.infra.env import ENV_PREFIX
 
@@ -253,3 +257,49 @@ def test_subprocess_session_interactions_require_configured_worktree_base(tmp_pa
 
     assert handler is None
     assert "worktree_base is not configured" in caplog.text
+
+
+def test_the_runner_never_execs_an_argument_past_the_os_limit(tmp_path):
+    """#9012 review r1: the command reaches the OS as one quoted ``bash -c``
+    argument; past the limit the runner refuses before it creates anything."""
+    log_path = tmp_path / "run" / "terminal-recording.jsonl"
+    spec = AgentSpec(
+        command=["/bin/bash", "-lc", "printf " + "x" * MAX_EXEC_ARGUMENT_BYTES],
+        working_dir=tmp_path,
+        timeout_seconds=10,
+        output_dir=log_path.parent,
+        log_path=log_path,
+    )
+
+    with pytest.raises(LaunchCommandTooLong):
+        AgentRunner().start(spec)
+
+    assert not log_path.parent.exists()
+
+
+def test_a_command_the_os_cannot_take_is_refused_and_nothing_starts(tmp_path, monkeypatch):
+    """#9012 review r1 F1: the terminal enforces the limit on the argument it
+    actually execs, after its own cd/PATH/isolation prefix and quoting, so an
+    unchecked command cannot reach the OS. Under the limit as handed over, this
+    one is past it once its single quotes are quoted; the start is refused
+    through the hook's failure result, so the launcher's compensation runs."""
+    repo_root = tmp_path / "repo"
+    worktree = repo_root / "wt"
+    worktree.mkdir(parents=True)
+    monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
+    plugin = SubprocessPlugin()
+    command, run_dir = _command_with_run_dir(worktree, "issue-123", "printf %s " + "''" * 20_000)
+    assert len(command.encode()) < MAX_EXEC_ARGUMENT_BYTES // 2
+
+    created = plugin.create_session(
+        session_id=123,
+        command=command,
+        working_dir=str(worktree),
+        title="Test session",
+        session_name="issue-123",
+    )
+
+    assert created is False
+    assert plugin.session_exists(123, "issue-123") is False
+    assert plugin.discover_running_sessions() == []
+    assert not (run_dir / "terminal-recording.jsonl").exists()

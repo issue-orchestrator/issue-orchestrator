@@ -298,6 +298,38 @@ class TestDebugSessionEndpoint:
         assert manifest is not None
         assert manifest["completion_path"] == completion_path
 
+    def test_a_debug_session_command_past_the_bound_is_refused_before_it_is_spawned(
+        self, client_with_orchestrator, tmp_path
+    ):
+        """#9012 review r1 F1: the debug launch is bounded on the same finished
+        command as every launch, its environment exports included."""
+        from issue_orchestrator.domain.launch_prompt_delivery import MAX_LAUNCH_COMMAND_BYTES
+
+        client, mock_orch = client_with_orchestrator
+        worktree = tmp_path / "repo-123"
+        worktree.mkdir()
+        mock_issue = MagicMock(number=123, key=FakeIssueKey("123", "test/repo"), title="T", agent_type="agent:claude")
+        mock_orch.state.cached_queue_issues = [mock_issue]
+        mock_agent_config = MagicMock()
+        mock_agent_config.render_initial_prompt.return_value = "Work on issue #123"
+        # Under the bound as built; the quotes it holds put it over once quoted for ``bash -lc``.
+        mock_agent_config.get_command_for_prompt.return_value = "claude " + "''" * (MAX_LAUNCH_COMMAND_BYTES // 4)
+        mock_orch.config.agents = {"agent:claude": mock_agent_config}
+        mock_orch.deps.launch_prompt = IssueLaunchPrompt(NO_CODER_PROMPT_ADDENDUM, rulings_owner(IssueBodies({123: ""})))
+        mock_orch.deps.runner.session_exists.return_value = False
+        session_output = FileSystemSessionOutput()
+        mock_orch.deps.session_output = session_output
+        ledger = SqliteIssueRunLedger(tmp_path / "state" / "runs.sqlite", repo_slug="test-owner/test-repo")
+        mock_orch.deps.issue_run_allocator = IssueRunAllocationService(session_output, ledger, branch_working_copy(), configuration=Config(repo="example/repo"))
+
+        with patch("issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path") as mock_get_path:
+            mock_get_path.return_value = worktree
+            response = client.post("/api/issues/123/debug-session")
+
+        assert response.status_code == 500
+        assert response.json()["success"] is False and "argument bound" in response.json()["error"]
+        mock_orch.deps.runner.create_session.assert_not_called()
+
     def test_a_debug_session_never_launches_without_its_launch_prompt(
         self, client_with_orchestrator, tmp_path
     ):

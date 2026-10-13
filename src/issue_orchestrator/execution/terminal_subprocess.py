@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from ..control.isolation import build_agent_tool_path, build_isolation_prefix
+from ..domain.launch_prompt_delivery import LaunchCommandTooLong
 from .agent_runner import AgentRunner, AgentSession, AgentSpec
 from .session_interactions import (
     SessionInteractionHandler,
@@ -416,7 +417,15 @@ class SubprocessPlugin:
         if self.session_exists(session_id, session_name):
             return False
 
-        session = self._start_process(command, worktree, session_name, secret_env)
+        try:
+            session = self._start_process(command, worktree, session_name, secret_env)
+        except LaunchCommandTooLong as exc:
+            # A refused start, reported through this hook's failure result so the
+            # launcher's spawn-failure compensation runs (#9012): nothing started.
+            logger.error(
+                "[subprocess] session refused: session_name=%s reason=%s", session_name, exc,
+            )
+            return False
         is_review = session_name.startswith("review-")
         tab_name = title or session_name
         if is_review:

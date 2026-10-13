@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pexpect
 
+from issue_orchestrator.domain.launch_prompt_delivery import require_exec_argument_within_limit
 from issue_orchestrator.execution.agent_runner_base import (
     BaseAgentRunner,
     _pty_preexec,
@@ -253,7 +254,13 @@ class AgentRunner(BaseAgentRunner):
 
         The caller is responsible for calling :meth:`AgentSession.wait`
         or :meth:`AgentSession.kill` when done.
+
+        Raises :class:`~issue_orchestrator.domain.launch_prompt_delivery.LaunchCommandTooLong`,
+        before anything is created, when the command cannot be one OS argument.
         """
+        # The OS receives the whole command as ONE argument of ``bash -c``,
+        # quoted: bound it exactly as it is exec'd (#9012).
+        shell_cmd = require_exec_argument_within_limit(shlex.join(spec.command))
         spec.output_dir.mkdir(parents=True, exist_ok=True)
         if spec.log_path is not None:
             spec.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -285,7 +292,6 @@ class AgentRunner(BaseAgentRunner):
                 initial_cols=cols,
             )
 
-        shell_cmd = shlex.join(spec.command)
         child = pexpect.spawn(
             "/bin/bash",
             ["-c", shell_cmd],

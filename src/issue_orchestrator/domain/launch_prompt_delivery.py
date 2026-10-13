@@ -9,24 +9,33 @@ prompt is persisted whole to the run directory and the command carries only a
 short instruction to read that file (:meth:`LaunchPromptFile.instruction`).
 
 What does still ride on the command line — provider flags, the completion
-instructions, a sandbox's settings — is bounded by configuration, and
-:func:`require_launch_command_within_bound` makes a command over the limit fail
-loudly rather than reach the OS or be truncated.
+instructions, a sandbox's settings, the session's environment exports — is
+bounded by configuration. A session is started from a :class:`LaunchCommand`,
+the one finished form of everything the launcher composes, which cannot be
+built over :data:`MAX_LAUNCH_COMMAND_BYTES`: a command over the limit fails
+loudly before the launch mutates anything, rather than reaching the OS or being
+truncated. The terminal that execs the command holds every argument it passes
+the OS to :data:`MAX_EXEC_ARGUMENT_BYTES` (:func:`require_exec_argument_within_limit`).
 """
 
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
 from .path_guards import require_absolute_path
 
-#: The whole launch command travels as ONE argument (``bash -lc <command>``), and
-#: Linux caps a single argument at MAX_ARG_STRLEN (32 pages, 128 KiB). macOS has
-#: no per-argument cap but a 1 MiB ARG_MAX for argv plus environment, which the
-#: command, its exec'd provider argv and the environment also fit under. The
-#: bound sits below 128 KiB to leave room for the session's environment exports
-#: and a provider-runner wrapper added around the provider command.
+#: The OS limit on one exec argument: Linux's MAX_ARG_STRLEN (32 pages, 128 KiB)
+#: counts the terminating NUL. macOS has no per-argument cap but a 1 MiB ARG_MAX
+#: for argv plus environment, which one argument this size also fits under. The
+#: whole launch command travels as ONE argument (``bash -lc <command>``).
+MAX_EXEC_ARGUMENT_BYTES = 128 * 1024 - 1
+
+#: The bound on a session's :class:`LaunchCommand`, measured as the quoted shell
+#: argument it travels as. It sits below :data:`MAX_EXEC_ARGUMENT_BYTES` to leave
+#: room for what the terminal itself puts around the command: the working
+#: directory, ``PATH`` and the isolation prefix.
 MAX_LAUNCH_COMMAND_BYTES = 96 * 1024
 
 #: How a launch command's prompt argument opens: the file's path follows.
@@ -36,20 +45,63 @@ LAUNCH_PROMPT_INSTRUCTION_OPENING = "Your complete launch prompt is the file "
 class LaunchCommandTooLong(ValueError):
     """A launch command would exceed the OS argument limit.
 
-    Raised before the command is handed to a terminal: the launch fails loudly
-    and nothing in it is truncated to fit.
+    Raised before the command is handed to the OS: the launch fails loudly and
+    nothing in it is truncated to fit.
     """
 
 
-def require_launch_command_within_bound(command: str) -> str:
-    """Return *command* unchanged, or raise :class:`LaunchCommandTooLong`."""
-    size = len(command.encode("utf-8"))
-    if size > MAX_LAUNCH_COMMAND_BYTES:
+def quoted_argument_bytes(text: str) -> int:
+    """The bytes *text* takes as one quoted shell argument.
+
+    A command reaches ``bash -lc`` as a single argument of a shell command line,
+    so it is quoted on the way, and a single quote it holds costs five bytes
+    there (``'"'"'``): a quote-heavy command is far longer than it reads.
+    """
+    return len(shlex.quote(text).encode("utf-8"))
+
+
+def require_exec_argument_within_limit(argument: str) -> str:
+    """Return *argument* unchanged, or raise :class:`LaunchCommandTooLong`.
+
+    For the terminal that execs a command: it checks the argument exactly as it
+    passes it to the OS, after everything it put around the launch command.
+    """
+    size = len(argument.encode("utf-8"))
+    if size > MAX_EXEC_ARGUMENT_BYTES:
         raise LaunchCommandTooLong(
-            f"launch command is {size} bytes, over the {MAX_LAUNCH_COMMAND_BYTES}-byte"
-            " argument bound; the session cannot be started with it"
+            f"exec argument is {size} bytes, over the OS's {MAX_EXEC_ARGUMENT_BYTES}-byte"
+            " argument limit; the session cannot be started with it"
         )
-    return command
+    return argument
+
+
+@dataclass(frozen=True, slots=True)
+class LaunchCommand:
+    """A session's finished launch command, proven within the argument bound.
+
+    The only form a launcher spawns a session from: the session's environment
+    exports, then the agent command — the provider's, already wrapped for
+    retries when the invocation is one-shot. Nothing is added to it before the
+    terminal, so the bound checked here is the bound of what the launch can
+    see; a command over it cannot be built, so a launch fails before it mutates
+    anything.
+    """
+
+    text: str
+
+    def __post_init__(self) -> None:
+        size = quoted_argument_bytes(self.text)
+        if size > MAX_LAUNCH_COMMAND_BYTES:
+            raise LaunchCommandTooLong(
+                f"launch command is {size} bytes as a quoted shell argument, over the"
+                f" {MAX_LAUNCH_COMMAND_BYTES}-byte argument bound; the session cannot be"
+                " started with it"
+            )
+
+    @classmethod
+    def composed(cls, env_exports: str, agent_command: str) -> LaunchCommand:
+        """The command that exports *env_exports*, then runs *agent_command*."""
+        return cls(f"{env_exports} && {agent_command}")
 
 
 @dataclass(frozen=True, slots=True)

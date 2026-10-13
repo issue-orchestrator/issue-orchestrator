@@ -53,7 +53,7 @@ from ..domain.launch_prompt import (
     LaunchPromptUnavailable,
     PreparedLaunchPrompt,
 )
-from ..domain.launch_prompt_delivery import LaunchPromptFile
+from ..domain.launch_prompt_delivery import LaunchCommand, LaunchPromptFile
 from ..domain.session_run import SessionRunAssets
 from ..ports.issue_run_allocator import IssueRunAllocator
 from .worktree import WorktreeSetupError
@@ -976,8 +976,9 @@ class SessionLauncher:
             )
 
             # Build command. The prompt is persisted whole and the command carries
-            # only the instruction to read it (#9012), before the in-progress label:
-            # a prompt that cannot be delivered fails the launch before that mutation.
+            # only the instruction to read it (#9012). The finished command is
+            # bounded before the in-progress label: one that cannot be started
+            # fails the launch before that mutation.
             rendered_prompt = agent_config.render_initial_prompt(
                 issue_number=issue.number,
                 issue_title=issue.title,
@@ -1018,14 +1019,14 @@ class SessionLauncher:
             if self.config.e2e_pr_labels:
                 labels_str = ",".join(self.config.e2e_pr_labels)
                 env_exports += f" E2E_PR_LABELS='{labels_str}'"
-            command = f"{env_exports} && {base_command}"
+            command = LaunchCommand.composed(env_exports, base_command)
             logger.info(
                 "[launch] Issue session command: issue=%s session=%s worktree=%s completion=%s command=%s",
                 issue.number,
                 session_name,
                 worktree_path,
                 completion_path,
-                command,
+                command.text,
             )
 
             # Add in-progress label
@@ -1366,7 +1367,7 @@ class SessionLauncher:
                 suffix="validation_retry",
             )
 
-            # Delivered from its file (#9012), before the in-progress label.
+            # Delivered from its file (#9012); the finished command is bounded before the in-progress label.
             launch_prompt = self._persist_session_prompt(run.run_dir, retry_prompt)
             self._session_output.write_retry_prompt(run.run_dir, retry_prompt)
             base_command = agent_config.get_command_for_prompt(
@@ -1394,7 +1395,7 @@ class SessionLauncher:
                 run_assets=run,
                 worktree_path=worktree_path,
             )
-            command = f"{env_exports} && {base_command}"
+            command = LaunchCommand.composed(env_exports, base_command)
             logger.info(
                 "[launch] Validation retry command: issue=%s session=%s worktree=%s "
                 "completion=%s command=%s",
@@ -1402,7 +1403,7 @@ class SessionLauncher:
                 session_name,
                 worktree_path,
                 completion_path,
-                command,
+                command.text,
             )
 
             label = self._retry_in_progress(
@@ -1767,7 +1768,7 @@ class SessionLauncher:
                 run_assets=run,
                 worktree_path=worktree_path,
             )
-            command = f"{env_exports} && {base_command}"
+            command = LaunchCommand.composed(env_exports, base_command)
             logger.info(
                 "[launch] Review session command: issue=%s pr=%s session=%s worktree=%s completion=%s command=%s",
                 review.issue_number,
@@ -1775,7 +1776,7 @@ class SessionLauncher:
                 session_name,
                 worktree_path,
                 completion_path,
-                command,
+                command.text,
             )
 
             # Create session
@@ -2067,7 +2068,7 @@ class SessionLauncher:
                 run_assets=run,
                 worktree_path=worktree_path,
             )
-            command = f"{env_exports} && {base_command}"
+            command = LaunchCommand.composed(env_exports, base_command)
             logger.info(
                 "[launch] Retrospective review command: issue=%s session=%s worktree=%s "
                 "completion=%s command=%s",
@@ -2075,7 +2076,7 @@ class SessionLauncher:
                 session_name,
                 worktree_path,
                 completion_path,
-                command,
+                command.text,
             )
 
             session_created = self._spawn(session_name, command, worktree_path, issue_title, agent_config)
@@ -2163,7 +2164,7 @@ class SessionLauncher:
             issue_run_allocator=self._issue_run_allocator,
             label_manager=self._lm,
             session_exists=self._session_exists,
-            create_session=self._create_session,
+            spawn=self._spawn,
             apply_actions=self._apply_actions,
             worktree_reuse_options=self._worktree_reuse_options,
             session_identity_launch_metadata=self._session_identity_launch_metadata,
@@ -2172,7 +2173,6 @@ class SessionLauncher:
             wrap_provider_command=self._wrap_provider_command,
             build_session_env=self._build_session_env,
             check_provider_ready=self._check_provider_ready,
-            session_secret_env=self._rework_secret_env,
             resolve_stack_decision=self._dependency_gate.stack_base_decision_for_issue,
             launch_prompt=self._launch_prompt,
             scoped_rework=ScopedReworkLaunch(self._tech_lead_authority, self.repository_host, self._action_applier.apply),
@@ -2228,16 +2228,14 @@ class SessionLauncher:
             )
         return self._provider_command_wrapper
 
-    def _rework_secret_env(self, provider: str | None) -> dict[str, str] | None:
-        """The same credential resolution, for the launch path that owns its own spawn."""
-        return dict(self._provider_credentials.session_env(provider)) or None
-
     def _spawn(
-        self, name: str, command: str, worktree: Path, title: str, agent_config: "AgentConfig",
+        self, name: str, command: LaunchCommand, worktree: Path, title: str, agent_config: "AgentConfig",
     ) -> bool:
         """Start one agent session, always with its provider credentials.
 
-        The single place a session is spawned from this class. Credentials are
+        The single place a session is spawned from this class, rework included.
+        It takes only a :class:`LaunchCommand`, so no launch path can start a
+        session from a command that was never bounded (#9012). Credentials are
         resolved here rather than at each launch path so a new path cannot
         launch a key-authenticated provider unauthenticated — the failure looks
         like a bad key rather than a missing wire-up. ``None`` rather than an
@@ -2245,7 +2243,7 @@ class SessionLauncher:
         "the key resolved to nothing".
         """
         secret_env = dict(self._provider_credentials.session_env(agent_config.provider))
-        return self._create_session(name, command, worktree, title, secret_env or None)
+        return self._create_session(name, command.text, worktree, title, secret_env or None)
 
     def _check_provider_ready(
         self, agent_config: "AgentConfig", issue_number: int

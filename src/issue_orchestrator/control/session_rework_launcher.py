@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Callable, Protocol
 from ..domain.issue_run_evidence import ReworkTarget
 from ..domain.issue_key import IssueKey
 from ..domain.launch_prompt import LaunchPromptUnavailable, PreparedLaunchPrompt
-from ..domain.launch_prompt_delivery import LaunchPromptFile
+from ..domain.launch_prompt_delivery import LaunchCommand, LaunchPromptFile
 from ..domain.models import (
     AgentConfig,
     Issue,
@@ -68,22 +68,18 @@ class SessionExistsFn(Protocol):
     def __call__(self, session_name: str, /) -> bool: ...
 
 
-class SessionCreatorFn(Protocol):
+class SessionSpawnerFn(Protocol):
+    """Start one agent session from its bounded command, with its provider credentials."""
+
     def __call__(
         self,
         session_name: str,
-        command: str,
+        command: LaunchCommand,
         worktree_path: Path,
-        title: str | None,
-        secret_env: dict[str, str] | None = None,
+        title: str,
+        agent_config: AgentConfig,
         /,
     ) -> bool: ...
-
-
-class SessionSecretEnvFn(Protocol):
-    """Resolve the provider credentials a launch needs, by provider name."""
-
-    def __call__(self, provider: str | None, /) -> dict[str, str] | None: ...
 
 
 class WorktreeReuseOptionsFactory(Protocol):
@@ -159,7 +155,8 @@ class ReworkLaunchDependencies:
     issue_run_allocator: IssueRunAllocator
     label_manager: LabelManager
     session_exists: SessionExistsFn
-    create_session: SessionCreatorFn
+    #: The launcher's one spawn point: only a bounded LaunchCommand starts a session (#9012).
+    spawn: SessionSpawnerFn
     apply_actions: ActionApplierFn
     worktree_reuse_options: WorktreeReuseOptionsFactory
     session_identity_launch_metadata: SessionIdentityMetadataBuilder
@@ -168,7 +165,6 @@ class ReworkLaunchDependencies:
     wrap_provider_command: ProviderCommandWrapper
     build_session_env: SessionEnvBuilder
     check_provider_ready: ProviderReadinessChecker
-    session_secret_env: SessionSecretEnvFn
     resolve_stack_decision: StackDecisionResolverFn
     #: The coder addendum and the issue's standing rulings (#8141).
     launch_prompt: LaunchPromptProvider
@@ -512,7 +508,7 @@ def launch_rework_session(
             run_assets=run,
             worktree_path=worktree_path,
         )
-        command = f"{env_exports} && {base_command}"
+        command = LaunchCommand.composed(env_exports, base_command)
         logger.info(
             "[launch] Rework session command: issue=%s pr=%s session=%s worktree=%s completion=%s command=%s",
             issue_number,
@@ -520,18 +516,18 @@ def launch_rework_session(
             session_name,
             worktree_path,
             completion_path,
-            command,
+            command.text,
         )
 
         # Consent once more at the terminal boundary (#7763 review r26 F1).
         if failure := deps.refuse_unapproved(issue_number) or deps.scoped_rework.before_spawn(scoped.keys, run.identity):
             return failure
-        session_created = deps.create_session(
+        session_created = deps.spawn(
             session_name,
             command,
             worktree_path,
             f"Rework #{issue_number}",
-            deps.session_secret_env(agent_config.provider),
+            agent_config,
         )
         logger.info(
             "[launch] Rework session create result: issue=%s pr=%s session=%s created=%s",

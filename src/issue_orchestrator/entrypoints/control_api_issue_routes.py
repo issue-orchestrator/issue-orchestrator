@@ -33,6 +33,7 @@ from ..domain.issue_run_evidence import IssueRunEvidenceUnavailable
 from ..domain.session_key import SessionKey
 from ..domain.session_kind import SessionKind
 from ..domain.launch_prompt import LaunchPromptUnavailable
+from ..domain.launch_prompt_delivery import LaunchCommand, LaunchCommandTooLong
 from ..ports.operator_issue_commands import (
     OperatorCommandIntent,
     OperatorCommandOutcome,
@@ -425,7 +426,11 @@ async def launch_debug_session(  # noqa: C901 - debug session with validation an
         worktree_path=worktree,
         callback_endpoint=orchestrator.deps.agent_callback_endpoint,
     ) + completion_capability_export(orchestrator.deps.issue_run_allocator, run_assets)
-    command = f"{env_exports} && {base_command}"
+    # Bounded like every launch's (#9012): a command the OS would refuse is refused here.
+    try:
+        command = LaunchCommand.composed(env_exports, base_command)
+    except LaunchCommandTooLong as exc:
+        return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
 
     logger.info(
         "[debug-session] Launching for issue #%d: session=%s worktree=%s agent=%s",
@@ -436,7 +441,7 @@ async def launch_debug_session(  # noqa: C901 - debug session with validation an
     )
     session_created = orchestrator.deps.runner.create_session(
         session_id=issue_number,
-        command=command,
+        command=command.text,
         working_dir=str(worktree),
         title=f"Debug #{issue_number}",
         session_name=session_name,

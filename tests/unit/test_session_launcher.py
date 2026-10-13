@@ -748,6 +748,11 @@ def _build_launcher_bundle(
     return bundle
 
 
+def _labels_added(bundle: LauncherTestBundle) -> list[AddLabelAction]:
+    """Every label the launcher's mutations added, through its action applier."""
+    return [call.args[0] for call in bundle.action_applier.apply.call_args_list if isinstance(call.args[0], AddLabelAction)]
+
+
 @pytest.fixture
 def launcher_bundle(
     sample_config,
@@ -2222,6 +2227,36 @@ class TestLaunchValidationRetrySession:
         bundle.action_applier.apply.assert_not_called()
         assert mock_worktree_manager.create_calls == []
         assert bundle.create_session_calls == []
+
+
+    def test_a_retry_command_past_the_bound_fails_before_the_in_progress_label(
+        self, launcher_bundle, sample_config
+    ):
+        """#9012 review r1 F1: a validation retry is bounded on its finished
+        command, wrapping included, before its in-progress label."""
+        from issue_orchestrator.domain.launch_prompt_delivery import LaunchCommandTooLong
+
+        sample_config.agents["agent:web"].command = (
+            "claude --append-system-prompt " + "''" * 12_000 + " '{initial_prompt}'"
+        )
+        retry = PendingValidationRetry(
+            issue_number=123,
+            issue_title="Fix checkout",
+            agent_label="agent:web",
+            worktree_path="/tmp/worktree-123",
+            branch_name="123-fix-checkout",
+            original_prompt="Work on issue #123",
+            validation_error="dirty worktree",
+            validation_error_file=None,
+            retry_count=1,
+            source_kind=SessionKind.CODE,
+            validation_cmd="make test",
+        )
+
+        with pytest.raises(LaunchCommandTooLong):
+            launcher_bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
+
+        assert _labels_added(launcher_bundle) == [] and launcher_bundle.create_session_calls == []
 
 
 class TestLaunchIssueSessionPerSessionWorktree:
@@ -11266,7 +11301,51 @@ class TestTechLeadRunsAreBoundByTheRulingsOfTheWorkTheyCover:
         with pytest.raises(LaunchCommandTooLong):
             bundle.launcher.launch_issue_session(anchor, active_sessions=[])
 
-        assert mock_repo_host.add_label_calls == [] and bundle.create_session_calls == []
+        assert _labels_added(bundle) == [] and bundle.create_session_calls == []
+
+    def test_a_command_that_retry_wrapping_pushes_past_the_bound_fails_before_the_in_progress_label(
+        self, tech_lead_bundle, mock_repo_host, sample_config
+    ) -> None:
+        """#9012 review r1 F1: the bound is the finished command's. A one-shot
+        command is re-quoted into the retry wrapper's ``--command`` argument, a
+        single quote growing to five bytes, so an agent command that reads well
+        under the bound can be past it once wrapped: the launch fails before its
+        first label mutation, and nothing is spawned."""
+        from issue_orchestrator.domain.launch_prompt_delivery import (
+            MAX_LAUNCH_COMMAND_BYTES,
+            LaunchCommandTooLong,
+        )
+
+        bundle, _owner, _bodies, _ruling, anchor = tech_lead_bundle
+        agent = sample_config.agents["agent:tech-lead"]
+        agent.command = "claude --append-system-prompt " + "''" * 12_000 + " '{initial_prompt}'"
+        assert agent.provider is None  # provider-less: run one-shot, so wrapped
+        assert len(agent.command.encode()) < MAX_LAUNCH_COMMAND_BYTES // 3
+        self._batch_of(mock_repo_host, (512, "365-walk", "Closes #365"))
+
+        with pytest.raises(LaunchCommandTooLong):
+            bundle.launcher.launch_issue_session(anchor, active_sessions=[])
+
+        assert _labels_added(bundle) == [] and bundle.create_session_calls == []
+
+    def test_environment_exports_that_push_the_command_past_the_bound_fail_before_the_in_progress_label(
+        self, tech_lead_bundle, mock_repo_host, sample_config
+    ) -> None:
+        """#9012 review r1 F1: the session's environment exports are part of
+        the command a session starts from, so they are inside the bound too."""
+        from issue_orchestrator.domain.launch_prompt_delivery import (
+            MAX_LAUNCH_COMMAND_BYTES,
+            LaunchCommandTooLong,
+        )
+
+        bundle, _owner, _bodies, _ruling, anchor = tech_lead_bundle
+        sample_config.e2e_pr_labels = ["e2e-" + "l" * MAX_LAUNCH_COMMAND_BYTES]
+        self._batch_of(mock_repo_host, (512, "365-walk", "Closes #365"))
+
+        with pytest.raises(LaunchCommandTooLong):
+            bundle.launcher.launch_issue_session(anchor, active_sessions=[])
+
+        assert _labels_added(bundle) == [] and bundle.create_session_calls == []
 
     def test_the_links_come_from_the_pr_text_the_agent_is_given(
         self, sample_config, mock_events, mock_repo_host, mock_worktree_manager, mock_working_copy,

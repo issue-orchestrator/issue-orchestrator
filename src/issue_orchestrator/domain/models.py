@@ -21,7 +21,7 @@ from .host_rate_limit import HostRateLimitWindow
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from .session_key import SessionKey  # re-exported for callers
 from .issue_run_evidence import ReworkTarget
-from .launch_prompt_delivery import LaunchPromptFile, require_launch_command_within_bound
+from .launch_prompt_delivery import LaunchPromptFile
 from .session_kind import CompletionProtocol, SessionKind
 from .standing_ruling import parse_upheld_rulings
 from .sandbox_scope import (
@@ -1164,8 +1164,9 @@ class AgentConfig:
     ) -> str:
         """Build the agent command whose prompt argument is *argv_prompt*.
 
-        Raises :class:`LaunchCommandTooLong` rather than return a command the OS
-        would refuse to start.
+        The command is not yet what a session starts from: the launcher wraps
+        it, exports the session's environment before it, and bounds the result
+        as a :class:`~.launch_prompt_delivery.LaunchCommand`.
         """
         prompt_for_command = prompt_file or (
             self.prompt_relative if self.prompt_relative else str(self.prompt_path)
@@ -1193,14 +1194,14 @@ class AgentConfig:
         if self.provider:
             # The worktree anchors the sandbox's read/write roots; the task kind
             # selects the role. Each provider adapter must enforce or fail loud.
-            return require_launch_command_within_bound(self._build_provider_command(
+            return self._build_provider_command(
                 argv_prompt,
                 prompt_for_command,
                 task_kind,
                 extra_provider_args,
                 working_directory=worktree,
                 sandbox_scope=sandbox_scope,
-            ))
+            )
 
         # Legacy template-based command building (never sandboxed — guarded above)
         from issue_orchestrator.resources import get_completion_instructions
@@ -1241,9 +1242,9 @@ class AgentConfig:
                 "--permission-mode {permission_mode} --model {model} "
                 "--append-system-prompt '{system_prompt}'"
             )
-            return require_launch_command_within_bound(template.format(**format_kwargs))
+            return template.format(**format_kwargs)
 
-        return require_launch_command_within_bound(self.command.format(**format_kwargs))
+        return self.command.format(**format_kwargs)
 
     def _build_provider_command(
         self,
