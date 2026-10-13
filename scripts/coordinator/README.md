@@ -12,7 +12,7 @@ Operational scripts the coordinator uses to run io's development loop and porchp
 
 `BRIEF.md` is the brief coding agents follow (integration effort = label `integrate:<branch>`, gate/exam locks, review loop).
 
-The io-on-io effort engine's config is `.issue-orchestrator/config/modes/next/main.yaml` (run from a full clone, CLI-started detached with a clean env until #9242).
+The io-on-io effort engine's config is `io-effort-engine.main.yaml` here; install it in the engine's full clone as `.issue-orchestrator/config/modes/next/main.yaml` (CLI-started detached with a clean env until #9242).
 
 **Deliberately local:** each engine's runtime state (`.issue-orchestrator/state/`: escrow, SQLite) — operator decision 2026-10-08.
 

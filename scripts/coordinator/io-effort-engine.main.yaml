@@ -1,3 +1,7 @@
+# Reference config for the io-on-io integration-effort engine. Install it in the
+# engine's FULL clone as .issue-orchestrator/config/modes/next/main.yaml (it is not
+# a provider mode, so it does not live under this repo's config/modes/).
+
 # io-on-io engine for the current integration effort (2026-10-12): works only issues
 # labelled integrate:tech-lead-improver; agents branch from and
 # open PRs against tech-lead-improver; the coordinator merges. Untracked file.
