@@ -1165,8 +1165,9 @@ class AgentConfig:
         """Build the agent command whose prompt argument is *argv_prompt*.
 
         The command is not yet what a session starts from: the launcher wraps
-        it, exports the session's environment before it, and bounds the result
-        as a :class:`~.launch_prompt_delivery.LaunchCommand`.
+        it and exports the session's environment before it, and the terminal
+        prepares the result
+        (:class:`~.launch_prompt_delivery.PreparedSessionCommand`).
         """
         prompt_for_command = prompt_file or (
             self.prompt_relative if self.prompt_relative else str(self.prompt_path)

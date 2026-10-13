@@ -15,6 +15,7 @@ import pytest
 # (forkpty() in multi-threaded processes can deadlock)
 pytestmark = pytest.mark.xdist_group("pty")
 
+from issue_orchestrator.domain.launch_prompt_delivery import LaunchCommand
 from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin
 from issue_orchestrator.infra.env import ENV_PREFIX
 from tests.unit.session_run_helpers import make_session_run_assets
@@ -124,8 +125,7 @@ def test_subprocess_session_writes_completion_and_log(tmp_path, monkeypatch):
     plugin = SubprocessPlugin()
     created = plugin.create_session(
         session_id=42,
-        command=command,
-        working_dir=str(worktree),
+        prepared=plugin.prepare_session(LaunchCommand(command), worktree),
         title="Subprocess integration test",
         session_name=session_name,
     )
@@ -167,8 +167,7 @@ def test_subprocess_send_input_writes_to_log(tmp_path, monkeypatch):
     plugin = SubprocessPlugin()
     created = plugin.create_session(
         session_id=7,
-        command=command,
-        working_dir=str(worktree),
+        prepared=plugin.prepare_session(LaunchCommand(command), worktree),
         title="Subprocess input test",
         session_name=session_name,
     )

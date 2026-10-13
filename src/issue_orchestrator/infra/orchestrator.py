@@ -23,6 +23,8 @@ if TYPE_CHECKING:
     from ..control.session_manager import SessionRef, SessionType
     from ..control.tech_lead_trigger import TechLeadTerminationOutcome
     from ..domain.tech_lead_session import TechLeadLaunchScope, TechLeadSessionGeneration
+    from ..domain.launch_prompt_delivery import PreparedSessionCommand
+    from ..ports.debug_session_launch import DebugSessionOutcome
     from ..ports.operator_issue_commands import OperatorIssueCommands
     from ..ports.session_runner import DiscoveredSession
 
@@ -38,6 +40,7 @@ from ..control.orchestrator_support import (
 from ..control.session_launch_types import LaunchStep
 from ..control.github_workflow import GitHubWorkflow, launch_issue_by_number as _gw_launch_issue_by_number, get_issue_machine as _gw_get_issue_machine
 from ..control.worktree_manager import get_worktree_path, get_session_name, extract_issue_branches
+from ..ports.debug_session_launch import DebugSessionRequest
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +258,11 @@ class Orchestrator:
         with self.state_lock:
             return fn()
 
+    def launch_debug_session(self, issue_number: int) -> "DebugSessionOutcome":
+        """An operator's debug session, launched by the session launcher (#9012); the facade adds only its queue cache."""
+        cached = self.run_locked(lambda: next((i for i in self.state.cached_queue_issues if i.number == issue_number), None))
+        return self._session_launcher.launch_debug_session(DebugSessionRequest(issue_number, get_worktree_path(self.config, issue_number), cached))
+
     def kill_session(self, name: str) -> None:
         """Kill a session by terminal ID (public wrapper)."""
         self._kill_session(name)
@@ -415,12 +423,11 @@ class Orchestrator:
     def _create_session(
         self,
         name: str,
-        cmd: str,
-        wd: Path,
+        prepared: "PreparedSessionCommand",
         title: str | None = None,
         secret_env: dict[str, str] | None = None,
     ) -> bool:
-        return _create_session(name, cmd, wd, title, self.deps.session_manager, self.deps.events, secret_env)
+        return _create_session(name, prepared, title, self.deps.session_manager, self.deps.events, secret_env)
 
     def _session_exists(self, name: str) -> bool:
         return _session_exists(name, self.deps.session_manager, self.deps.events)

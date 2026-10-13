@@ -13,6 +13,13 @@ Tests mock at port boundaries, not internal patches, following the hexagonal arc
 from tests.unit.control.liveness_doubles import gated, liveness_owner
 from issue_orchestrator.control.host_rate_limit_launch_gate import live_episode_keys
 from issue_orchestrator.domain.issue_run_evidence import ReworkTarget
+from issue_orchestrator.domain.launch_prompt_delivery import (
+    MAX_EXEC_ARGUMENT_BYTES,
+    LaunchCommand,
+    LaunchCommandTooLong,
+    PreparedSessionCommand,
+)
+from issue_orchestrator.execution.terminal_subprocess import prepare_subprocess_session
 from issue_orchestrator.domain.tech_lead_scratch_identity import (
     names_one_scratch_checkout,
     parse_scratch_worktree_name,
@@ -21,7 +28,7 @@ from issue_orchestrator.domain.tech_lead_scratch_identity import (
 )
 from issue_orchestrator.domain.session_run import SessionRunIdentity
 from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
-from tests.launch_prompt_helpers import delivered_prompt
+from tests.launch_prompt_helpers import delivered_prompt, prepared_as_given
 from tests.run_allocation_helpers import make_session_launcher
 
 from issue_orchestrator.domain.models import DiscoveredReview
@@ -604,6 +611,19 @@ class LauncherTestBundle:
     )
     claim_manager: MagicMock | None = None
     issue_run_ledger: IssueRunLedger = field(default_factory=MagicMock)
+    #: Prepares each launch's command as given; a test that exercises the
+    #: terminal's own additions binds :func:`_with_the_subprocess_terminal`.
+    session_manager: MagicMock = field(default_factory=MagicMock)
+
+
+def _with_the_subprocess_terminal(bundle: LauncherTestBundle) -> None:
+    """Prepare through the real subprocess terminal: its cd, PATH and isolation prefix included (#9012)."""
+    bundle.session_manager.prepare.side_effect = prepare_subprocess_session
+
+
+#: An inherited PATH the terminal copies into the command it execs: short
+#: commands under it are past the OS argument limit once prepared.
+_LONG_INHERITED_PATH = "/usr/bin:" + "/opt/it's" * 20_000
 
 
 def _build_launcher_bundle(
@@ -650,14 +670,14 @@ def _build_launcher_bundle(
 
     def mock_create_session(
         name: str,
-        cmd: str,
-        wd: Path,
+        prepared: PreparedSessionCommand,
         title: str | None,
         secret_env: dict | None = None,
     ) -> bool:
+        cmd, wd = prepared.launch.text, prepared.working_dir
         create_session_calls.append(
             {"name": name, "cmd": cmd, "wd": wd, "title": title,
-             "secret_env": secret_env}
+             "secret_env": secret_env, "prepared": prepared}
         )
         if create_session_override[0] is not None:
             return create_session_override[0](name, cmd, wd, title)
@@ -686,6 +706,7 @@ def _build_launcher_bundle(
         return review_machines[pr_number]
 
     mock_action_applier = MagicMock()
+    session_manager = MagicMock()
     launcher_kwargs = {}
     if coder_prompt_addendum is not None or standing_rulings is not None:
         launcher_kwargs["launch_prompt"] = IssueLaunchPrompt(
@@ -712,7 +733,7 @@ def _build_launcher_bundle(
         events=mock_events,
         repository_host=mock_repo_host,
         action_applier=mock_action_applier,
-        session_manager=MagicMock(),
+        session_manager=session_manager,
         worktree_manager=mock_worktree_manager,
         working_copy=mock_working_copy,
         command_runner=mock_command_runner,
@@ -744,6 +765,7 @@ def _build_launcher_bundle(
         board_snapshot_provider=board_snapshot_provider,
         claim_manager=claim_manager,
         issue_run_ledger=issue_run_ledger,
+        session_manager=session_manager,
     )
     return bundle
 
@@ -979,6 +1001,38 @@ class TestLaunchIssueSession:
         assert result.success and result.session is not None
         assert observed[0].session_key == result.session.key
         assert observed[0].run == result.session.run_assets
+
+    def test_a_coding_session_starts_from_what_its_terminal_prepared(
+        self, launcher_bundle, sample_issue,
+    ):
+        """#9012 review r2 F2: the start consumes the very value the terminal
+        prepared before the in-progress label, not a command rebuilt after it."""
+        _with_the_subprocess_terminal(launcher_bundle)
+
+        result = launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is True
+        (command,) = [call.args[0] for call in launcher_bundle.session_manager.prepare.call_args_list]
+        started = launcher_bundle.create_session_calls[0]["prepared"]
+        assert started.launch is command
+        assert started.argv[-1].endswith(command.text) and 'export PATH="' in started.argv[-1]
+
+    def test_terminal_path_growth_past_the_limit_fails_a_coding_launch_before_its_in_progress_label(
+        self, launcher_bundle, sample_issue, monkeypatch,
+    ):
+        """#9012 review r2 F2: the terminal copies the inherited PATH into what
+        it execs, so a launch whose own command is short can still be past the
+        OS limit. The terminal says so before the in-progress label: no label
+        is added and nothing is started."""
+        _with_the_subprocess_terminal(launcher_bundle)
+        monkeypatch.setenv("PATH", _LONG_INHERITED_PATH)
+
+        with pytest.raises(LaunchCommandTooLong):
+            launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert _labels_added(launcher_bundle) == []
+        assert launcher_bundle.create_session_calls == []
+        launcher_bundle.session_manager.prepare.assert_called_once()
 
     def test_failed_run_registration_refuses_spawn_without_consuming_work_claim(
         self, sample_config, mock_event_sink, mock_repository_host,
@@ -1642,7 +1696,7 @@ class TestLaunchIssueSession:
             manifest_downloader=NullManifestDownloader(),
             tech_lead_authority=SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root),
             session_exists_fn=lambda name: False,
-            create_session_fn=lambda name, cmd, wd, title, secret_env=None: True,
+            create_session_fn=lambda name, prepared, title, secret_env=None: True,
             get_issue_machine=lambda issue: IssueStateMachine(issue),
             get_session_machine=lambda name, n, timeout: SessionStateMachine(
                 name, n, timeout_minutes=timeout
@@ -2229,17 +2283,9 @@ class TestLaunchValidationRetrySession:
         assert bundle.create_session_calls == []
 
 
-    def test_a_retry_command_past_the_bound_fails_before_the_in_progress_label(
-        self, launcher_bundle, sample_config
-    ):
-        """#9012 review r1 F1: a validation retry is bounded on its finished
-        command, wrapping included, before its in-progress label."""
-        from issue_orchestrator.domain.launch_prompt_delivery import LaunchCommandTooLong
-
-        sample_config.agents["agent:web"].command = (
-            "claude --append-system-prompt " + "''" * 12_000 + " '{initial_prompt}'"
-        )
-        retry = PendingValidationRetry(
+    @staticmethod
+    def _retry() -> PendingValidationRetry:
+        return PendingValidationRetry(
             issue_number=123,
             issue_title="Fix checkout",
             agent_label="agent:web",
@@ -2253,10 +2299,36 @@ class TestLaunchValidationRetrySession:
             validation_cmd="make test",
         )
 
+    def test_a_retry_command_past_the_limit_fails_before_the_in_progress_label(
+        self, launcher_bundle, sample_config
+    ):
+        """#9012 review r1 F1: a validation retry's command is prepared by its
+        terminal, wrapping included, before its in-progress label."""
+        _with_the_subprocess_terminal(launcher_bundle)
+        sample_config.agents["agent:web"].command = (
+            "claude --append-system-prompt " + "''" * 12_000 + " '{initial_prompt}'"
+        )
+
         with pytest.raises(LaunchCommandTooLong):
-            launcher_bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
+            launcher_bundle.launcher.launch_validation_retry_session(self._retry(), active_sessions=[])
 
         assert _labels_added(launcher_bundle) == [] and launcher_bundle.create_session_calls == []
+
+    def test_terminal_path_growth_past_the_limit_fails_a_retry_before_its_in_progress_label(
+        self, launcher_bundle, monkeypatch
+    ):
+        """#9012 review r2 F2: the terminal copies the inherited PATH into what
+        it execs. A retry whose own command is short is still past the OS limit
+        under a long PATH: its terminal says so before the in-progress label,
+        and nothing is started."""
+        _with_the_subprocess_terminal(launcher_bundle)
+        monkeypatch.setenv("PATH", _LONG_INHERITED_PATH)
+
+        with pytest.raises(LaunchCommandTooLong):
+            launcher_bundle.launcher.launch_validation_retry_session(self._retry(), active_sessions=[])
+
+        assert _labels_added(launcher_bundle) == [] and launcher_bundle.create_session_calls == []
+        launcher_bundle.session_manager.prepare.assert_called_once()
 
 
 class TestLaunchIssueSessionPerSessionWorktree:
@@ -7128,17 +7200,13 @@ class TestCreateSession:
         mock_manager = MockSessionManager()
         events = MockEventSink()
 
-        result = create_session(
-            "issue-123",
-            "claude --help",
-            Path("/tmp/worktree"),
-            "Test Session",
-            mock_manager,
-            events,
-        )
+        prepared = prepared_as_given(LaunchCommand("claude --help"), Path("/tmp/worktree"))
+
+        result = create_session("issue-123", prepared, "Test Session", mock_manager, events)
 
         assert result is True
-        assert len(mock_manager.start_calls) == 1
+        (started,) = mock_manager.start_calls
+        assert started.prepared is prepared and started.ref.name == "issue-123"
 
 
 class TestSessionExists:
@@ -8084,7 +8152,7 @@ class TestStackRelaunchGate:
             manifest_downloader=NullManifestDownloader(),
             tech_lead_authority=SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root),
             session_exists_fn=lambda name: False,
-            create_session_fn=lambda name, cmd, wd, title, secret_env=None: True,
+            create_session_fn=lambda name, prepared, title, secret_env=None: True,
             get_issue_machine=lambda issue: IssueStateMachine(issue),
             get_session_machine=lambda name, n, timeout: SessionStateMachine(
                 name, n, timeout_minutes=timeout
@@ -11257,12 +11325,13 @@ class TestTechLeadRunsAreBoundByTheRulingsOfTheWorkTheyCover:
     ) -> None:
         """#9012: rulings may hold 30,000 characters each, so a batch covering a
         few such issues composes a prompt no single OS argument can carry. The
-        command stays bounded and the agent is given the whole prompt to read."""
-        from issue_orchestrator.domain.launch_prompt_delivery import MAX_LAUNCH_COMMAND_BYTES
+        command stays within the limit as its terminal execs it, and the agent
+        is given the whole prompt to read."""
         from issue_orchestrator.domain.standing_ruling import MAX_RULING_TEXT_CHARS
         from tests.standing_ruling_helpers import a_ruling, body_with
 
         bundle, _owner, bodies, _ruling, anchor = tech_lead_bundle
+        _with_the_subprocess_terminal(bundle)
         covered = range(365, 370)
         long_rulings = {
             number: a_ruling(f"m-00000000{number:04d}", (f"Ruling on #{number}: keep the contract. " * 1000)[:MAX_RULING_TEXT_CHARS])
@@ -11277,7 +11346,8 @@ class TestTechLeadRunsAreBoundByTheRulingsOfTheWorkTheyCover:
         assert result.success is True, result.reason
         command = bundle.create_session_calls[0]["cmd"]
         assert len(result.session.original_prompt.encode()) > 128 * 1024  # past Linux's per-argument cap
-        assert len(command.encode()) <= MAX_LAUNCH_COMMAND_BYTES
+        exec_argv = bundle.create_session_calls[0]["prepared"].exec_argv
+        assert all(len(argument.encode()) <= MAX_EXEC_ARGUMENT_BYTES for argument in exec_argv)
         assert delivered_prompt(command) == result.session.original_prompt  # whole, never truncated
         for ruling in long_rulings.values():
             assert ruling.text in result.session.original_prompt and ruling.text not in command
@@ -11287,15 +11357,11 @@ class TestTechLeadRunsAreBoundByTheRulingsOfTheWorkTheyCover:
     ) -> None:
         """#9012: a launch whose prompt cannot be delivered whole fails loudly,
         before its first label mutation, and nothing is spawned or truncated."""
-        from issue_orchestrator.domain.launch_prompt_delivery import (
-            MAX_LAUNCH_COMMAND_BYTES,
-            LaunchCommandTooLong,
-        )
-
         bundle, _owner, _bodies, _ruling, anchor = tech_lead_bundle
-        # What still rides on the command line is configuration; configured past the bound, it cannot start.
+        _with_the_subprocess_terminal(bundle)
+        # What still rides on the command line is configuration; configured past the limit, it cannot start.
         sample_config.agents["agent:tech-lead"].provider = "claude-code"
-        sample_config.agents["agent:tech-lead"].provider_args = {"system_prompt": "x" * MAX_LAUNCH_COMMAND_BYTES}
+        sample_config.agents["agent:tech-lead"].provider_args = {"system_prompt": "x" * MAX_EXEC_ARGUMENT_BYTES}
         self._batch_of(mock_repo_host, (512, "365-walk", "Closes #365"))
 
         with pytest.raises(LaunchCommandTooLong):
@@ -11303,24 +11369,20 @@ class TestTechLeadRunsAreBoundByTheRulingsOfTheWorkTheyCover:
 
         assert _labels_added(bundle) == [] and bundle.create_session_calls == []
 
-    def test_a_command_that_retry_wrapping_pushes_past_the_bound_fails_before_the_in_progress_label(
+    def test_a_command_that_retry_wrapping_pushes_past_the_limit_fails_before_the_in_progress_label(
         self, tech_lead_bundle, mock_repo_host, sample_config
     ) -> None:
-        """#9012 review r1 F1: the bound is the finished command's. A one-shot
+        """#9012 review r1 F1: the limit is the exec'd command's. A one-shot
         command is re-quoted into the retry wrapper's ``--command`` argument, a
         single quote growing to five bytes, so an agent command that reads well
-        under the bound can be past it once wrapped: the launch fails before its
+        under the limit can be past it once wrapped: the launch fails before its
         first label mutation, and nothing is spawned."""
-        from issue_orchestrator.domain.launch_prompt_delivery import (
-            MAX_LAUNCH_COMMAND_BYTES,
-            LaunchCommandTooLong,
-        )
-
         bundle, _owner, _bodies, _ruling, anchor = tech_lead_bundle
+        _with_the_subprocess_terminal(bundle)
         agent = sample_config.agents["agent:tech-lead"]
         agent.command = "claude --append-system-prompt " + "''" * 12_000 + " '{initial_prompt}'"
         assert agent.provider is None  # provider-less: run one-shot, so wrapped
-        assert len(agent.command.encode()) < MAX_LAUNCH_COMMAND_BYTES // 3
+        assert len(agent.command.encode()) < MAX_EXEC_ARGUMENT_BYTES // 3
         self._batch_of(mock_repo_host, (512, "365-walk", "Closes #365"))
 
         with pytest.raises(LaunchCommandTooLong):
@@ -11328,18 +11390,14 @@ class TestTechLeadRunsAreBoundByTheRulingsOfTheWorkTheyCover:
 
         assert _labels_added(bundle) == [] and bundle.create_session_calls == []
 
-    def test_environment_exports_that_push_the_command_past_the_bound_fail_before_the_in_progress_label(
+    def test_environment_exports_that_push_the_command_past_the_limit_fail_before_the_in_progress_label(
         self, tech_lead_bundle, mock_repo_host, sample_config
     ) -> None:
         """#9012 review r1 F1: the session's environment exports are part of
-        the command a session starts from, so they are inside the bound too."""
-        from issue_orchestrator.domain.launch_prompt_delivery import (
-            MAX_LAUNCH_COMMAND_BYTES,
-            LaunchCommandTooLong,
-        )
-
+        the command a session starts from, so they are inside the limit too."""
         bundle, _owner, _bodies, _ruling, anchor = tech_lead_bundle
-        sample_config.e2e_pr_labels = ["e2e-" + "l" * MAX_LAUNCH_COMMAND_BYTES]
+        _with_the_subprocess_terminal(bundle)
+        sample_config.e2e_pr_labels = ["e2e-" + "l" * MAX_EXEC_ARGUMENT_BYTES]
         self._batch_of(mock_repo_host, (512, "365-walk", "Closes #365"))
 
         with pytest.raises(LaunchCommandTooLong):

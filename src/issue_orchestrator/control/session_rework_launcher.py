@@ -35,6 +35,7 @@ from ..ports.command_runner import CommandRunner
 from ..ports.worktree_manager import WorktreeInfo, WorktreeManager, WorktreeReuseOptions
 from .session_worktree_briefing import rebase_conflict_warning
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
+from .launch_terminal import LaunchTerminal
 from .scoped_rework_launch import ScopedReworkLaunch
 from .scoped_rework import note_scoped_rework_started
 from .launch_transaction import (
@@ -66,20 +67,6 @@ class ActionApplierFn(Protocol):
 
 class SessionExistsFn(Protocol):
     def __call__(self, session_name: str, /) -> bool: ...
-
-
-class SessionSpawnerFn(Protocol):
-    """Start one agent session from its bounded command, with its provider credentials."""
-
-    def __call__(
-        self,
-        session_name: str,
-        command: LaunchCommand,
-        worktree_path: Path,
-        title: str,
-        agent_config: AgentConfig,
-        /,
-    ) -> bool: ...
 
 
 class WorktreeReuseOptionsFactory(Protocol):
@@ -155,8 +142,8 @@ class ReworkLaunchDependencies:
     issue_run_allocator: IssueRunAllocator
     label_manager: LabelManager
     session_exists: SessionExistsFn
-    #: The launcher's one spawn point: only a bounded LaunchCommand starts a session (#9012).
-    spawn: SessionSpawnerFn
+    #: The launcher's one terminal boundary: prepare, then start, with credentials (#9012).
+    terminal: LaunchTerminal
     apply_actions: ActionApplierFn
     worktree_reuse_options: WorktreeReuseOptionsFactory
     session_identity_launch_metadata: SessionIdentityMetadataBuilder
@@ -518,14 +505,14 @@ def launch_rework_session(
             completion_path,
             command.text,
         )
+        prepared = deps.terminal.prepare(command, worktree_path)
 
         # Consent once more at the terminal boundary (#7763 review r26 F1).
         if failure := deps.refuse_unapproved(issue_number) or deps.scoped_rework.before_spawn(scoped.keys, run.identity):
             return failure
-        session_created = deps.spawn(
+        session_created = deps.terminal.start(
             session_name,
-            command,
-            worktree_path,
+            prepared,
             f"Rework #{issue_number}",
             agent_config,
         )

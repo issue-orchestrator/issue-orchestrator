@@ -1,11 +1,6 @@
 """Issue action control route tests split from test_control_api."""
 
 from tests.unit.control.liveness_doubles import liveness_owner
-from issue_orchestrator.control.launch_prompt import IssueLaunchPrompt
-from issue_orchestrator.ports.coder_prompt import NO_CODER_PROMPT_ADDENDUM
-from tests.launch_prompt_helpers import delivered_prompt
-from tests.standing_ruling_helpers import IssueBodies, a_ruling, body_with, rulings_owner
-from issue_orchestrator.infra.config import Config
 
 # ruff: noqa: F403,F405
 
@@ -18,13 +13,9 @@ from issue_orchestrator.control.actions import (
     ActionResult as PlanActionResult,
     CloseIssueAction,
 )
-from issue_orchestrator.control.issue_run_allocator import IssueRunAllocationService
-from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
-from issue_orchestrator.domain.issue_run_evidence import IssueRunEvidenceUnavailable
-from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import Issue
 from issue_orchestrator.domain.session_run import SessionRunAssets
-from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+from issue_orchestrator.ports.debug_session_launch import DebugSessionOutcome, DebugSessionStatus
 from tests.label_application_helpers import standing_while_present
 
 globals().update(
@@ -36,8 +27,15 @@ globals().update(
 # The previous caller-selected run-directory resume contract is intentionally gone.
 
 
+def _debug_outcome(status: DebugSessionStatus, **fields) -> DebugSessionOutcome:
+    return DebugSessionOutcome(
+        status=status, issue_number=123, session_name="debug-123",
+        worktree_path=Path("/wt/repo-123"), **fields,
+    )
+
+
 class TestDebugSessionEndpoint:
-    """Test the POST /api/issues/{issue_number}/debug-session endpoint."""
+    """POST /api/issues/{issue_number}/debug-session asks the launch owner and maps its outcome (#9012)."""
 
     def test_debug_session_returns_503_when_orchestrator_not_initialized(
         self, client_without_orchestrator
@@ -48,401 +46,54 @@ class TestDebugSessionEndpoint:
         assert response.status_code == 503
         assert response.json()["error"] == "Orchestrator not initialized"
 
-    def test_debug_session_returns_404_when_worktree_not_found(
-        self, client_with_orchestrator, tmp_path
-    ):
-        """Returns 404 when worktree does not exist."""
+    def test_the_route_delegates_the_launch_to_the_orchestrator(self, client_with_orchestrator):
+        """The transport assembles nothing: no run, prompt, command or terminal call of its own."""
         client, mock_orch = client_with_orchestrator
-
-        with patch(
-            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
-        ) as mock_get_path:
-            mock_get_path.return_value = tmp_path / "nonexistent-worktree"
-
-            response = client.post("/api/issues/123/debug-session")
-
-        assert response.status_code == 404
-        data = response.json()
-        assert data["success"] is False
-        assert "not found" in data["error"].lower()
-
-    def test_debug_session_returns_404_when_issue_not_found(
-        self, client_with_orchestrator, tmp_path
-    ):
-        """Returns 404 when issue is not in cache and can't be fetched."""
-        client, mock_orch = client_with_orchestrator
-
-        # Create worktree
-        worktree = tmp_path / "repo-123"
-        worktree.mkdir()
-
-        # Empty cached queue
-        mock_orch.state.cached_queue_issues = []
-        # GitHub fetch returns None
-        mock_orch.deps.repository_host.get_issue.return_value = None
-
-        with patch(
-            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
-        ) as mock_get_path:
-            mock_get_path.return_value = worktree
-
-            response = client.post("/api/issues/123/debug-session")
-
-        assert response.status_code == 404
-        data = response.json()
-        assert data["success"] is False
-        assert "not found" in data["error"].lower()
-
-    def test_debug_session_returns_400_when_no_agent_type(
-        self, client_with_orchestrator, tmp_path
-    ):
-        """Returns 400 when issue has no agent type label."""
-        client, mock_orch = client_with_orchestrator
-
-        # Create worktree
-        worktree = tmp_path / "repo-123"
-        worktree.mkdir()
-
-        # Issue without agent type
-        mock_issue = MagicMock()
-        mock_issue.number = 123
-        mock_issue.title = "Test Issue"
-        mock_issue.agent_type = None
-        mock_orch.state.cached_queue_issues = [mock_issue]
-
-        with patch(
-            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
-        ) as mock_get_path:
-            mock_get_path.return_value = worktree
-
-            response = client.post("/api/issues/123/debug-session")
-
-        assert response.status_code == 400
-        data = response.json()
-        assert data["success"] is False
-        assert "no agent type" in data["error"].lower()
-
-    def test_debug_session_returns_400_when_agent_config_not_found(
-        self, client_with_orchestrator, tmp_path
-    ):
-        """Returns 400 when agent config is not found."""
-        client, mock_orch = client_with_orchestrator
-
-        # Create worktree
-        worktree = tmp_path / "repo-123"
-        worktree.mkdir()
-
-        # Issue with agent type but no config
-        mock_issue = MagicMock()
-        mock_issue.number = 123
-        mock_issue.title = "Test Issue"
-        mock_issue.agent_type = "agent:unknown"
-        mock_orch.state.cached_queue_issues = [mock_issue]
-        mock_orch.config.agents = {}  # No agent configs
-
-        with patch(
-            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
-        ) as mock_get_path:
-            mock_get_path.return_value = worktree
-
-            response = client.post("/api/issues/123/debug-session")
-
-        assert response.status_code == 400
-        data = response.json()
-        assert data["success"] is False
-        assert "no agent config" in data["error"].lower()
-
-    def test_debug_session_returns_409_when_session_already_exists(
-        self, client_with_orchestrator, tmp_path
-    ):
-        """Returns 409 when a debug session already exists for the issue."""
-        client, mock_orch = client_with_orchestrator
-
-        # Create worktree
-        worktree = tmp_path / "repo-123"
-        worktree.mkdir()
-
-        # Issue with agent type
-        mock_issue = MagicMock()
-        mock_issue.number = 123
-        mock_issue.title = "Test Issue"
-        mock_issue.agent_type = "agent:claude"
-        mock_orch.state.cached_queue_issues = [mock_issue]
-
-        # Agent config exists
-        mock_agent_config = MagicMock()
-        mock_agent_config.provider = None
-        mock_agent_config.model = "sonnet"
-        mock_orch.config.agents = {"agent:claude": mock_agent_config}
-
-        # Session already exists
-        mock_orch.deps.runner.session_exists.return_value = True
-
-        with patch(
-            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
-        ) as mock_get_path:
-            mock_get_path.return_value = worktree
-
-            response = client.post("/api/issues/123/debug-session")
-
-        assert response.status_code == 409
-        data = response.json()
-        assert data["success"] is False
-        assert "already exists" in data["error"].lower()
-
-    @pytest.mark.parametrize("registration_fails", [False, True])
-    def test_debug_session_launches_successfully(
-        self, client_with_orchestrator, tmp_path, registration_fails
-    ):
-        """Successfully launches debug session when worktree and issue exist."""
-        client, mock_orch = client_with_orchestrator
-
-        # Create worktree
-        worktree = tmp_path / "repo-123"
-        worktree.mkdir()
-
-        # Issue with agent type
-        mock_issue = MagicMock()
-        mock_issue.number = 123
-        mock_issue.key = FakeIssueKey("123", "test/repo")
-        mock_issue.title = "Test Issue"
-        mock_issue.agent_type = "agent:claude"
-        mock_orch.state.cached_queue_issues = [mock_issue]
-
-        # Agent config renders the prompt the engine composes (#8141: rulings first)
-        mock_agent_config = MagicMock()
-        mock_agent_config.render_initial_prompt.side_effect = (
-            lambda **kw: f"IMPORTANT: {kw['existing_work']}\n\nWork on issue #{kw['issue_number']}"
-        )
-        mock_agent_config.get_command_for_prompt.side_effect = lambda prompt, **kw: f"claude '{prompt.instruction()}'"
-        mock_orch.config.agents = {"agent:claude": mock_agent_config}
-        ruling = a_ruling(text="Runtime stamping replaces the walk checker.")
-        mock_orch.deps.launch_prompt = IssueLaunchPrompt(
-            NO_CODER_PROMPT_ADDENDUM, rulings_owner(IssueBodies({123: body_with(ruling)})),
-        )
-        mock_orch.config.web_port = 8080
-        mock_orch.config.control_api_port = 8080
-        from issue_orchestrator.infra.agent_callback_endpoint import (
-            RuntimeAgentCallbackEndpoint,
+        mock_orch.launch_debug_session.return_value = _debug_outcome(
+            DebugSessionStatus.LAUNCHED, agent_label="agent:claude",
         )
 
-        mock_orch.deps.agent_callback_endpoint = RuntimeAgentCallbackEndpoint()
-        mock_orch.deps.agent_callback_endpoint.publish_bound_port(8080)
+        response = client.post("/api/issues/123/debug-session")
 
-        # Session doesn't exist yet
-        mock_orch.deps.runner.session_exists.return_value = False
-        # Session creation succeeds
-        mock_orch.deps.runner.create_session.return_value = True
-        session_output = FileSystemSessionOutput()
-        mock_orch.deps.session_output = session_output
-        ledger = SqliteIssueRunLedger(tmp_path / "state" / "runs.sqlite", repo_slug="test-owner/test-repo")
-        if registration_fails:
-            ledger = MagicMock(record_run=MagicMock(side_effect=IssueRunEvidenceUnavailable("disk full")))
-        mock_orch.deps.issue_run_allocator = IssueRunAllocationService(session_output, ledger, branch_working_copy(), configuration=Config(repo="example/repo"))
-
-        def spawn(**kwargs):
-            assert len(ledger.recorded_runs(123)) == 1
-            return True
-
-        mock_orch.deps.runner.create_session.side_effect = spawn
-
-        with patch(
-            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
-        ) as mock_get_path:
-            mock_get_path.return_value = worktree
-
-            response = client.post("/api/issues/123/debug-session")
-
-        if registration_fails:
-            assert response.status_code == 503
-            assert response.json()["error"] == "disk full"
-            mock_orch.deps.runner.create_session.assert_not_called()
-            return
-        assert response.status_code == 200
-        data = response.json()
-        assert data["success"] is True
-        assert data["session_name"] == "debug-123"
-        assert data["worktree_path"] == str(worktree)
-        assert data["agent"] == "claude"
-        assert "coding-done --resume" in data["hint"]
-
-        mock_agent_config.get_command_for_prompt.assert_called_once()
-        call_kwargs = mock_agent_config.get_command_for_prompt.call_args.kwargs
-        assert call_kwargs["issue_number"] == 123
-        assert call_kwargs["issue_title"] == "Test Issue"
-        assert call_kwargs["worktree"] == worktree
-
-        # Verify session was created with correct args
-        mock_orch.deps.runner.create_session.assert_called_once()
-        call_kwargs = mock_orch.deps.runner.create_session.call_args.kwargs
-        # The agent is told to read the engine's composition from its run's
-        # prompt file (#9012): the rulings, then the debug context
-        prompt = delivered_prompt(call_kwargs["command"])
-        assert prompt.index(ruling.text) < prompt.index("DEBUG SESSION")
-        assert call_kwargs["session_id"] == 123
-        assert call_kwargs["working_dir"] == str(worktree)
-        assert call_kwargs["session_name"] == "debug-123"
-        assert "ORCHESTRATOR_ISSUE_NUMBER='123'" in call_kwargs["command"]
-        assert "ORCHESTRATOR_API_PORT='8080'" in call_kwargs["command"]
-        assert "ORCHESTRATOR_SESSION_ID='debug-123'" in call_kwargs["command"]
-        run_dir = session_output.find_run_dir(worktree, "debug-123")
-        assert run_dir is not None
-        completion_path = (
-            f".issue-orchestrator/sessions/{run_dir.name}/"
-            "completion-agent_claude.json"
-        )
-        assert f"ISSUE_ORCHESTRATOR_COMPLETION_PATH='{completion_path}'" in call_kwargs["command"]
-        assert f"ISSUE_ORCHESTRATOR_RUN_DIR='{run_dir}'" in call_kwargs["command"]
-        assert f"ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR='{run_dir}'" in call_kwargs["command"]
-        manifest = session_output.read_manifest(run_dir)
-        assert manifest is not None
-        assert manifest["completion_path"] == completion_path
-
-    def test_a_debug_session_command_past_the_bound_is_refused_before_it_is_spawned(
-        self, client_with_orchestrator, tmp_path
-    ):
-        """#9012 review r1 F1: the debug launch is bounded on the same finished
-        command as every launch, its environment exports included."""
-        from issue_orchestrator.domain.launch_prompt_delivery import MAX_LAUNCH_COMMAND_BYTES
-
-        client, mock_orch = client_with_orchestrator
-        worktree = tmp_path / "repo-123"
-        worktree.mkdir()
-        mock_issue = MagicMock(number=123, key=FakeIssueKey("123", "test/repo"), title="T", agent_type="agent:claude")
-        mock_orch.state.cached_queue_issues = [mock_issue]
-        mock_agent_config = MagicMock()
-        mock_agent_config.render_initial_prompt.return_value = "Work on issue #123"
-        # Under the bound as built; the quotes it holds put it over once quoted for ``bash -lc``.
-        mock_agent_config.get_command_for_prompt.return_value = "claude " + "''" * (MAX_LAUNCH_COMMAND_BYTES // 4)
-        mock_orch.config.agents = {"agent:claude": mock_agent_config}
-        mock_orch.deps.launch_prompt = IssueLaunchPrompt(NO_CODER_PROMPT_ADDENDUM, rulings_owner(IssueBodies({123: ""})))
-        mock_orch.deps.runner.session_exists.return_value = False
-        session_output = FileSystemSessionOutput()
-        mock_orch.deps.session_output = session_output
-        ledger = SqliteIssueRunLedger(tmp_path / "state" / "runs.sqlite", repo_slug="test-owner/test-repo")
-        mock_orch.deps.issue_run_allocator = IssueRunAllocationService(session_output, ledger, branch_working_copy(), configuration=Config(repo="example/repo"))
-
-        with patch("issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path") as mock_get_path:
-            mock_get_path.return_value = worktree
-            response = client.post("/api/issues/123/debug-session")
-
-        assert response.status_code == 500
-        assert response.json()["success"] is False and "argument bound" in response.json()["error"]
+        mock_orch.launch_debug_session.assert_called_once_with(123)
         mock_orch.deps.runner.create_session.assert_not_called()
-
-    def test_a_debug_session_never_launches_without_its_launch_prompt(
-        self, client_with_orchestrator, tmp_path
-    ):
-        """#8141: the debug launch asks the one launch-prompt owner; an input it
-        requires (a ruling, the coder addendum) that cannot be read refuses it."""
-        from issue_orchestrator.domain.launch_prompt import LaunchPromptUnavailable
-
-        client, mock_orch = client_with_orchestrator
-        worktree = tmp_path / "repo-123"
-        worktree.mkdir()
-        mock_issue = MagicMock(number=123, key=FakeIssueKey("123", "test/repo"), title="T", agent_type="agent:claude")
-        mock_orch.state.cached_queue_issues = [mock_issue]
-        mock_orch.config.agents = {"agent:claude": MagicMock()}
-        mock_orch.deps.runner.session_exists.return_value = False
-        mock_orch.deps.launch_prompt.prepare.return_value = LaunchPromptUnavailable("instructions unreadable")
-
-        with patch("issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path") as mock_get_path:
-            mock_get_path.return_value = worktree
-            response = client.post("/api/issues/123/debug-session")
-
-        assert response.status_code == 503 and response.json()["error"] == "instructions unreadable"
-        mock_orch.deps.runner.create_session.assert_not_called()
-
-    def test_debug_session_returns_500_when_session_creation_fails(
-        self, client_with_orchestrator, tmp_path
-    ):
-        """Returns 500 when terminal session creation fails."""
-        client, mock_orch = client_with_orchestrator
-
-        # Create worktree
-        worktree = tmp_path / "repo-123"
-        worktree.mkdir()
-
-        # Issue with agent type
-        mock_issue = MagicMock()
-        mock_issue.number = 123
-        mock_issue.title = "Test Issue"
-        mock_issue.agent_type = "agent:claude"
-        mock_orch.state.cached_queue_issues = [mock_issue]
-
-        # Agent config
-        mock_agent_config = MagicMock()
-        mock_agent_config.get_command.return_value = "claude 'Work on issue'"
-        mock_orch.config.agents = {"agent:claude": mock_agent_config}
-        mock_orch.config.web_port = 8080
-        mock_orch.config.control_api_port = 8080
-        from issue_orchestrator.infra.agent_callback_endpoint import (
-            RuntimeAgentCallbackEndpoint,
-        )
-
-        mock_orch.deps.agent_callback_endpoint = RuntimeAgentCallbackEndpoint()
-        mock_orch.deps.agent_callback_endpoint.publish_bound_port(8080)
-
-        # Session doesn't exist yet
-        mock_orch.deps.runner.session_exists.return_value = False
-        # Session creation fails
-        mock_orch.deps.runner.create_session.return_value = False
-
-        with patch(
-            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
-        ) as mock_get_path:
-            mock_get_path.return_value = worktree
-
-            response = client.post("/api/issues/123/debug-session")
-
-        assert response.status_code == 500
-        data = response.json()
-        assert data["success"] is False
-        assert "failed to create" in data["error"].lower()
-
-    def test_debug_session_uses_cached_issue_over_github_fetch(
-        self, client_with_orchestrator, tmp_path
-    ):
-        """Uses cached issue data when available."""
-        client, mock_orch = client_with_orchestrator
-
-        # Create worktree
-        worktree = tmp_path / "repo-123"
-        worktree.mkdir()
-
-        # Issue in cache
-        mock_issue = MagicMock()
-        mock_issue.number = 123
-        mock_issue.title = "Cached Title"
-        mock_issue.agent_type = "agent:claude"
-        mock_orch.state.cached_queue_issues = [mock_issue]
-
-        # Agent config
-        mock_agent_config = MagicMock()
-        mock_agent_config.get_command.return_value = "claude 'Work on issue'"
-        mock_orch.config.agents = {"agent:claude": mock_agent_config}
-        mock_orch.config.web_port = 8080
-        mock_orch.config.control_api_port = 8080
-        from issue_orchestrator.infra.agent_callback_endpoint import (
-            RuntimeAgentCallbackEndpoint,
-        )
-
-        mock_orch.deps.agent_callback_endpoint = RuntimeAgentCallbackEndpoint()
-        mock_orch.deps.agent_callback_endpoint.publish_bound_port(8080)
-
-        mock_orch.deps.runner.session_exists.return_value = False
-        mock_orch.deps.runner.create_session.return_value = True
-
-        with patch(
-            "issue_orchestrator.entrypoints.control_api_issue_routes.get_worktree_path"
-        ) as mock_get_path:
-            mock_get_path.return_value = worktree
-
-            response = client.post("/api/issues/123/debug-session")
-
+        mock_orch.deps.issue_run_allocator.allocate.assert_not_called()
         assert response.status_code == 200
-        # GitHub should not have been called since issue was in cache
-        mock_orch.deps.repository_host.get_issue.assert_not_called()
+        assert response.json() == {
+            "success": True,
+            "session_name": "debug-123",
+            "worktree_path": "/wt/repo-123",
+            "agent": "claude",
+            "hint": "Debug session launched. When done, run 'coding-done --resume' to process completion.",
+        }
+
+    @pytest.mark.parametrize(("outcome", "status_code", "error"), [
+        (_debug_outcome(DebugSessionStatus.WORKTREE_MISSING), 404, "Worktree not found: /wt/repo-123"),
+        (_debug_outcome(DebugSessionStatus.ISSUE_NOT_FOUND), 404, "Issue #123 not found"),
+        (_debug_outcome(DebugSessionStatus.NO_AGENT_LABEL), 400, "Issue has no agent type label"),
+        (_debug_outcome(DebugSessionStatus.NO_AGENT_CONFIG, agent_label="agent:unknown"), 400, "No agent config for agent:unknown"),
+        (_debug_outcome(DebugSessionStatus.ALREADY_RUNNING, agent_label="agent:claude"), 409, "Debug session already exists: debug-123"),
+        (_debug_outcome(DebugSessionStatus.UNAVAILABLE, reason="instructions unreadable"), 503, "instructions unreadable"),
+        (_debug_outcome(DebugSessionStatus.COMMAND_TOO_LONG, reason="exec argument is 200000 bytes"), 500, "exec argument is 200000 bytes"),
+        (_debug_outcome(DebugSessionStatus.SPAWN_FAILED, agent_label="agent:claude"), 500, "Failed to create terminal session"),
+    ], ids=lambda value: value.status.value if isinstance(value, DebugSessionOutcome) else None)
+    def test_each_refusal_is_mapped_to_its_status_and_error(
+        self, client_with_orchestrator, outcome, status_code, error,
+    ):
+        client, mock_orch = client_with_orchestrator
+        mock_orch.launch_debug_session.return_value = outcome
+
+        response = client.post("/api/issues/123/debug-session")
+
+        assert response.status_code == status_code
+        assert response.json()["success"] is False and response.json()["error"] == error
+
+    def test_every_outcome_has_an_http_mapping(self, client_with_orchestrator):
+        client, mock_orch = client_with_orchestrator
+        for status in DebugSessionStatus:
+            mock_orch.launch_debug_session.return_value = _debug_outcome(status, agent_label="agent:claude")
+
+            assert client.post("/api/issues/123/debug-session").status_code in {200, 400, 404, 409, 500, 503}
 
 
 # --- Test: E2E Logs Endpoint ---
@@ -1367,5 +1018,3 @@ class TestTheRouteMapsTheTypedOutcome:
         assert body["removed_labels"] == ["blocked-needs-human"]
         assert "was not dismissed" in body["error"]
         assert "retry the action" in body["error"]
-
-from tests.run_allocation_helpers import branch_working_copy

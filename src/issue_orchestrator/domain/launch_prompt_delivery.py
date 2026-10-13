@@ -10,17 +10,20 @@ short instruction to read that file (:meth:`LaunchPromptFile.instruction`).
 
 What does still ride on the command line — provider flags, the completion
 instructions, a sandbox's settings, the session's environment exports — is
-bounded by configuration. A session is started from a :class:`LaunchCommand`,
-the one finished form of everything the launcher composes, which cannot be
-built over :data:`MAX_LAUNCH_COMMAND_BYTES`: a command over the limit fails
-loudly before the launch mutates anything, rather than reaching the OS or being
-truncated. The terminal that execs the command holds every argument it passes
-the OS to :data:`MAX_EXEC_ARGUMENT_BYTES` (:func:`require_exec_argument_within_limit`).
+bounded by configuration, and the terminal adds its own part: the working
+directory, the inherited ``PATH`` and its isolation prefix. Only the terminal
+knows that part, so only the terminal can say whether a command fits. A launch
+composes a :class:`LaunchCommand` and asks its terminal to prepare it; the
+terminal answers with a :class:`PreparedSessionCommand` — the exact arguments it
+will exec, each proven within :data:`MAX_EXEC_ARGUMENT_BYTES` — or raises
+:class:`LaunchCommandTooLong`. A launch prepares before its first workflow
+mutation, and the terminal starts the session from that same prepared value, so
+a command the OS would refuse fails loudly before anything changed, and the
+argument checked is the argument exec'd.
 """
 
 from __future__ import annotations
 
-import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,43 +31,25 @@ from .path_guards import require_absolute_path
 
 #: The OS limit on one exec argument: Linux's MAX_ARG_STRLEN (32 pages, 128 KiB)
 #: counts the terminating NUL. macOS has no per-argument cap but a 1 MiB ARG_MAX
-#: for argv plus environment, which one argument this size also fits under. The
-#: whole launch command travels as ONE argument (``bash -lc <command>``).
+#: for argv plus environment, which one argument this size also fits under.
 MAX_EXEC_ARGUMENT_BYTES = 128 * 1024 - 1
-
-#: The bound on a session's :class:`LaunchCommand`, measured as the quoted shell
-#: argument it travels as. It sits below :data:`MAX_EXEC_ARGUMENT_BYTES` to leave
-#: room for what the terminal itself puts around the command: the working
-#: directory, ``PATH`` and the isolation prefix.
-MAX_LAUNCH_COMMAND_BYTES = 96 * 1024
 
 #: How a launch command's prompt argument opens: the file's path follows.
 LAUNCH_PROMPT_INSTRUCTION_OPENING = "Your complete launch prompt is the file "
 
 
 class LaunchCommandTooLong(ValueError):
-    """A launch command would exceed the OS argument limit.
+    """A session's exec arguments would exceed the OS argument limit.
 
-    Raised before the command is handed to the OS: the launch fails loudly and
-    nothing in it is truncated to fit.
+    Raised by the terminal that prepares the command, before the launch mutates
+    anything: the launch fails loudly and nothing in it is truncated to fit.
     """
-
-
-def quoted_argument_bytes(text: str) -> int:
-    """The bytes *text* takes as one quoted shell argument.
-
-    A command reaches ``bash -lc`` as a single argument of a shell command line,
-    so it is quoted on the way, and a single quote it holds costs five bytes
-    there (``'"'"'``): a quote-heavy command is far longer than it reads.
-    """
-    return len(shlex.quote(text).encode("utf-8"))
 
 
 def require_exec_argument_within_limit(argument: str) -> str:
     """Return *argument* unchanged, or raise :class:`LaunchCommandTooLong`.
 
-    For the terminal that execs a command: it checks the argument exactly as it
-    passes it to the OS, after everything it put around the launch command.
+    For an argument exactly as it is passed to the OS.
     """
     size = len(argument.encode("utf-8"))
     if size > MAX_EXEC_ARGUMENT_BYTES:
@@ -77,31 +62,44 @@ def require_exec_argument_within_limit(argument: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class LaunchCommand:
-    """A session's finished launch command, proven within the argument bound.
+    """A session's launch command as the launcher finishes it.
 
-    The only form a launcher spawns a session from: the session's environment
-    exports, then the agent command — the provider's, already wrapped for
-    retries when the invocation is one-shot. Nothing is added to it before the
-    terminal, so the bound checked here is the bound of what the launch can
-    see; a command over it cannot be built, so a launch fails before it mutates
-    anything.
+    The session's environment exports, then the agent command — the
+    provider's, already wrapped for retries when the invocation is one-shot.
+    It is not yet what the OS execs: the terminal puts its own part around it,
+    so only a :class:`PreparedSessionCommand` says whether it can be started.
     """
 
     text: str
-
-    def __post_init__(self) -> None:
-        size = quoted_argument_bytes(self.text)
-        if size > MAX_LAUNCH_COMMAND_BYTES:
-            raise LaunchCommandTooLong(
-                f"launch command is {size} bytes as a quoted shell argument, over the"
-                f" {MAX_LAUNCH_COMMAND_BYTES}-byte argument bound; the session cannot be"
-                " started with it"
-            )
 
     @classmethod
     def composed(cls, env_exports: str, agent_command: str) -> LaunchCommand:
         """The command that exports *env_exports*, then runs *agent_command*."""
         return cls(f"{env_exports} && {agent_command}")
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedSessionCommand:
+    """A launch command exactly as its terminal will exec it, proven to fit.
+
+    Built only by the terminal that will start the session, which alone knows
+    what it puts around *launch* and how it hands the result to the OS.
+    ``argv`` is what the terminal runs; ``exec_argv`` is how the OS receives
+    it, a pure function of ``argv`` the terminal's runner applies again when it
+    starts the session — so nothing the terminal reads at start (``PATH``, its
+    isolation prefix) can differ from what was checked here.
+    """
+
+    launch: LaunchCommand
+    working_dir: Path
+    argv: tuple[str, ...]
+    exec_argv: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not self.argv or not self.exec_argv:
+            raise ValueError("PreparedSessionCommand needs the command it runs and how it is exec'd")
+        for argument in self.exec_argv:
+            require_exec_argument_within_limit(argument)
 
 
 @dataclass(frozen=True, slots=True)

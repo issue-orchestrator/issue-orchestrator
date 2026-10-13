@@ -4,8 +4,9 @@ The command-building seam every launcher funnels through
 (``AgentConfig.get_command_for_prompt``) is exercised for each provider adapter
 and for a custom ``command`` template, with a prompt far past the OS argument
 limit. The agent's prompt is the persisted file the instruction names, whole.
-What a session starts from is the finished :class:`LaunchCommand`: the agent
-command once wrapped for retries, after the session's environment exports.
+What a session starts from is what its terminal prepared from the finished
+:class:`LaunchCommand` - the agent command once wrapped for retries, after the
+session's environment exports - so that is what is held to the OS limit.
 """
 
 from __future__ import annotations
@@ -16,11 +17,12 @@ import pytest
 
 from issue_orchestrator.control.provider_command_wrapper import ProviderCommandWrapper
 from issue_orchestrator.domain.launch_prompt_delivery import (
-    MAX_LAUNCH_COMMAND_BYTES,
+    MAX_EXEC_ARGUMENT_BYTES,
     LaunchCommand,
     LaunchCommandTooLong,
     LaunchPromptFile,
 )
+from issue_orchestrator.execution.terminal_subprocess import prepare_subprocess_session
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.infra.config_models import ProviderShortRetryConfig
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
@@ -74,6 +76,7 @@ def test_a_prompt_past_the_argument_limit_is_delivered_whole_from_its_file(
 
     assert _RULING not in command
     assert delivered_prompt(command) == _LONG_PROMPT
+    prepare_subprocess_session(LaunchCommand(command), worktree)  # the terminal can exec it
 
 
 def test_the_persisted_prompt_is_recorded_as_the_runs_session_prompt(tmp_path: Path) -> None:
@@ -87,7 +90,7 @@ def test_the_persisted_prompt_is_recorded_as_the_runs_session_prompt(tmp_path: P
     assert manifest is not None and manifest["session_prompt_path"] == str(prompt.path)
 
 
-_OVERSIZED = "s" * MAX_LAUNCH_COMMAND_BYTES
+_OVERSIZED = "s" * MAX_EXEC_ARGUMENT_BYTES
 
 
 @pytest.mark.parametrize("agent", [
@@ -95,26 +98,27 @@ _OVERSIZED = "s" * MAX_LAUNCH_COMMAND_BYTES
     AgentConfig(prompt_path=Path(".prompts/backend.md"), command=f"claude --append-system-prompt '{_OVERSIZED}' '{{initial_prompt}}'"),
 ], ids=["provider", "custom-command"])
 def test_configuration_past_the_argument_limit_fails_loudly_and_is_never_cut(agent: AgentConfig, tmp_path: Path) -> None:
-    """What still rides on the command line is configuration; past the bound the
-    launch cannot start, so building it refuses rather than truncating."""
+    """What still rides on the command line is configuration; past the OS limit
+    the launch cannot start, so the terminal's preparation refuses rather than
+    truncating."""
     agent_command = agent.get_command_for_prompt(_persisted(tmp_path, "Work on issue #9012."), worktree=tmp_path)
 
     with pytest.raises(LaunchCommandTooLong):
-        _finished(agent, agent_command, tmp_path)
+        prepare_subprocess_session(_finished(agent, agent_command, tmp_path), tmp_path)
 
 
-def test_a_command_under_the_bound_that_retry_wrapping_pushes_past_it_cannot_start(tmp_path: Path) -> None:
+def test_a_command_under_the_limit_that_retry_wrapping_pushes_past_it_cannot_start(tmp_path: Path) -> None:
     """A one-shot command is wrapped for retries, its text re-quoted as one
     ``--command`` argument: a single quote it holds grows to five bytes. The
-    bound applies to the finished command, so an agent command that reads under
-    it, but is not under it once wrapped, cannot start (#9012 review r1 F1)."""
+    limit applies to what the terminal execs, so an agent command that reads
+    under it, but is not under it once wrapped, cannot start (#9012 review r1 F1)."""
     agent = AgentConfig(
         prompt_path=Path(".prompts/backend.md"),
         command="claude --append-system-prompt " + "''" * 12_000 + " '{initial_prompt}'",
     )
     agent_command = agent.get_command_for_prompt(_persisted(tmp_path, "Work on issue #9012."), worktree=tmp_path)
-    assert len(agent_command.encode()) < MAX_LAUNCH_COMMAND_BYTES // 3
+    assert len(agent_command.encode()) < MAX_EXEC_ARGUMENT_BYTES // 3
     assert not ProviderCommandWrapper(ProviderShortRetryConfig()).runs_interactively(agent)  # it is wrapped
 
     with pytest.raises(LaunchCommandTooLong):
-        _finished(agent, agent_command, tmp_path)
+        prepare_subprocess_session(_finished(agent, agent_command, tmp_path), tmp_path)

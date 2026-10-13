@@ -54,6 +54,9 @@ from ..domain.launch_prompt import (
     PreparedLaunchPrompt,
 )
 from ..domain.launch_prompt_delivery import LaunchCommand, LaunchPromptFile
+from .launch_terminal import LaunchTerminal
+from .debug_session_launcher import DebugLaunchDependencies, launch_debug_session
+from ..ports.debug_session_launch import DebugSessionOutcome, DebugSessionRequest
 from ..domain.session_run import SessionRunAssets
 from ..ports.issue_run_allocator import IssueRunAllocator
 from .worktree import WorktreeSetupError
@@ -239,7 +242,8 @@ class SessionLauncher:
         self._agent_callback_endpoint = agent_callback_endpoint
         self._issue_run_allocator = issue_run_allocator
         self._session_exists = session_exists_fn
-        self._create_session = create_session_fn
+        # Prepare, then start, through the one terminal boundary (#9012).
+        self._terminal = LaunchTerminal(session_manager.prepare, create_session_fn, provider_credentials)
         self._get_issue_machine = get_issue_machine
         self._get_session_machine = get_session_machine
         self._get_review_machine = get_review_machine
@@ -248,7 +252,6 @@ class SessionLauncher:
         self._claim_manager = claim_manager
         self._provider_resilience = provider_resilience
         self._launch_prompt = launch_prompt
-        self._provider_credentials = provider_credentials
         self._provider_gate = (
             ProviderLaunchGate(
                 policy=ProviderAvailabilityPolicy(
@@ -976,8 +979,8 @@ class SessionLauncher:
             )
 
             # Build command. The prompt is persisted whole and the command carries
-            # only the instruction to read it (#9012). The finished command is
-            # bounded before the in-progress label: one that cannot be started
+            # only the instruction to read it (#9012). The terminal prepares the
+            # exact command before the in-progress label: one the OS would refuse
             # fails the launch before that mutation.
             rendered_prompt = agent_config.render_initial_prompt(
                 issue_number=issue.number,
@@ -1028,6 +1031,7 @@ class SessionLauncher:
                 completion_path,
                 command.text,
             )
+            prepared = self._terminal.prepare(command, worktree_path)
 
             # Add in-progress label
             step_start = time.time()
@@ -1066,7 +1070,7 @@ class SessionLauncher:
             # Create terminal session
             step_start = time.time()
             # Consent once more at the terminal boundary (#7763 r26 F1); a refusal takes the spawn-failure cleanup.
-            session_created = not self._refuse_unapproved(issue.number) and self._spawn(session_name, command, worktree_path, issue.title, agent_config)
+            session_created = not self._refuse_unapproved(issue.number) and self._terminal.start(session_name, prepared, issue.title, agent_config)
             logger.info(
                 "[launch] Issue session create result: issue=%s session=%s created=%s",
                 issue.number,
@@ -1367,7 +1371,7 @@ class SessionLauncher:
                 suffix="validation_retry",
             )
 
-            # Delivered from its file (#9012); the finished command is bounded before the in-progress label.
+            # Delivered from its file (#9012); the terminal prepares the exact command before the in-progress label.
             launch_prompt = self._persist_session_prompt(run.run_dir, retry_prompt)
             self._session_output.write_retry_prompt(run.run_dir, retry_prompt)
             base_command = agent_config.get_command_for_prompt(
@@ -1405,6 +1409,7 @@ class SessionLauncher:
                 completion_path,
                 command.text,
             )
+            prepared = self._terminal.prepare(command, worktree_path)
 
             label = self._retry_in_progress(
                 kind, issue, AddLabelAction, "validation retry launched",
@@ -1415,7 +1420,7 @@ class SessionLauncher:
                 self._release_claim_if_held(issue.number, claim)
                 return label.refused("Failed to add in-progress label")
 
-            session_created = not self._refuse_unapproved(issue.number) and self._spawn(session_name, command, worktree_path, issue.title, agent_config)
+            session_created = not self._refuse_unapproved(issue.number) and self._terminal.start(session_name, prepared, issue.title, agent_config)
             if not session_created:
                 log_transition("issue", issue.number, "LAUNCHING", "FAILED", "session creation failed")
                 self._retry_in_progress(
@@ -1780,7 +1785,8 @@ class SessionLauncher:
             )
 
             # Create session
-            session_created = self._spawn(session_name, command, worktree_path, f"Review PR #{review.pr_number}", agent_config)
+            prepared = self._terminal.prepare(command, worktree_path)
+            session_created = self._terminal.start(session_name, prepared, f"Review PR #{review.pr_number}", agent_config)
             logger.info(
                 "[launch] Review session create result: issue=%s pr=%s session=%s created=%s",
                 review.issue_number,
@@ -2079,7 +2085,8 @@ class SessionLauncher:
                 command.text,
             )
 
-            session_created = self._spawn(session_name, command, worktree_path, issue_title, agent_config)
+            prepared = self._terminal.prepare(command, worktree_path)
+            session_created = self._terminal.start(session_name, prepared, issue_title, agent_config)
             logger.info(
                 "[launch] Retrospective review create result: issue=%s session=%s created=%s",
                 review.issue_number,
@@ -2164,7 +2171,7 @@ class SessionLauncher:
             issue_run_allocator=self._issue_run_allocator,
             label_manager=self._lm,
             session_exists=self._session_exists,
-            spawn=self._spawn,
+            terminal=self._terminal,
             apply_actions=self._apply_actions,
             worktree_reuse_options=self._worktree_reuse_options,
             session_identity_launch_metadata=self._session_identity_launch_metadata,
@@ -2181,6 +2188,14 @@ class SessionLauncher:
         return launch_rework_flow(
             rework, active_sessions, deps, work_claim=work_claim
         )
+
+    def launch_debug_session(self, request: DebugSessionRequest) -> DebugSessionOutcome:
+        """An operator's interactive debug session, through this launcher's own collaborators (#9012)."""
+        return launch_debug_session(DebugLaunchDependencies(
+            self.config, self.repository_host, self._session_exists, self._agent_callback_endpoint,
+            self._check_provider_ready, self._launch_prompt, self._issue_run_allocator, self._session_output,
+            self._persist_session_prompt, self._build_session_env, self._terminal,
+        ), request)
 
     def _reviewer_launch_inputs(
         self, agent_config: "AgentConfig", kind: SessionKind, issue_number: int,
@@ -2227,23 +2242,6 @@ class SessionLauncher:
                 self.config.provider_resilience.short_retry, self._provider_gate.lane_for_agent if self._provider_gate else None,
             )
         return self._provider_command_wrapper
-
-    def _spawn(
-        self, name: str, command: LaunchCommand, worktree: Path, title: str, agent_config: "AgentConfig",
-    ) -> bool:
-        """Start one agent session, always with its provider credentials.
-
-        The single place a session is spawned from this class, rework included.
-        It takes only a :class:`LaunchCommand`, so no launch path can start a
-        session from a command that was never bounded (#9012). Credentials are
-        resolved here rather than at each launch path so a new path cannot
-        launch a key-authenticated provider unauthenticated — the failure looks
-        like a bad key rather than a missing wire-up. ``None`` rather than an
-        empty mapping distinguishes "this provider supplies its own login" from
-        "the key resolved to nothing".
-        """
-        secret_env = dict(self._provider_credentials.session_env(agent_config.provider))
-        return self._create_session(name, command.text, worktree, title, secret_env or None)
 
     def _check_provider_ready(
         self, agent_config: "AgentConfig", issue_number: int

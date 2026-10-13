@@ -14,10 +14,10 @@ layer instead — worse, not better (#6924 A3/A3-R2).
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional, Protocol
 
 if TYPE_CHECKING:
+    from ..domain.launch_prompt_delivery import PreparedSessionCommand
     from ..control.dependency_evaluator import DependencyEvaluator
     from ..control.session_launcher import SessionLauncher
     from ..domain.state_machines.issue_machine import IssueStateMachine
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 
 class CreateSessionFn(Protocol):
-    """Start a terminal session for an agent.
+    """Start a terminal session for an agent, from the command its terminal prepared (#9012).
 
     A Protocol rather than a ``Callable`` alias because the trailing arguments
     are optional: a call site that needs no provider credentials omits
@@ -40,8 +40,7 @@ class CreateSessionFn(Protocol):
     def __call__(
         self,
         name: str,
-        cmd: str,
-        wd: Path,
+        prepared: "PreparedSessionCommand",
         title: str | None = None,
         secret_env: dict[str, str] | None = None,
     ) -> bool:

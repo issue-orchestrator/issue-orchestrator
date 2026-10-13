@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from issue_orchestrator.domain.launch_prompt_delivery import MAX_EXEC_ARGUMENT_BYTES, LaunchCommandTooLong
+from issue_orchestrator.domain.launch_prompt_delivery import MAX_EXEC_ARGUMENT_BYTES, LaunchCommand, LaunchCommandTooLong
 from issue_orchestrator.execution.agent_runner import AgentRunner, AgentSpec
 from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin, _SessionRecord, _SubprocessRegistry
 from issue_orchestrator.infra.env import ENV_PREFIX
@@ -52,8 +52,7 @@ def test_subprocess_session_writes_log(tmp_path, monkeypatch):
     )
     created = plugin.create_session(
         session_id=123,
-        command=command,
-        working_dir=str(worktree),
+        prepared=plugin.prepare_session(LaunchCommand(command), worktree),
         title="Test session",
         session_name="issue-123",
     )
@@ -213,8 +212,7 @@ def test_subprocess_session_auto_accepts_claude_trust_prompt(tmp_path, monkeypat
     )
     created = plugin.create_session(
         session_id=123,
-        command=command,
-        working_dir=str(worktree),
+        prepared=plugin.prepare_session(LaunchCommand(command), worktree),
         title="Trust prompt test",
         session_name="issue-123",
     )
@@ -277,29 +275,61 @@ def test_the_runner_never_execs_an_argument_past_the_os_limit(tmp_path):
     assert not log_path.parent.exists()
 
 
-def test_a_command_the_os_cannot_take_is_refused_and_nothing_starts(tmp_path, monkeypatch):
-    """#9012 review r1 F1: the terminal enforces the limit on the argument it
-    actually execs, after its own cd/PATH/isolation prefix and quoting, so an
-    unchecked command cannot reach the OS. Under the limit as handed over, this
-    one is past it once its single quotes are quoted; the start is refused
-    through the hook's failure result, so the launcher's compensation runs."""
+def _plugin_over(tmp_path, monkeypatch) -> tuple[SubprocessPlugin, Path]:
     repo_root = tmp_path / "repo"
     worktree = repo_root / "wt"
     worktree.mkdir(parents=True)
     monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
-    plugin = SubprocessPlugin()
+    return SubprocessPlugin(), worktree
+
+
+def _wait_for_exit(plugin: SubprocessPlugin, session_name: str) -> None:
+    # A real subprocess is an external system: a bounded wait is acceptable.
+    deadline = time.monotonic() + 30.0
+    while plugin.session_exists(123, session_name):
+        assert time.monotonic() < deadline, "subprocess did not exit within 30s"
+        time.sleep(0.05)
+
+
+def test_the_terminal_refuses_to_prepare_a_command_the_os_cannot_take(tmp_path, monkeypatch):
+    """#9012 review r1 F1: the terminal holds the argument it actually execs to
+    the limit, after its own cd/PATH/isolation prefix and quoting. Under the
+    limit as handed over, this command is past it once its quotes are quoted."""
+    plugin, worktree = _plugin_over(tmp_path, monkeypatch)
     command, run_dir = _command_with_run_dir(worktree, "issue-123", "printf %s " + "''" * 20_000)
     assert len(command.encode()) < MAX_EXEC_ARGUMENT_BYTES // 2
 
-    created = plugin.create_session(
-        session_id=123,
-        command=command,
-        working_dir=str(worktree),
-        title="Test session",
-        session_name="issue-123",
-    )
+    with pytest.raises(LaunchCommandTooLong):
+        plugin.prepare_session(LaunchCommand(command), worktree)
 
-    assert created is False
-    assert plugin.session_exists(123, "issue-123") is False
     assert plugin.discover_running_sessions() == []
-    assert not (run_dir / "terminal-recording.jsonl").exists()
+    assert not run_dir.exists()
+
+
+def test_the_terminals_own_path_growth_is_inside_the_limit(tmp_path, monkeypatch):
+    """#9012 review r2 F2: the terminal copies the inherited ``PATH`` into the
+    command it execs. A short command under a long, quote-heavy ``PATH`` is past
+    the OS limit, and preparing it says so - no fixed reserve stands in for it."""
+    plugin, worktree = _plugin_over(tmp_path, monkeypatch)
+    command, _run_dir = _command_with_run_dir(worktree, "issue-123", "printf ok")
+    monkeypatch.setenv("PATH", "/usr/bin:" + "/opt/it's" * 20_000)
+    assert len(command.encode()) < 1024
+
+    with pytest.raises(LaunchCommandTooLong):
+        plugin.prepare_session(LaunchCommand(command), worktree)
+
+
+def test_a_session_runs_exactly_what_was_prepared(tmp_path, monkeypatch):
+    """#9012 review r2 F2: the start consumes the prepared command; it does not
+    read the terminal's ``PATH`` again, so what was checked is what runs."""
+    plugin, worktree = _plugin_over(tmp_path, monkeypatch)
+    command, run_dir = _command_with_run_dir(worktree, "issue-123", 'printf "PATH=%s\\n" "$PATH"')
+    monkeypatch.setenv("PATH", "/prepared-marker:/usr/bin:/bin")
+    prepared = plugin.prepare_session(LaunchCommand(command), worktree)
+    monkeypatch.setenv("PATH", "/spawn-marker:/usr/bin:/bin")
+
+    assert plugin.create_session(session_id=123, prepared=prepared, title="t", session_name="issue-123") is True
+    _wait_for_exit(plugin, "issue-123")
+
+    output = _read_recording_output(run_dir / "terminal-recording.jsonl")
+    assert "/prepared-marker" in output and "/spawn-marker" not in output

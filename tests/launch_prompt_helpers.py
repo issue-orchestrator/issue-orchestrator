@@ -10,7 +10,12 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from issue_orchestrator.domain.launch_prompt_delivery import LAUNCH_PROMPT_INSTRUCTION_OPENING
+from issue_orchestrator.domain.launch_prompt_delivery import (
+    LAUNCH_PROMPT_INSTRUCTION_OPENING,
+    LaunchCommand,
+    PreparedSessionCommand,
+)
+from issue_orchestrator.ports.session_runner import NullSessionRunner
 
 _INSTRUCTION = re.compile(
     re.escape(LAUNCH_PROMPT_INSTRUCTION_OPENING) + r"(?P<path>.+?) \((?P<lines>\d+) lines, (?P<characters>\d+) characters\)"
@@ -26,3 +31,8 @@ def delivered_prompt(command: str) -> str:
     assert len(prompt) == int(instruction["characters"])
     assert len(prompt.splitlines()) == int(instruction["lines"])
     return prompt
+
+
+def prepared_as_given(command: LaunchCommand, working_dir: Path) -> PreparedSessionCommand:
+    """A terminal double's preparation: the command exactly as given, nothing put around it."""
+    return NullSessionRunner().prepare_session(command, working_dir)

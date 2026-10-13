@@ -491,6 +491,27 @@ class TestClaudeExpiredLoginPreflight:
         assert harness.created == []
         assert EventName.SESSION_LAUNCH_BLOCKED_PROVIDER.value in harness.event_names()
 
+    def test_a_debug_session_is_gated_like_every_launch(self, tmp_path: Path) -> None:
+        """#9012 review r1 F3: the operator's debug launch goes through the same
+        provider gate: an unauthenticated provider allocates no run and spawns
+        nothing, and the transport is told why."""
+        from issue_orchestrator.domain.models import Issue
+        from issue_orchestrator.ports.debug_session_launch import DebugSessionRequest, DebugSessionStatus
+
+        harness = _LauncherHarness(
+            tmp_path,
+            StubReadinessProbe(ProviderReadiness.auth_expired("claude-code", "not logged in")),
+        )
+        worktree = tmp_path / "repo-123"
+        worktree.mkdir()
+        issue = Issue(number=123, title="Test Issue", labels=["agent:backend"], repo="test/repo")
+
+        outcome = harness.launcher.launch_debug_session(DebugSessionRequest(123, worktree, issue))
+
+        assert outcome.status is DebugSessionStatus.UNAVAILABLE and "not ready" in outcome.reason
+        assert harness.created == [] and harness.run_ledger.recorded_runs(123) == ()
+        assert EventName.SESSION_LAUNCH_BLOCKED_PROVIDER.value in harness.event_names()
+
     def test_launcher_proceeds_past_the_gate_when_the_provider_is_ready(
         self, tmp_path: Path
     ) -> None:
@@ -619,7 +640,7 @@ class _LauncherHarness:
             # looked like at the exact moment the terminal was spawned.
             create_session_fn=create_session
             or (
-                lambda name, cmd, wd, title, secret_env=None: (
+                lambda name, prepared, title, secret_env=None: (
                     self.created.append(name) or True
                 )
             ),
@@ -7042,7 +7063,7 @@ def test_the_claim_is_already_durable_when_the_terminal_spawns(
     at_spawn: list[tuple[str, ...]] = []
     harness = _ready_harness(
         tmp_path,
-        create_session=lambda name, cmd, wd, title, secret_env=None: (
+        create_session=lambda name, prepared, title, secret_env=None: (
             at_spawn.append(
                 tuple(
                     u.claim.kind.value for u in harness.claims.list_unresolved_claims()
@@ -7097,7 +7118,7 @@ def test_a_launch_that_never_spawns_hands_the_work_back(queue, tmp_path: Path) -
     """
     harness = _ready_harness(
         tmp_path,
-        create_session=lambda name, cmd, wd, title, secret_env=None: False,
+        create_session=lambda name, prepared, title, secret_env=None: False,
     )
     state = _pending_state(queue)
 
@@ -7131,7 +7152,7 @@ def test_a_launch_that_never_spawns_hands_the_work_back(queue, tmp_path: Path) -
 
 
 def _failing_spawn_harness(tmp_path: Path):
-    return _ready_harness(tmp_path, create_session=lambda name, cmd, wd, title, secret_env=None: False)
+    return _ready_harness(tmp_path, create_session=lambda name, prepared, title, secret_env=None: False)
 
 
 def test_a_permanently_dropped_request_is_not_resurrected_by_a_restart(

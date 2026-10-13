@@ -100,7 +100,23 @@ def make_session_launcher(*args, **kwargs) -> SessionLauncher:
     configuration = kwargs["config"] if "config" in kwargs else args[0]
     kwargs.setdefault("issue_run_allocator", IssueRunAllocationService(output, ledger, branch_working_copy(), configuration=configuration))
     _bind_no_published_review(kwargs["action_applier"] if "action_applier" in kwargs else args[3])
+    _bind_terminal_preparation(kwargs["session_manager"] if "session_manager" in kwargs else args[4])
     return SessionLauncher(*args, **kwargs)
+
+
+def _bind_terminal_preparation(session_manager) -> None:
+    """A bare mock session manager prepares like a terminal that adds nothing (#9012).
+
+    Every launch prepares its command through ``session_manager.prepare``; an
+    unconfigured mock would answer with a mock rather than a prepared command.
+    A test that exercises the terminal's own growth binds a real preparation.
+    """
+    from unittest.mock import Mock
+
+    from tests.launch_prompt_helpers import prepared_as_given
+
+    if isinstance(session_manager, Mock) and session_manager.prepare.side_effect is None:
+        session_manager.prepare.side_effect = prepared_as_given
 
 
 def _bind_no_published_review(action_applier) -> None:

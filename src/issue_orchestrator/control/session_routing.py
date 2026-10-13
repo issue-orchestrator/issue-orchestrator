@@ -7,7 +7,6 @@ SessionManager adapter calls.
 """
 
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
 from ..domain.models import (
@@ -51,6 +50,7 @@ from .session_launcher import SessionLauncher
 from .session_manager import SessionManager
 
 if TYPE_CHECKING:
+    from ..domain.launch_prompt_delivery import PreparedSessionCommand
     from ..domain.models import OrchestratorState
     from .claim_quarantine import ClaimQuarantineOwner
     from ..domain.state_machines.session_machine import SessionStateMachine
@@ -540,22 +540,20 @@ def parse_session_ref(
 
 def create_session(
     name: str,
-    cmd: str,
-    wd: Path,
+    prepared: "PreparedSessionCommand",
     title: str | None,
     session_manager: SessionManager,
     events: EventSink,
     secret_env: dict[str, str] | None = None,
 ) -> bool:
-    """Create a terminal session through SessionManager."""
+    """Start a terminal session from its prepared command through SessionManager."""
     from .session_manager import SessionContext
 
     ref = parse_session_ref(name, "create", events)
     return session_manager.start(
         SessionContext(
             ref=ref,
-            command=cmd,
-            working_dir=wd,
+            prepared=prepared,
             title=title,
             secret_env=secret_env,
         )

@@ -8,10 +8,10 @@ import pytest
 
 from issue_orchestrator.domain.launch_prompt_delivery import (
     MAX_EXEC_ARGUMENT_BYTES,
-    MAX_LAUNCH_COMMAND_BYTES,
     LaunchCommand,
     LaunchCommandTooLong,
     LaunchPromptFile,
+    PreparedSessionCommand,
     require_exec_argument_within_limit,
 )
 
@@ -33,30 +33,35 @@ def test_a_launch_command_exports_the_environment_then_runs_the_agent() -> None:
     assert command.text == "export A='1' && claude 'Read the file'"
 
 
-def test_a_command_within_the_bound_is_kept_unchanged() -> None:
-    text = "c" * MAX_LAUNCH_COMMAND_BYTES
+def test_a_launch_command_carries_no_bound_of_its_own() -> None:
+    """Only the terminal knows what it adds around a command, so no fixed
+    reserve below the OS limit stands in for it."""
+    text = "c" * (MAX_EXEC_ARGUMENT_BYTES * 2)
 
     assert LaunchCommand(text).text is text
 
 
-def test_a_command_over_the_bound_cannot_be_built() -> None:
+def _prepared(*exec_argv: str) -> PreparedSessionCommand:
+    return PreparedSessionCommand(
+        launch=LaunchCommand("claude"), working_dir=Path("/wt"), argv=("claude",), exec_argv=exec_argv,
+    )
+
+
+def test_a_prepared_command_within_the_os_limit_is_kept_unchanged() -> None:
+    argument = "a" * MAX_EXEC_ARGUMENT_BYTES
+
+    assert _prepared("/bin/bash", "-c", argument).exec_argv[2] is argument
+
+
+def test_a_prepared_command_with_any_argument_over_the_os_limit_cannot_be_built() -> None:
     # Measured in bytes, as the OS measures it: one multi-byte character over.
-    with pytest.raises(LaunchCommandTooLong, match="argument bound"):
-        LaunchCommand("c" * (MAX_LAUNCH_COMMAND_BYTES - 1) + "é")
+    with pytest.raises(LaunchCommandTooLong, match="OS's"):
+        _prepared("/bin/bash", "-c", "a" * (MAX_EXEC_ARGUMENT_BYTES - 1) + "é")
 
 
-def test_a_command_is_measured_as_the_quoted_argument_it_travels_as() -> None:
-    """A single quote takes five bytes once the command is quoted into ``bash
-    -lc``, so a quote-heavy command reading well under the bound is over it."""
-    text = "'" * (MAX_LAUNCH_COMMAND_BYTES // 4)
-    assert len(text.encode()) < MAX_LAUNCH_COMMAND_BYTES
-
-    with pytest.raises(LaunchCommandTooLong, match="quoted shell argument"):
-        LaunchCommand(text)
-
-
-def test_the_bound_leaves_the_terminal_room_below_the_os_limit() -> None:
-    assert MAX_EXEC_ARGUMENT_BYTES - MAX_LAUNCH_COMMAND_BYTES >= 16 * 1024
+def test_a_prepared_command_needs_what_it_runs_and_how_it_is_execd() -> None:
+    with pytest.raises(ValueError, match="exec'd"):
+        _prepared()
 
 
 def test_an_exec_argument_within_the_os_limit_passes_through_unchanged() -> None:

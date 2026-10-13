@@ -6,11 +6,14 @@ based on configuration and entry points.
 
 import logging
 from pathlib import Path
-from typing import Mapping, Optional, TypedDict
+from typing import TYPE_CHECKING, Mapping, Optional, TypedDict
 
 import pluggy
 
 from ..infra.hooks.hookspec import PROJECT_NAME, TerminalSpec, LifecycleSpec
+
+if TYPE_CHECKING:
+    from ..domain.launch_prompt_delivery import PreparedSessionCommand
 
 logger = logging.getLogger(__name__)
 
@@ -150,8 +153,7 @@ class PluginManager:
     def create_session(
         self,
         session_id: int,
-        command: str,
-        working_dir: str,
+        prepared: "PreparedSessionCommand",
         title: str | None,
         session_name: str,  # Required - caller must provide explicit name
         secret_env: dict[str, str] | None = None,
@@ -159,8 +161,7 @@ class PluginManager:
         """Create a terminal session."""
         result = self._pm.hook.create_session(
             session_id=session_id,
-            command=command,
-            working_dir=working_dir,
+            prepared=prepared,
             title=title,
             session_name=session_name,
             secret_env=secret_env,

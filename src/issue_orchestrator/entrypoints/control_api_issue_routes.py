@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -25,15 +25,8 @@ from ..control.actions import ActionResultType, CloseIssueAction
 from ..control.claim_gate import ClaimLostError
 from ..control.queue_cache import QueueCache
 from ..control.reconciliation import ReconciliationRequired, build_expected_for_mutation
-from ..control.worktree_manager import get_worktree_path
-from ..domain.models import get_completion_path
 from ..domain.review_exchange_verdict import ExchangeVerdict
-from ..domain.issue_run_allocation import IssueRunAllocation
-from ..domain.issue_run_evidence import IssueRunEvidenceUnavailable
-from ..domain.session_key import SessionKey
-from ..domain.session_kind import SessionKind
-from ..domain.launch_prompt import LaunchPromptUnavailable
-from ..domain.launch_prompt_delivery import LaunchCommand, LaunchCommandTooLong
+from ..ports.debug_session_launch import DebugSessionOutcome, DebugSessionStatus
 from ..ports.operator_issue_commands import (
     OperatorCommandIntent,
     OperatorCommandOutcome,
@@ -47,7 +40,6 @@ from .operator_command_wording import (
 
 if TYPE_CHECKING:
     from ..infra.orchestrator import Orchestrator
-    from ..ports import Issue as IssueProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -289,178 +281,69 @@ def resume_issue(
     )
 
 
-def _find_debug_issue(
-    deps: ControlApiIssueDependency, orchestrator: "Orchestrator", issue_number: int,
-) -> "IssueProtocol | None":
-    """Resolve the debug target under the state lock, then from the host."""
-    state = orchestrator.state
-    def _cached_issue() -> "IssueProtocol | None":
-        for cached_issue in state.cached_queue_issues:
-            if cached_issue.number == issue_number:
-                return cached_issue
-        return None
-
-    issue: IssueProtocol | None = deps.with_state_lock(_cached_issue)
-    if not issue:
-        try:
-            issue = orchestrator.deps.repository_host.get_issue(issue_number)
-        except Exception as exc:
-            logger.warning("Could not fetch issue #%d: %s", issue_number, exc)
-
-    return issue
+#: How each debug-launch outcome is said over HTTP: its status code and body.
+_DEBUG_SESSION_RESPONSES: dict[DebugSessionStatus, tuple[int, Callable[[DebugSessionOutcome], dict]]] = {
+    DebugSessionStatus.LAUNCHED: (200, lambda o: {
+        "success": True,
+        "session_name": o.session_name,
+        "worktree_path": str(o.worktree_path),
+        "agent": (o.agent_label or "").replace("agent:", ""),
+        "hint": "Debug session launched. When done, run 'coding-done --resume' to process completion.",
+    }),
+    DebugSessionStatus.WORKTREE_MISSING: (404, lambda o: {
+        "success": False,
+        "error": f"Worktree not found: {o.worktree_path}",
+        "hint": "The worktree may have been cleaned up. The issue needs to be re-run first.",
+    }),
+    DebugSessionStatus.ISSUE_NOT_FOUND: (404, lambda o: {
+        "success": False,
+        "error": f"Issue #{o.issue_number} not found",
+        "hint": "The issue may have been closed or doesn't exist.",
+    }),
+    DebugSessionStatus.NO_AGENT_LABEL: (400, lambda o: {
+        "success": False,
+        "error": "Issue has no agent type label",
+        "hint": "Add an agent label (e.g., 'agent:claude') to the issue.",
+    }),
+    DebugSessionStatus.NO_AGENT_CONFIG: (400, lambda o: {
+        "success": False,
+        "error": f"No agent config for {o.agent_label}",
+        "hint": "Check your orchestrator configuration.",
+    }),
+    DebugSessionStatus.ALREADY_RUNNING: (409, lambda o: {
+        "success": False,
+        "error": f"Debug session already exists: {o.session_name}",
+        "hint": "A debug session is already running. Focus on it or kill it first.",
+    }),
+    DebugSessionStatus.UNAVAILABLE: (503, lambda o: {"success": False, "error": o.reason}),
+    DebugSessionStatus.COMMAND_TOO_LONG: (500, lambda o: {"success": False, "error": o.reason}),
+    DebugSessionStatus.SPAWN_FAILED: (500, lambda o: {
+        "success": False,
+        "error": "Failed to create terminal session",
+        "hint": "Check the orchestrator log for why the terminal did not start.",
+    }),
+}
 
 
 @control_issue_router.post("/api/issues/{issue_number}/debug-session")
-async def launch_debug_session(  # noqa: C901 - debug session with validation and setup phases
+async def launch_debug_session(
     issue_number: int,
     deps: ControlApiIssueDependency,
 ) -> JSONResponse:
-    """Launch an interactive debug session for a blocked issue."""
+    """Launch an interactive debug session for a blocked issue.
+
+    Transport only (#9012): the session launcher owns the launch and answers
+    with one typed outcome, which is all this maps.
+    """
     orchestrator = deps.get_orchestrator()
     if orchestrator is None:
         return JSONResponse(
             {"success": False, "error": "Orchestrator not initialized"},
             status_code=503,
         )
-
-    config = orchestrator.config
-    worktree = get_worktree_path(config, issue_number)
-    if not worktree.exists():
-        return JSONResponse({
-            "success": False,
-            "error": f"Worktree not found: {worktree}",
-            "hint": "The worktree may have been cleaned up. The issue needs to be re-run first.",
-        }, status_code=404)
-
-    issue = _find_debug_issue(deps, orchestrator, issue_number)
-
-    if not issue:
-        return JSONResponse({
-            "success": False,
-            "error": f"Issue #{issue_number} not found",
-            "hint": "The issue may have been closed or doesn't exist.",
-        }, status_code=404)
-
-    agent_type = issue.agent_type
-    if not agent_type:
-        return JSONResponse({
-            "success": False,
-            "error": "Issue has no agent type label",
-            "hint": "Add an agent label (e.g., 'agent:claude') to the issue.",
-        }, status_code=400)
-
-    agent_config = config.agents.get(agent_type)
-    if not agent_config:
-        return JSONResponse({
-            "success": False,
-            "error": f"No agent config for {agent_type}",
-            "hint": "Check your orchestrator configuration.",
-        }, status_code=400)
-
-    session_name = f"debug-{issue_number}"
-    if orchestrator.deps.runner.session_exists(issue_number, session_name):
-        return JSONResponse({
-            "success": False,
-            "error": f"Debug session already exists: {session_name}",
-            "hint": "A debug session is already running. Focus on it or kill it first.",
-        }, status_code=409)
-
-    debug_context = (
-        "This is an INTERACTIVE DEBUG SESSION. A previous automated run failed or was blocked. "
-        "Work with the user to investigate and fix the issue. When done, the user will run "
-        "'coding-done --resume' to continue the orchestrator flow."
-    )
-    # The engine's one composition of a launch prompt: the issue's standing
-    # rulings first, the coder addendum after (#8141); unavailable refuses.
-    prepared = orchestrator.deps.launch_prompt.prepare(kind=SessionKind.CODE, issue_number=issue_number)
-    if isinstance(prepared, LaunchPromptUnavailable):
-        return JSONResponse({"success": False, "error": prepared.reason}, status_code=503)
-    debug_prompt = prepared.compose(agent_config.render_initial_prompt(
-        issue_number=issue_number, issue_title=issue.title, worktree=worktree,
-        existing_work=debug_context, task_kind=SessionKind.CODE.value,
-    ))
-
-    try:
-        run_assets = orchestrator.deps.issue_run_allocator.allocate(IssueRunAllocation(
-            terminal_id=session_name,
-            worktree_path=worktree,
-            session_name=session_name,
-            session_key=SessionKey(issue.key, SessionKind.CODE),
-            issue_number=issue_number,
-            agent_label=agent_type,
-            backend=config.terminal_adapter or "subprocess",
-        ))
-    except IssueRunEvidenceUnavailable as exc:
-        return JSONResponse({"success": False, "error": str(exc)}, status_code=503)
-    # The prompt is delivered from its run's file, never on the command line (#9012).
-    launch_prompt = orchestrator.deps.session_output.write_session_prompt(run_assets.run_dir, debug_prompt)
-    base_command = agent_config.get_command_for_prompt(
-        launch_prompt,
-        issue_number=issue_number,
-        issue_title=issue.title,
-        worktree=worktree,
-        task_kind=SessionKind.CODE.value,
-    )
-    completion_path = get_completion_path(agent_type, run_dir=run_assets.run_dir.name)
-    orchestrator.deps.session_output.update_manifest(
-        run_assets.run_dir,
-        {
-            "completion_path": completion_path,
-            "issue_number": issue_number,
-            "agent_label": agent_type,
-        },
-    )
-
-    from ..control.session_env import (
-        build_session_env_exports,
-        completion_capability_export,
-    )
-
-    env_exports = build_session_env_exports(
-        config=config,
-        completion_path=completion_path,
-        session_id=session_name,
-        agent_label=agent_type,
-        issue_number=issue_number,
-        run_dir=run_assets.run_dir,
-        worktree_path=worktree,
-        callback_endpoint=orchestrator.deps.agent_callback_endpoint,
-    ) + completion_capability_export(orchestrator.deps.issue_run_allocator, run_assets)
-    # Bounded like every launch's (#9012): a command the OS would refuse is refused here.
-    try:
-        command = LaunchCommand.composed(env_exports, base_command)
-    except LaunchCommandTooLong as exc:
-        return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
-
-    logger.info(
-        "[debug-session] Launching for issue #%d: session=%s worktree=%s agent=%s",
-        issue_number,
-        session_name,
-        worktree,
-        agent_type,
-    )
-    session_created = orchestrator.deps.runner.create_session(
-        session_id=issue_number,
-        command=command.text,
-        working_dir=str(worktree),
-        title=f"Debug #{issue_number}",
-        session_name=session_name,
-    )
-
-    if not session_created:
-        return JSONResponse({
-            "success": False,
-            "error": "Failed to create terminal session",
-            "hint": "Check if tmux is running and accessible.",
-        }, status_code=500)
-
-    return JSONResponse({
-        "success": True,
-        "session_name": session_name,
-        "worktree_path": str(worktree),
-        "agent": agent_type.replace("agent:", ""),
-        "hint": "Debug session launched. When done, run 'coding-done --resume' to process completion.",
-    })
+    outcome = orchestrator.launch_debug_session(issue_number)
+    status_code, body = _DEBUG_SESSION_RESPONSES[outcome.status]
+    return JSONResponse(body(outcome), status_code=status_code)
 
 
 @control_issue_router.post("/api/issues/{issue_number}/retry")
