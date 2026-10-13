@@ -3,6 +3,7 @@
 from tests.unit.control.liveness_doubles import liveness_owner
 from issue_orchestrator.control.launch_prompt import IssueLaunchPrompt
 from issue_orchestrator.ports.coder_prompt import NO_CODER_PROMPT_ADDENDUM
+from tests.launch_prompt_helpers import delivered_prompt
 from tests.standing_ruling_helpers import IssueBodies, a_ruling, body_with, rulings_owner
 from issue_orchestrator.infra.config import Config
 
@@ -213,7 +214,7 @@ class TestDebugSessionEndpoint:
         mock_agent_config.render_initial_prompt.side_effect = (
             lambda **kw: f"IMPORTANT: {kw['existing_work']}\n\nWork on issue #{kw['issue_number']}"
         )
-        mock_agent_config.get_command_for_prompt.side_effect = lambda prompt, **kw: f"claude '{prompt}'"
+        mock_agent_config.get_command_for_prompt.side_effect = lambda prompt, **kw: f"claude '{prompt.instruction()}'"
         mock_orch.config.agents = {"agent:claude": mock_agent_config}
         ruling = a_ruling(text="Runtime stamping replaces the walk checker.")
         mock_orch.deps.launch_prompt = IssueLaunchPrompt(
@@ -265,18 +266,19 @@ class TestDebugSessionEndpoint:
         assert data["agent"] == "claude"
         assert "coding-done --resume" in data["hint"]
 
-        # The command carries the engine's composition: the rulings, then the debug context
         mock_agent_config.get_command_for_prompt.assert_called_once()
-        prompt = mock_agent_config.get_command_for_prompt.call_args.args[0]
         call_kwargs = mock_agent_config.get_command_for_prompt.call_args.kwargs
         assert call_kwargs["issue_number"] == 123
         assert call_kwargs["issue_title"] == "Test Issue"
         assert call_kwargs["worktree"] == worktree
-        assert prompt.index(ruling.text) < prompt.index("DEBUG SESSION")
 
         # Verify session was created with correct args
         mock_orch.deps.runner.create_session.assert_called_once()
         call_kwargs = mock_orch.deps.runner.create_session.call_args.kwargs
+        # The agent is told to read the engine's composition from its run's
+        # prompt file (#9012): the rulings, then the debug context
+        prompt = delivered_prompt(call_kwargs["command"])
+        assert prompt.index(ruling.text) < prompt.index("DEBUG SESSION")
         assert call_kwargs["session_id"] == 123
         assert call_kwargs["working_dir"] == str(worktree)
         assert call_kwargs["session_name"] == "debug-123"

@@ -12,6 +12,7 @@ All artifacts for a session live in a single run directory:
         validation-state.json   # Retry flow state
         validation-errors.txt   # Human-readable errors
         retry-prompt.md         # Retry prompt for agent
+        session-prompt.txt      # Launch prompt the agent is told to read
         failure-diagnostic-*.json  # Failure diagnostics
         worktree.json           # Worktree metadata
         ...
@@ -28,6 +29,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from ..domain.artifact_contracts import ValidationOutcome
+    from ..domain.launch_prompt_delivery import LaunchPromptFile
     from ..domain.exchange_chapter import ExchangeChapterSidecar
     from ..domain.review_exchange_run import ReviewExchangeRun
 
@@ -435,6 +437,22 @@ class SessionOutput(Protocol):
 
         Returns:
             Path to the written prompt file
+        """
+        ...
+
+    def write_session_prompt(
+        self,
+        run_dir: Path,
+        content: str,
+    ) -> "LaunchPromptFile":
+        """Persist a launch prompt whole; the launch delivers it from this file (#9012).
+
+        Args:
+            run_dir: Path to the run directory
+            content: The complete rendered launch prompt
+
+        Returns:
+            The written prompt file, sized from *content*
         """
         ...
 

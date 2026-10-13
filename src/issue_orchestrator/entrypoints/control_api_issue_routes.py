@@ -378,13 +378,6 @@ async def launch_debug_session(  # noqa: C901 - debug session with validation an
         issue_number=issue_number, issue_title=issue.title, worktree=worktree,
         existing_work=debug_context, task_kind=SessionKind.CODE.value,
     ))
-    base_command = agent_config.get_command_for_prompt(
-        debug_prompt,
-        issue_number=issue_number,
-        issue_title=issue.title,
-        worktree=worktree,
-        task_kind=SessionKind.CODE.value,
-    )
 
     try:
         run_assets = orchestrator.deps.issue_run_allocator.allocate(IssueRunAllocation(
@@ -398,6 +391,15 @@ async def launch_debug_session(  # noqa: C901 - debug session with validation an
         ))
     except IssueRunEvidenceUnavailable as exc:
         return JSONResponse({"success": False, "error": str(exc)}, status_code=503)
+    # The prompt is delivered from its run's file, never on the command line (#9012).
+    launch_prompt = orchestrator.deps.session_output.write_session_prompt(run_assets.run_dir, debug_prompt)
+    base_command = agent_config.get_command_for_prompt(
+        launch_prompt,
+        issue_number=issue_number,
+        issue_title=issue.title,
+        worktree=worktree,
+        task_kind=SessionKind.CODE.value,
+    )
     completion_path = get_completion_path(agent_type, run_dir=run_assets.run_dir.name)
     orchestrator.deps.session_output.update_manifest(
         run_assets.run_dir,

@@ -21,6 +21,7 @@ from .host_rate_limit import HostRateLimitWindow
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from .session_key import SessionKey  # re-exported for callers
 from .issue_run_evidence import ReworkTarget
+from .launch_prompt_delivery import LaunchPromptFile, require_launch_command_within_bound
 from .session_kind import CompletionProtocol, SessionKind
 from .standing_ruling import parse_upheld_rulings
 from .sandbox_scope import (
@@ -969,6 +970,7 @@ class AgentConfig:
     # If set, this is used instead of provider.build_command()
     # For one-shot mode, add -p flag (Claude), use 'exec' (Codex), or -p (Gemini)
     # Note: {system_prompt} includes completion instructions + "Read {prompt} for task instructions"
+    # Note: a launch's {initial_prompt} is the instruction to read its persisted prompt file (#9012)
     command: str = "claude -p {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt '{system_prompt}' '{initial_prompt}'"
     # Optional override for hook verification AI agent (e.g., "claude-code")
     meta_agent: Optional[str] = None
@@ -1078,6 +1080,10 @@ class AgentConfig:
         If a provider is configured, uses the provider's build_command() method.
         Otherwise, falls back to the custom command template.
 
+        The rendered template prompt rides on the command line, so this suits only
+        a template-sized prompt (a review exchange's bootstrap). An engine-composed
+        launch prompt is persisted and goes through :meth:`get_command_for_prompt`.
+
         Args:
             issue_number: The GitHub issue number
             issue_title: The issue title
@@ -1098,7 +1104,7 @@ class AgentConfig:
             existing_work=existing_work,
             task_kind=task_kind,
         )
-        return self.get_command_for_prompt(
+        return self._command_carrying(
             rendered_prompt,
             issue_number=issue_number,
             issue_title=issue_title,
@@ -1111,7 +1117,41 @@ class AgentConfig:
 
     def get_command_for_prompt(
         self,
-        rendered_prompt: str,
+        prompt: LaunchPromptFile,
+        *,
+        worktree: Path,
+        issue_number: int = 0,
+        issue_title: str = "",
+        pr_number: Optional[int] = None,
+        task_kind: str = "code",
+        evidence_read_roots: tuple[Path, ...] = (),
+        extra_provider_args: Optional[dict[str, Any]] = None,
+    ) -> str:
+        """Build an agent command that delivers a persisted launch prompt.
+
+        The prompt never rides on the command line (#9012): every provider, and
+        a custom ``command`` template's ``{initial_prompt}``, receives the short
+        instruction to read *prompt*'s file, so the command stays bounded however
+        long the engine-composed prompt grows.
+
+        ``evidence_read_roots`` is the read-only god-view grant for a tech-lead
+        failure investigation (empty otherwise): the sandbox reads those roots
+        while writes stay confined to ``worktree`` (#6824 R5).
+        """
+        return self._command_carrying(
+            prompt.instruction(),
+            worktree=worktree,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            pr_number=pr_number,
+            task_kind=task_kind,
+            evidence_read_roots=evidence_read_roots,
+            extra_provider_args=extra_provider_args,
+        )
+
+    def _command_carrying(
+        self,
+        argv_prompt: str,
         *,
         worktree: Path,
         issue_number: int = 0,
@@ -1122,11 +1162,10 @@ class AgentConfig:
         evidence_read_roots: tuple[Path, ...] = (),
         extra_provider_args: Optional[dict[str, Any]] = None,
     ) -> str:
-        """Build an agent command for an already-rendered prompt.
+        """Build the agent command whose prompt argument is *argv_prompt*.
 
-        ``evidence_read_roots`` is the read-only god-view grant for a tech-lead
-        failure investigation (empty otherwise): the sandbox reads those roots
-        while writes stay confined to ``worktree`` (#6824 R5).
+        Raises :class:`LaunchCommandTooLong` rather than return a command the OS
+        would refuse to start.
         """
         prompt_for_command = prompt_file or (
             self.prompt_relative if self.prompt_relative else str(self.prompt_path)
@@ -1154,20 +1193,20 @@ class AgentConfig:
         if self.provider:
             # The worktree anchors the sandbox's read/write roots; the task kind
             # selects the role. Each provider adapter must enforce or fail loud.
-            return self._build_provider_command(
-                rendered_prompt,
+            return require_launch_command_within_bound(self._build_provider_command(
+                argv_prompt,
                 prompt_for_command,
                 task_kind,
                 extra_provider_args,
                 working_directory=worktree,
                 sandbox_scope=sandbox_scope,
-            )
+            ))
 
         # Legacy template-based command building (never sandboxed — guarded above)
         from issue_orchestrator.resources import get_completion_instructions
 
         # Escape single quotes in the prompt for shell safety
-        escaped_prompt = rendered_prompt.replace("'", "'\\''")
+        escaped_prompt = argv_prompt.replace("'", "'\\''")
 
         # Build the full system prompt with completion instructions
         completion_docs = get_completion_instructions(task_kind)
@@ -1202,9 +1241,9 @@ class AgentConfig:
                 "--permission-mode {permission_mode} --model {model} "
                 "--append-system-prompt '{system_prompt}'"
             )
-            return template.format(**format_kwargs)
+            return require_launch_command_within_bound(template.format(**format_kwargs))
 
-        return self.command.format(**format_kwargs)
+        return require_launch_command_within_bound(self.command.format(**format_kwargs))
 
     def _build_provider_command(
         self,
@@ -1219,7 +1258,8 @@ class AgentConfig:
         """Build command using the configured provider.
 
         Args:
-            prompt: The fully rendered prompt to send to the agent
+            prompt: The prompt argument to send to the agent: a launch prompt's
+                read-the-file instruction, or a template-sized prompt
             prompt_file: Path to the prompt/instructions file (for system prompt)
             task_kind: The session kind value (e.g., "code", "rework", "review", "tech-lead").
             extra_provider_args: Per-issue overrides (e.g., from labels) merged on top

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Callable, Protocol
 from ..domain.issue_run_evidence import ReworkTarget
 from ..domain.issue_key import IssueKey
 from ..domain.launch_prompt import LaunchPromptUnavailable, PreparedLaunchPrompt
+from ..domain.launch_prompt_delivery import LaunchPromptFile
 from ..domain.models import (
     AgentConfig,
     Issue,
@@ -115,7 +116,7 @@ class LaunchRetryGuardClearer(Protocol):
 
 
 class PromptPersister(Protocol):
-    def __call__(self, run_dir: Path, prompt_text: str) -> str: ...
+    def __call__(self, run_dir: Path, prompt_text: str) -> LaunchPromptFile: ...
 
 
 class ProviderCommandWrapper(Protocol):
@@ -485,9 +486,9 @@ def launch_rework_session(
             existing_work=existing_work,
         )
         rendered_prompt = prepared_coder_prompt.compose(rendered_prompt)
-        prompt_path = deps.persist_session_prompt(run.run_dir, rendered_prompt)
+        launch_prompt = deps.persist_session_prompt(run.run_dir, rendered_prompt)
         base_command = agent_config.get_command_for_prompt(
-            rendered_prompt,
+            launch_prompt,
             issue_number=issue_number,
             issue_title=issue_title,
             worktree=worktree_path,
@@ -500,7 +501,7 @@ def launch_rework_session(
             run.run_dir,
             {
                 "completion_path": completion_path,
-                "session_prompt_path": prompt_path,
+                "session_prompt_path": str(launch_prompt.path),
             },
         )
         env_exports = deps.build_session_env(
@@ -593,7 +594,7 @@ def launch_rework_session(
             "run_dir": str(run.run_dir),
             "completion_path": completion_path,
             "completion_path_absolute": str(full_completion_path),
-            "session_prompt_path": prompt_path,
+            "session_prompt_path": str(launch_prompt.path),
         }))
 
         update_rework_cycle_label(

@@ -53,6 +53,7 @@ from ..domain.launch_prompt import (
     LaunchPromptUnavailable,
     PreparedLaunchPrompt,
 )
+from ..domain.launch_prompt_delivery import LaunchPromptFile
 from ..domain.session_run import SessionRunAssets
 from ..ports.issue_run_allocator import IssueRunAllocator
 from .worktree import WorktreeSetupError
@@ -965,6 +966,68 @@ class SessionLauncher:
                 suffix="coding",
             )
 
+            # Check for existing work and rebase status
+            existing_work = describe_worktree_state(
+                worktree_path,
+                self._working_copy,
+                seed_ref=self.config.worktree_seed_ref,
+                rebase_failed=worktree_info.rebase_failed,
+                base_branch=worktree_info.base_branch,
+            )
+
+            # Build command. The prompt is persisted whole and the command carries
+            # only the instruction to read it (#9012), before the in-progress label:
+            # a prompt that cannot be delivered fails the launch before that mutation.
+            rendered_prompt = agent_config.render_initial_prompt(
+                issue_number=issue.number,
+                issue_title=issue.title,
+                worktree=worktree_path,
+                existing_work=existing_work,
+                task_kind=kind.value,
+            )
+            rendered_prompt = prepared_coder_prompt.compose(rendered_prompt)
+            if tech_lead_inputs.prompt_addendum:
+                rendered_prompt = f"{rendered_prompt}\n\n{tech_lead_inputs.prompt_addendum}"
+            launch_prompt = self._persist_session_prompt(run.run_dir, rendered_prompt)
+            base_command = agent_config.get_command_for_prompt(
+                launch_prompt,
+                issue_number=issue.number,
+                issue_title=issue.title,
+                worktree=worktree_path,
+                task_kind=kind.value,
+                evidence_read_roots=tech_lead_inputs.read_roots,
+                extra_provider_args=extra_args,
+            )
+            base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir, extra_provider_args=extra_args)
+            completion_path = get_completion_path(issue.agent_type, run_dir=run.run_dir.name)
+            self._session_output.update_manifest(
+                run.run_dir,
+                {
+                    "completion_path": completion_path,
+                    "session_prompt_path": str(launch_prompt.path),
+                },
+            )
+            env_exports = self._build_session_env(
+                completion_path=completion_path,
+                session_id=run.session_name,
+                agent_label=issue.agent_type,
+                issue_number=issue.number,
+                run_assets=run,
+                worktree_path=worktree_path,
+            )
+            if self.config.e2e_pr_labels:
+                labels_str = ",".join(self.config.e2e_pr_labels)
+                env_exports += f" E2E_PR_LABELS='{labels_str}'"
+            command = f"{env_exports} && {base_command}"
+            logger.info(
+                "[launch] Issue session command: issue=%s session=%s worktree=%s completion=%s command=%s",
+                issue.number,
+                session_name,
+                worktree_path,
+                completion_path,
+                command,
+            )
+
             # Add in-progress label
             step_start = time.time()
             in_progress_label = self._lm.in_progress
@@ -998,66 +1061,6 @@ class SessionLauncher:
                 return label.refused("Failed to add in-progress label")
             label_time = time.time() - step_start
             logger.info("[launch] Label added in %.1fs", label_time)
-
-            # Check for existing work and rebase status
-            existing_work = describe_worktree_state(
-                worktree_path,
-                self._working_copy,
-                seed_ref=self.config.worktree_seed_ref,
-                rebase_failed=worktree_info.rebase_failed,
-                base_branch=worktree_info.base_branch,
-            )
-
-            # Build command
-            rendered_prompt = agent_config.render_initial_prompt(
-                issue_number=issue.number,
-                issue_title=issue.title,
-                worktree=worktree_path,
-                existing_work=existing_work,
-                task_kind=kind.value,
-            )
-            rendered_prompt = prepared_coder_prompt.compose(rendered_prompt)
-            if tech_lead_inputs.prompt_addendum:
-                rendered_prompt = f"{rendered_prompt}\n\n{tech_lead_inputs.prompt_addendum}"
-            prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
-            base_command = agent_config.get_command_for_prompt(
-                rendered_prompt,
-                issue_number=issue.number,
-                issue_title=issue.title,
-                worktree=worktree_path,
-                task_kind=kind.value,
-                evidence_read_roots=tech_lead_inputs.read_roots,
-                extra_provider_args=extra_args,
-            )
-            base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir, extra_provider_args=extra_args)
-            completion_path = get_completion_path(issue.agent_type, run_dir=run.run_dir.name)
-            self._session_output.update_manifest(
-                run.run_dir,
-                {
-                    "completion_path": completion_path,
-                    "session_prompt_path": prompt_path,
-                },
-            )
-            env_exports = self._build_session_env(
-                completion_path=completion_path,
-                session_id=run.session_name,
-                agent_label=issue.agent_type,
-                issue_number=issue.number,
-                run_assets=run,
-                worktree_path=worktree_path,
-            )
-            if self.config.e2e_pr_labels:
-                labels_str = ",".join(self.config.e2e_pr_labels)
-                env_exports += f" E2E_PR_LABELS='{labels_str}'"
-            command = f"{env_exports} && {base_command}"
-            logger.info(
-                "[launch] Issue session command: issue=%s session=%s worktree=%s completion=%s command=%s",
-                issue.number,
-                session_name,
-                worktree_path,
-                completion_path,
-                command,
-            )
 
             # Create terminal session
             step_start = time.time()
@@ -1138,7 +1141,7 @@ class SessionLauncher:
                 "run_dir": str(run.run_dir),
                 "completion_path": completion_path,
                 "completion_path_absolute": str(full_completion_path),
-                "session_prompt_path": prompt_path,
+                "session_prompt_path": str(launch_prompt.path),
             }
             if from_scratch_pending:
                 session_started_payload["review_cache_boundary_started_at"] = run.started_at
@@ -1363,19 +1366,11 @@ class SessionLauncher:
                 suffix="validation_retry",
             )
 
-            label = self._retry_in_progress(
-                kind, issue, AddLabelAction, "validation retry launched",
-                "launch_validation_retry_in_progress_label",
-            )
-            if not label.ok:
-                log_transition("issue", issue.number, "LAUNCHING", "FAILED", "in-progress label failed")
-                self._release_claim_if_held(issue.number, claim)
-                return label.refused("Failed to add in-progress label")
-
-            prompt_path = self._persist_session_prompt(run.run_dir, retry_prompt)
+            # Delivered from its file (#9012), before the in-progress label.
+            launch_prompt = self._persist_session_prompt(run.run_dir, retry_prompt)
             self._session_output.write_retry_prompt(run.run_dir, retry_prompt)
             base_command = agent_config.get_command_for_prompt(
-                retry_prompt,
+                launch_prompt,
                 issue_number=issue.number,
                 issue_title=issue.title,
                 worktree=worktree_path,
@@ -1388,7 +1383,7 @@ class SessionLauncher:
                 run.run_dir,
                 {
                     "completion_path": completion_path,
-                    "session_prompt_path": prompt_path,
+                    "session_prompt_path": str(launch_prompt.path),
                 },
             )
             env_exports = self._build_session_env(
@@ -1409,6 +1404,15 @@ class SessionLauncher:
                 completion_path,
                 command,
             )
+
+            label = self._retry_in_progress(
+                kind, issue, AddLabelAction, "validation retry launched",
+                "launch_validation_retry_in_progress_label",
+            )
+            if not label.ok:
+                log_transition("issue", issue.number, "LAUNCHING", "FAILED", "in-progress label failed")
+                self._release_claim_if_held(issue.number, claim)
+                return label.refused("Failed to add in-progress label")
 
             session_created = not self._refuse_unapproved(issue.number) and self._spawn(session_name, command, worktree_path, issue.title, agent_config)
             if not session_created:
@@ -1463,7 +1467,7 @@ class SessionLauncher:
                 "run_dir": str(run.run_dir),
                 "completion_path": completion_path,
                 "completion_path_absolute": str(full_completion_path),
-                "session_prompt_path": prompt_path,
+                "session_prompt_path": str(launch_prompt.path),
                 "retry_count": retry_count,
             }))
             self._trigger_issue_session_state_transitions(issue, session_name, agent_config.timeout_minutes)
@@ -1731,9 +1735,9 @@ class SessionLauncher:
                 existing_work=existing_work,
                 task_kind=SessionKind.REVIEW.value,
             ))
-            prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
+            launch_prompt = self._persist_session_prompt(run.run_dir, rendered_prompt)
             base_command = agent_config.get_command_for_prompt(
-                rendered_prompt,
+                launch_prompt,
                 issue_number=review.issue_number,
                 issue_title=f"Review PR #{review.pr_number}",
                 worktree=worktree_path,
@@ -1752,7 +1756,7 @@ class SessionLauncher:
                 run.run_dir,
                 {
                     "completion_path": completion_path,
-                    "session_prompt_path": prompt_path,
+                    "session_prompt_path": str(launch_prompt.path),
                 },
             )
             env_exports = self._build_session_env(
@@ -1844,7 +1848,7 @@ class SessionLauncher:
                 "run_dir": str(run.run_dir),
                 "completion_path": completion_path,
                 "completion_path_absolute": str(full_completion_path),
-                "session_prompt_path": prompt_path,
+                "session_prompt_path": str(launch_prompt.path),
             }))
 
             # State machine transition
@@ -2031,9 +2035,9 @@ class SessionLauncher:
                 existing_work=existing_work,
                 task_kind=SessionKind.RETROSPECTIVE_REVIEW.value,
             ))
-            prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
+            launch_prompt = self._persist_session_prompt(run.run_dir, rendered_prompt)
             base_command = agent_config.get_command_for_prompt(
-                rendered_prompt,
+                launch_prompt,
                 issue_number=review.issue_number,
                 issue_title=issue_title,
                 worktree=worktree_path,
@@ -2052,7 +2056,7 @@ class SessionLauncher:
                 run.run_dir,
                 {
                     "completion_path": completion_path,
-                    "session_prompt_path": prompt_path,
+                    "session_prompt_path": str(launch_prompt.path),
                 },
             )
             env_exports = self._build_session_env(
@@ -2132,7 +2136,7 @@ class SessionLauncher:
                 "run_dir": str(run.run_dir),
                 "completion_path": completion_path,
                 "completion_path_absolute": str(full_completion_path),
-                "session_prompt_path": prompt_path,
+                "session_prompt_path": str(launch_prompt.path),
                 "trigger_label": review.trigger_label,
             }))
 
@@ -2193,10 +2197,9 @@ class SessionLauncher:
             return LaunchResult.required_input_unavailable(prepared.reason)
         return prepared
 
-    def _persist_session_prompt(self, run_dir: Path, prompt_text: str) -> str:
-        """Persist rendered launch prompt into run-scoped artifacts."""
-        prompt_path = self._session_output.write_session_prompt(run_dir, prompt_text)
-        return str(prompt_path)
+    def _persist_session_prompt(self, run_dir: Path, prompt_text: str) -> LaunchPromptFile:
+        """Persist the rendered launch prompt whole; the launch delivers it from there (#9012)."""
+        return self._session_output.write_session_prompt(run_dir, prompt_text)
 
     def _wrap_provider_command(
         self,
