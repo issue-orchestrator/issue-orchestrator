@@ -40,6 +40,7 @@ from ..domain.models import (
 from ..ports import EventSink, make_trace_event, RepositoryHost
 from .awaiting_merge_reconciler import AwaitingMergeReconciler
 from .ci_failure_triage import CiFailureTriage
+from .external_pr_adoption import ExternalPullRequestAdoption
 from .integration_branch import IntegrationBranchOwner
 from .merge_queue_coordinator import MergeQueueCoordinator
 from .retrospective_review import discover_retrospective_review_issues
@@ -233,10 +234,19 @@ class GitHubWorkflow:
         """
         if include_general_scans:
             issue_branches = self.pr_scanner.load_issue_branches()
+            self.adopt_external_prs(state, issue_branches=issue_branches)
             self.scan_needs_code_review_prs(state, issue_branches=issue_branches)
             self.scan_needs_rework_prs(state, issue_branches=issue_branches)
             self.scan_retrospective_review_issues(state)
         self.scan_awaiting_merge_followups(state)
+
+    def adopt_external_prs(self, state: "OrchestratorState", *, issue_branches: dict[int, str]) -> None:
+        """Adopt or refuse externally authored PRs into the integration effort (#9499)."""
+        if not self.config.integration.enabled:
+            return
+        assert self.label_manager is not None, "integration mode needs the label manager"
+        adoption = ExternalPullRequestAdoption(self.config, self.repository_host, self.label_manager)
+        state.discovered_integration_steps.extend(adoption.discover(state, issue_branches=issue_branches))
 
     def _integration_owner(self) -> IntegrationBranchOwner | None:
         """This pass's integration-branch owner when the mode is on (#8144)."""

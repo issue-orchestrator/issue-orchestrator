@@ -38,7 +38,7 @@ from issue_orchestrator.domain.integration_branch import (
     delivered_tip,
     delivery_marker,
 )
-from issue_orchestrator.domain.models import Issue, OrchestratorState, SessionHistoryEntry
+from issue_orchestrator.domain.models import ORCHESTRATOR_PR_MARKER, Issue, OrchestratorState, SessionHistoryEntry
 from issue_orchestrator.events import EventName
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.config_models import IntegrationConfig
@@ -88,7 +88,7 @@ class _World:
             standing_rulings=self.rulings, clock=self.clock,
         )
 
-    def approved_pr(
+    def approved_pr(  # io's own PR: its body carries io's marker (#9499)
         self, issue_number: int, pr_number: int, head: str, *, mergeable_state: str = "clean",
         current: bool = True, base: str = "integration", labels: list[str] | None = None,
         rollup: str | None = "SUCCESS",
@@ -98,7 +98,7 @@ class _World:
         self.host.issues.append(issue)
         pr = PRInfo(
             number=pr_number, title=f"Fix {issue_number}", url=f"https://github.com/owner/repo/pull/{pr_number}",
-            branch=f"{issue_number}-fix", body=f"Closes #{issue_number}", state="open",
+            branch=f"{issue_number}-fix", body=f"Closes #{issue_number}\n\n*{ORCHESTRATOR_PR_MARKER}*", state="open",
             labels=labels if labels is not None else [self.labels.code_reviewed],
             mergeable_state=mergeable_state, base_branch=base, head_sha=head,
             status_check_rollup=rollup,  # type: ignore[arg-type]

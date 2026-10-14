@@ -364,8 +364,9 @@ cat "$ISSUE_ORCHESTRATOR_RUN_DIR/tech-lead-data/board-snapshot.json"
 ```
 
 It contains active sessions (type/state/age, exact `terminal_id`/`run_id`
-generation, plus `idle_minutes`/`commits_ahead` hung-evidence), pending queues with reasons,
-blocked issues, `blocked_open_prs` (open PRs held by a blocking label),
+generation, plus `idle_minutes`/`commits_ahead` hung-evidence), pending queues with reasons
+(an entry for an adopted, externally authored PR ends `[origin:external]`: not io's own
+work, so keep it apart when you weigh io's rework rounds and cost), blocked issues, `blocked_open_prs` (open PRs held by a blocking label),
 `recent_failures` (context), `problem_cohort` (the issue
 numbers a health review owns act-level authority over, empty otherwise), open
 pattern case files, per-area distinct patterns plus shipped-fix counts, a

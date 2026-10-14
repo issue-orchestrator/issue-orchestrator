@@ -13,7 +13,9 @@ hand (``.coord/integration_merger.sh``):
   review, ``merge_after``), checks green on a head that already CONTAINS the
   integration tip, no person's hold on the issue or PR (``needs-human`` of
   either scope, #7678), and no standing ruling on the issue (#8141): a PR whose
-  issue carries one is handed to a person to check against it instead.
+  issue carries one is handed to a person to check against it instead. Only
+  io's own PRs or adopted external ones qualify (#9499): io never reworks,
+  updates or merges a PR whose provenance does not admit it.
 * **It brings an approved PR up to the integration tip mechanically** before
   any agent rework: GitHub merges the tip into the PR branch server-side
   (guarded by the expected head). No session runs and no rework cycle is
@@ -64,12 +66,19 @@ from ..domain.integration_branch import (
     render_delivery_body,
     step_issue_number,
 )
+from ..domain.external_pr_adoption import (
+    AdoptExternalPullRequest,
+    MergeProvenance,
+    ReportRefusedExternalPullRequest,
+    merge_provenance,
+)
 from ..events import EventName
 from ..infra.logging_config import issue_log
 from ..ports import make_trace_event
 from ..ports.repository_host import RepositoryHostError
 from ..ports.standing_rulings import StandingRulingsUnavailable
 from .awaiting_merge_post_publish_policy import PostApprovalAction, build_escalation
+from .external_pr_adoption import adoption_step_refusal, write_adoption_step
 from .human_gates import holds_merge
 
 if TYPE_CHECKING:
@@ -120,6 +129,8 @@ class MergeGate(StrEnum):
     """Whether io may merge a PR into integration NOW, and if not, why."""
 
     OPEN = "open"
+    NOT_ADOPTED = "not_adopted"  # an external PR io never adopted (#9499)
+    LEFT_EFFORT = "left_effort"  # an adopted PR whose issue left the effort (#9499)
     HELD = "held"  # needs-human of either scope on the issue or the PR (#7678)
     GATE_NOT_PASSED = "gate_not_passed"  # the merge_after label is missing
     REWORK_REQUESTED = "rework_requested"  # needs-rework on the issue or the PR
@@ -150,6 +161,17 @@ class MergeGatekeeper:
     label_manager: "LabelManager"
     standing_rulings: "StandingRulings"
 
+    def admits(
+        self, *, branch: str, pr: "PRInfo", issue_labels: "Sequence[str]", pr_labels: "Sequence[str]",
+        gate_label: str,
+    ) -> MergeGate:
+        """Whether io may act on *pr* at all (no reads): its provenance, then a
+        person's hold, rework asked for, and the gate label."""
+        provenance = merge_provenance(branch=branch, pr_body=pr.body, pr_labels=pr_labels, issue_labels=issue_labels)
+        if not provenance.admitted:
+            return _PROVENANCE_GATES[provenance]
+        return self.person_or_gate(issue_labels=issue_labels, pr_labels=pr_labels, gate_label=gate_label)
+
     def person_or_gate(self, *, issue_labels: "Sequence[str]", pr_labels: "Sequence[str]", gate_label: str) -> MergeGate:
         """The label-only part (no reads): a person's hold, rework asked for on
         either item (the review-validity rule, review r4 F2), then the gate label."""
@@ -162,10 +184,11 @@ class MergeGatekeeper:
         return MergeGate.OPEN if gated else MergeGate.GATE_NOT_PASSED
 
     def judge(
-        self, *, issue_number: int, issue_labels: "Sequence[str]", pr: "PRInfo", gate_label: str,
+        self, *, branch: str, issue_number: int, issue_labels: "Sequence[str]", pr: "PRInfo", gate_label: str,
     ) -> MergeEligibility:
         """Every gate, the checks on exactly ``pr.head_sha`` included (one rollup read)."""
-        first = self.person_or_gate(issue_labels=issue_labels, pr_labels=pr.labels, gate_label=gate_label)
+        first = self.admits(branch=branch, pr=pr, issue_labels=issue_labels, pr_labels=pr.labels,
+                            gate_label=gate_label)
         if first is not MergeGate.OPEN:
             return MergeEligibility(first)
         if not pr.head_sha:
@@ -189,6 +212,12 @@ class MergeGatekeeper:
         ids = tuple(ruling.ruling_id for ruling in rulings)
         return MergeEligibility(MergeGate.RULED if ids else MergeGate.OPEN, rollup=rollup, ruling_ids=ids)
 
+
+#: An unadmitted provenance's gate: io leaves the PR alone (#9499).
+_PROVENANCE_GATES: dict[MergeProvenance, MergeGate] = {
+    MergeProvenance.NOT_ADOPTED: MergeGate.NOT_ADOPTED,
+    MergeProvenance.LEFT_EFFORT: MergeGate.LEFT_EFFORT,
+}
 
 #: Check rollup states and what they mean for a merge. ``None`` (no check
 #: reported on the head yet) is pending: a head io just updated has no checks
@@ -247,6 +276,12 @@ class IntegrationBranchOwner:
 
     def route(self, *, pr: "PRInfo", issue: "Issue", action: PostApprovalAction) -> IntegrationRouting:
         """Decide what happens to one reviewer-approved PR into integration."""
+        provenance = merge_provenance(branch=self.branch, pr_body=pr.body, pr_labels=pr.labels,
+                                      issue_labels=issue.labels)
+        if not provenance.admitted:
+            # Not io's to act on at all - no rework, update or merge (#9499):
+            # the adoption owner reports it instead.
+            return IntegrationRouting(_NOTHING)
         if action in ("REWORK_CONFLICT", "REWORK_CHECK_FAILED"):
             # A real conflict or a failed check: only an agent can fix it.
             return IntegrationRouting(action)
@@ -293,7 +328,8 @@ class IntegrationBranchOwner:
 
     def _merge_or_hand_over(self, *, pr: "PRInfo", issue: "Issue", head: str, tip: str) -> IntegrationRouting:
         verdict = self.gatekeeper.judge(
-            issue_number=issue.number, issue_labels=issue.labels, pr=pr, gate_label=self.gate_label(),
+            branch=self.branch, issue_number=issue.number, issue_labels=issue.labels, pr=pr,
+            gate_label=self.gate_label(),
         )
         if verdict.rollup is not None:
             pr.status_check_rollup = verdict.rollup.state  # the rework brief names it
@@ -479,7 +515,7 @@ def apply_integration_step(
         _publish(events, event_context, EventName.INTEGRATION_STEP_SKIPPED, step, reason=refusal)
         return ActionResult.skip(action, refusal, pr_number=action.pr_number or None)
     try:
-        detail = _write(step, host)
+        detail = _write(step, host, labels)
     except RepositoryHostError as error:
         logger.error("Integration step failed (%s): %s", describe_step(step), error)
         return ActionResult.fail_from(action, error, pr_number=action.pr_number or None)
@@ -499,8 +535,11 @@ def _refusal(step: IntegrationStep, *, gatekeeper: MergeGatekeeper) -> str | Non
     A merge is judged again, on fresh reads, by the same gatekeeper discovery
     asked: the PR must still be open, into the integration branch, at the head
     whose checks passed; every gate must still be open; and the tip it was
-    checked against must still be the tip.
+    checked against must still be the tip. An adoption step is re-checked by
+    its own owner (#9499).
     """
+    if isinstance(step, (AdoptExternalPullRequest, ReportRefusedExternalPullRequest)):
+        return adoption_step_refusal(step, gatekeeper.host)
     if not isinstance(step, (MergeIntoIntegration, UpdatePullRequestBranch)):
         return None
     host = gatekeeper.host
@@ -517,11 +556,12 @@ def _refusal(step: IntegrationStep, *, gatekeeper: MergeGatekeeper) -> str | Non
     assert pr is not None
     if isinstance(step, UpdatePullRequestBranch):
         # Updating needs no green checks or ruling check, only that io may
-        # still act on the PR at all: no person's hold, the gate still passed.
-        gate = gatekeeper.person_or_gate(issue_labels=issue_labels, pr_labels=pr_labels, gate_label=step.gate_label)
+        # still act on the PR at all: its provenance, no person's hold, the gate still passed.
+        gate = gatekeeper.admits(branch=step.integration_branch, pr=pr, issue_labels=issue_labels,
+                                 pr_labels=pr_labels, gate_label=step.gate_label)
         return None if gate is MergeGate.OPEN else f"PR #{step.pr_number}: io may not act on it now ({gate.value})"
     verdict = gatekeeper.judge(
-        issue_number=step.issue_number, issue_labels=issue_labels,
+        branch=step.integration_branch, issue_number=step.issue_number, issue_labels=issue_labels,
         pr=replace(pr, labels=list(pr_labels)), gate_label=step.gate_label,
     )
     if verdict.gate is not MergeGate.OPEN:
@@ -546,9 +586,11 @@ def _moved_since_discovery(
     return None
 
 
-def _write(step: IntegrationStep, host: "RepositoryHost") -> str | None:
+def _write(step: IntegrationStep, host: "RepositoryHost", labels: "LabelManager") -> str | None:
     """Perform *step*; a non-None return is GitHub refusing it without an error."""
-    if isinstance(step, MergeIntoIntegration):
+    if isinstance(step, (AdoptExternalPullRequest, ReportRefusedExternalPullRequest)):
+        write_adoption_step(step, host, labels)
+    elif isinstance(step, MergeIntoIntegration):
         title, message = merge_commit_message(
             pr_number=step.pr_number, title=step.pr_title, branch=step.integration_branch,
             head_sha=step.head_sha, tip=step.integration_tip,
@@ -586,7 +628,7 @@ def _publish(
     payload: dict[str, object] = {"step": type(step).__name__, "summary": describe_step(step), "reason": reason}
     payload.update(
         (attribute, getattr(step, attribute))
-        for attribute in ("issue_number", "pr_number", "head_sha", "integration_tip", "branch", "to_sha")
+        for attribute in ("issue_number", "pr_number", "head_sha", "integration_tip", "branch", "to_sha", "refusal")
         if hasattr(step, attribute)
     )
     events.publish(make_trace_event(name, context.enrich(payload) if context is not None else payload))

@@ -20,6 +20,7 @@ from issue_orchestrator.control.github_workflow import GitHubWorkflow
 from issue_orchestrator.control.integration_branch import apply_integration_step
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.planner import Planner
+from issue_orchestrator.control.pr_scanner import PRScanner
 from issue_orchestrator.control.planner_types import OrchestratorSnapshot
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.domain.integration_branch import (
@@ -28,7 +29,7 @@ from issue_orchestrator.domain.integration_branch import (
     MergedIntoBranch,
     delivered_tip,
 )
-from issue_orchestrator.domain.models import Issue, OrchestratorState, SessionHistoryEntry
+from issue_orchestrator.domain.models import ORCHESTRATOR_PR_MARKER, Issue, OrchestratorState, SessionHistoryEntry
 from issue_orchestrator.events import EventContext
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.config_models import IntegrationConfig
@@ -118,13 +119,13 @@ class _Engine:
         self.closed: set[int] = set()
 
     def approved_pr(self, issue_number: int, pr_number: int) -> PRInfo:
-        """A reviewer-approved PR into integration, branched from its current tip."""
+        """A reviewer-approved PR of io's own into integration, branched from its current tip."""
         self.github.issues.append(Issue(
             number=issue_number, title=f"Issue {issue_number}", labels=["agent:backend", "pr-pending"], state="open",
         ))
         pr = PRInfo(
             number=pr_number, title=f"Fix {issue_number}", url=f"https://github.com/owner/repo/pull/{pr_number}",
-            branch=f"{issue_number}-fix", body=f"Fixes #{issue_number}", state="open",
+            branch=f"{issue_number}-fix", body=f"Fixes #{issue_number}\n\n*{ORCHESTRATOR_PR_MARKER}*", state="open",
             labels=[self.labels.code_reviewed], mergeable_state="clean", base_branch="integration",
             status_check_rollup="SUCCESS",
             head_sha=self.github.commit(self.github.branches["integration"]),
@@ -137,10 +138,26 @@ class _Engine:
         ))
         return pr
 
+    def hand_opened_pr(self, issue_number: int, pr_number: int, *, in_effort: bool) -> PRInfo:
+        """A PR opened off to the side (#9499): no io marker, no labels, no io history."""
+        labels = ["agent:backend", *(["integrate:integration"] if in_effort else [])]
+        self.github.issues.append(Issue(number=issue_number, title=f"Issue {issue_number}", labels=labels))
+        self.github.labels[issue_number] = set(labels)
+        pr = PRInfo(
+            number=pr_number, title=f"Hand-made {issue_number}", url=f"https://github.com/owner/repo/pull/{pr_number}",
+            branch=f"{issue_number}-by-hand", body=f"Closes #{issue_number}", state="open", labels=[],
+            mergeable_state="clean", base_branch="integration", status_check_rollup="SUCCESS",
+            head_sha=self.github.commit(self.github.branches["integration"]),
+        )
+        self.github.prs.setdefault(pr.branch, []).append(pr)
+        self.github.labels[pr_number] = set()
+        return pr
+
     def tick(self) -> None:
         """One engine tick: discover, plan, apply every integration action."""
         self.now += 61
         self.state.awaiting_merge_rollup_scan_timestamps.clear()
+        self.workflow.adopt_external_prs(self.state, issue_branches={})
         self.workflow.scan_awaiting_merge_followups(self.state)
         snapshot = OrchestratorSnapshot(
             issues=(), active_sessions=(), pending_reviews=(), pending_reworks=(), pending_tech_lead=(),
@@ -235,3 +252,43 @@ def test_a_true_conflict_goes_to_rework_and_a_ruling_to_a_person() -> None:
     assert [rework.pr_number for rework in engine.reworks][:1] == [319]
     assert [(e.pr_number, e.kind) for e in engine.escalations][:1] == [(320, "integration_ruling_check")]
     assert ruled.state == "open"
+
+
+def test_a_hand_opened_pr_in_the_effort_is_reviewed_merged_and_delivered_and_one_outside_is_refused() -> None:
+    """#9499 acceptance: the PR is the splice point. A hand-opened PR in the
+    effort enters io's own review lane, is merged into the effort branch once
+    io's reviewer approves it, and is listed in the delivery; one whose issue
+    is outside the effort is told why and never merged."""
+    engine = _Engine()
+    engine.config.code_review_agent, engine.config.code_review_label = "agent:reviewer", "needs-code-review"
+    engine.config.filtering.label = "integrate:integration"
+    engine.tick()  # creates the integration branch
+    adopted = engine.hand_opened_pr(231, 321, in_effort=True)
+    outside = engine.hand_opened_pr(232, 322, in_effort=False)
+
+    engine.tick()
+
+    assert set(adopted.labels) == {"needs-code-review", "origin:external"}
+    scan = PRScanner(engine.config, engine.github, InMemoryEventSink(), label_manager=engine.labels).scan_for_reviews(
+        [], [], issue_branches={},
+    )
+    assert [review.pr_number for review in scan.reviews] == [321]  # io's own review lane, and only it
+    # io's reviewer approves: what that review's completion records.
+    engine.github.remove_label(321, "needs-code-review")
+    engine.github.add_label(321, engine.labels.code_reviewed)
+    engine.state.session_history.append(SessionHistoryEntry(
+        issue_number=231, title="Issue 231", agent_type="agent:backend", status="completed",
+        runtime_minutes=0, pr_url=adopted.url,
+    ))
+    for _ in range(4):
+        engine.tick()
+
+    assert [merge["pr_number"] for merge in engine.github.pr_merges] == [321]
+    assert adopted.state == "merged" and outside.state == "open"
+    assert engine.closed == {231}
+    assert engine.state.integration_delivery is not None
+    assert engine.state.integration_delivery.merged_pr_numbers == (321,)
+    assert "#321 Hand-made 231" in engine.github.open_pr_refs[("integration", "main")].body
+    [refusal] = [comment["body"] for comment in engine.github.comments if comment["number"] == 322]
+    assert "issue #232 is not open in this engine's scope" in refusal
+    assert outside.labels == []

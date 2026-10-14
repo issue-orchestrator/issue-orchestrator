@@ -2273,7 +2273,11 @@ class IntegrationSettings(BaseModel):
                 " PR into it once its checks are green on a head containing the integration"
                 " tip, updates a behind PR mechanically before any agent rework, and keeps"
                 " one delivery PR (integration -> default branch) open for you to merge with"
-                " a merge commit. Cannot be combined with merge_queue.enabled."
+                " a merge commit. A PR opened outside io (no io marker) is adopted when it"
+                " targets the integration branch and references an issue labelled"
+                " integrate:<branch>: io labels it origin:external and runs it through its own"
+                " review, merge and delivery. Any other such PR is refused with a comment"
+                " and never merged. Cannot be combined with merge_queue.enabled."
             ),
             "section": "Integration Branch",
             "config_attr": "integration.enabled",
