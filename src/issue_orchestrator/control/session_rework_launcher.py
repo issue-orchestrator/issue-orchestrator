@@ -286,6 +286,20 @@ def _rework_launch_identity(
     return agent_config, issue_number, prepared_coder_prompt
 
 
+def _rework_launch_target(
+    rework: PendingRework, deps: ReworkLaunchDependencies,
+) -> "LaunchResult | tuple[AgentConfig, int, PreparedLaunchPrompt, int, str]":
+    """The launch identity, then the PR it reworks - while the integration
+    effort still admits it (#9499): re-asked here, before any launch effect."""
+    resolved = _rework_launch_identity(rework, deps)
+    if isinstance(resolved, LaunchResult):
+        return resolved
+    agent_config, issue_number, prepared_coder_prompt = resolved
+    pr_number, branch_name = resolve_rework_pr(deps.repository_host, rework, issue_number)
+    refused = deps.external_admission.refuse(kind=SessionKind.REWORK, issue_number=issue_number, pr_number=pr_number)
+    return refused if refused is not None else (agent_config, issue_number, prepared_coder_prompt, pr_number, branch_name)
+
+
 def launch_rework_session(
     rework: PendingRework,
     active_sessions: list[Session],
@@ -294,17 +308,13 @@ def launch_rework_session(
     work_claim: LaunchWorkClaim = NO_LAUNCH_WORK_CLAIM,
 ) -> LaunchResult:
     """Launch a rework session to fix issues found in review."""
-    resolved = _rework_launch_identity(rework, deps)
+    resolved = _rework_launch_target(rework, deps)
     if isinstance(resolved, LaunchResult):
         return resolved
-    agent_config, issue_number, prepared_coder_prompt = resolved
+    agent_config, issue_number, prepared_coder_prompt, pr_number, branch_name = resolved
 
     issue_key = rework.issue_key
     session_key = SessionKey(issue=issue_key, kind=SessionKind.REWORK)
-    pr_number, branch_name = resolve_rework_pr(deps.repository_host, rework, issue_number)
-    if refused := deps.external_admission.refuse(kind=SessionKind.REWORK, issue_number=issue_number,
-                                                 pr_number=pr_number):
-        return refused  # a PR the effort no longer admits is not reworked
 
     scoped = deps.scoped_rework.admit(rework, pr_number, work_claim=work_claim)
     if isinstance(scoped, LaunchResult):
