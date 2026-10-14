@@ -17,6 +17,8 @@ from issue_orchestrator.domain.external_pr_adoption import (
     IssueLink,
     LabelWrite,
     LaunchAdmission,
+    LaunchAuthority,
+    LaunchRequest,
     LaunchVerdict,
     LinkedIssueFacts,
     PullRequestFacts,
@@ -25,6 +27,9 @@ from issue_orchestrator.domain.external_pr_adoption import (
     adoption_label_writes,
     effort_governs,
     effort_label,
+    io_owned_pr,
+    launch_authority,
+    launch_refusal,
     judge_external_pull_request,
     merge_refusal,
     refusal_marker,
@@ -166,6 +171,54 @@ def test_an_issue_link_names_none_one_or_several_issues() -> None:
 )
 def test_which_prs_the_effort_governs(pr: PullRequestFacts, governed: bool) -> None:
     assert effort_governs("integration", pr) is governed
+
+
+ADOPTED = replace(PR, labels=frozenset({"origin:external"}))
+QUEUED = LaunchAuthority(effort="integration", issue_number=7, pr_number=70, agent="agent:backend")
+
+
+def _launch(request: LaunchRequest, pr: PullRequestFacts = ADOPTED, issue: LinkedIssueFacts = ISSUE) -> str | None:
+    return launch_refusal("integration", request, pr, issue=issue, custody=NOBODY)
+
+
+def _request(authority: LaunchAuthority | None = QUEUED, **overrides: object) -> LaunchRequest:
+    from issue_orchestrator.domain.session_kind import SessionKind
+
+    fields: dict[str, object] = {"kind": SessionKind.REWORK, "issue_number": 7, "pr_number": 70,
+                                 "authority": authority, "agent": None}
+    fields.update(overrides)
+    return LaunchRequest(**fields)  # type: ignore[arg-type]
+
+
+def test_queued_work_launches_against_its_authority_unchanged() -> None:
+    assert _launch(_request()) is None
+    assert "queued under the `other` effort" in (_launch(_request(replace(QUEUED, effort="other"))) or "")
+    assert "queued for PR #71" in (_launch(_request(replace(QUEUED, pr_number=71))) or "")
+    assert "names `agent:backend` now, not `agent:frontend`" in (
+        _launch(_request(replace(QUEUED, agent="agent:frontend"))) or "")
+
+
+def test_an_authority_keeps_custody_whatever_the_pr_says_now() -> None:
+    # Origin label dropped and retargeted: the PR's facts say "not governed".
+    elsewhere = replace(PR, base_branch="main")
+    assert _launch(_request(None), elsewhere) is None
+    assert _launch(_request(), elsewhere) is not None
+
+
+def test_a_pr_found_at_launch_is_never_one_the_effort_governs() -> None:
+    assert "found at launch" in (_launch(_request(None, resolved_at_launch=True)) or "")
+    assert _launch(_request(None, resolved_at_launch=True), replace(PR, body=IO_BODY)) is None
+
+
+def test_the_authority_is_built_from_exactly_the_admitted_pr_and_issue() -> None:
+    assert launch_authority("integration", ADOPTED, ISSUE) == QUEUED
+    assert launch_authority("integration", replace(PR, body=IO_BODY), ISSUE) is None
+
+
+def test_once_adopted_the_origin_label_decides_provenance() -> None:
+    assert io_owned_pr(IO_BODY, ["needs-code-review"])
+    assert not io_owned_pr(IO_BODY, ["origin:external"])
+    assert not io_owned_pr("Closes #7", [])
 
 
 def test_a_refused_launch_says_why_and_an_admitted_one_does_not() -> None:

@@ -183,9 +183,10 @@ class GitHubWorkflow:
                 SessionKind.REVIEW, r.issue_number, r.pr_number, None, r.agent_label))
             if admission is None:
                 continue
+            authority = admission.authority  # the admitted issue's agent picks the reviewer
             state.discovered_reviews.append(
                 DiscoveredReview(r.issue_number, r.pr_number, r.pr_url, r.branch_name,
-                                 governing_effort=admission.governing_effort)
+                                 agent_label=authority.agent if authority else r.agent_label, authority=authority)
             )
 
     def scan_needs_rework_prs(
@@ -229,15 +230,15 @@ class GitHubWorkflow:
                     r.agent_type,
                     r.rework_cycle,
                     feedback=r.feedback, scoped_request_keys=r.scoped_request_keys,
-                    governing_effort=admission.governing_effort,
+                    authority=admission.authority,
                 )
             )
 
     def _admitted(self, state: "OrchestratorState", request: LaunchRequest) -> LaunchAdmission | None:
         """THE admission rule before a review or rework of a PR the integration
-        effort governs is queued (#9499): the admission, carrying the effort the
-        work is queued under; None when it is not admitted. The launch asks again,
-        under that authority, before its effects."""
+        effort governs is queued (#9499): the admission, carrying the authority
+        the work is queued under; None when it is not admitted. The launch asks
+        again, against that unchanged authority, before its effects."""
         admission = pr_admission(routing_gate(self.config, self.repository_host, state), request)
         if admission.verdict is LaunchVerdict.ADMITTED:
             return admission

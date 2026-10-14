@@ -623,7 +623,7 @@ class Planner:
                         pr_url=review.pr_url,
                         branch_name=review.branch_name,
                         code_review_label=self.config.code_review_label or "",
-                        agent_label=review.agent_label, governing_effort=review.governing_effort,
+                        agent_label=review.agent_label, authority=review.authority,
                         reason=f"session completed with PR #{review.pr_number}",
                         expected=build_expected_for_mutation(),
                         issue_key=ik,
@@ -872,7 +872,7 @@ class Planner:
                     rework_cycle=rework.rework_cycle,
                     source=rework.source,
                     feedback=rework.feedback, scoped_request_keys=rework.scoped_request_keys,
-                    governing_effort=rework.governing_effort,
+                    authority=rework.authority,
                     reason=f"scan found PR needing rework (cycle {rework.rework_cycle})",
                 ))
                 logger.debug("Planner: queuing rework for issue #%d (cycle %d)",

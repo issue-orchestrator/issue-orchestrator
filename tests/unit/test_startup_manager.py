@@ -806,6 +806,37 @@ class TestStartupManagerCodeReviewRecovery:
         mock_repository_host.get_issue.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_leaves_an_adopted_pr_carrying_io_s_marker_to_the_gated_review_scan(
+        self,
+        startup_manager,
+        sample_state,
+        mock_repository_host,
+        mock_config,
+    ):
+        """#9499 r5 F9: once adopted, the origin label decides provenance - a
+        pasted marker never lets startup queue the PR without its authority."""
+        mock_config.agents = {}
+        mock_config.code_review_agent = "agent:reviewer"
+        mock_config.code_review_label = "needs-code-review"
+
+        from issue_orchestrator.ports import PRInfo
+        pr = PRInfo(
+            number=10,
+            url="https://github.com/owner/repo/pull/10",
+            title="Hand-made PR",
+            branch="1-feature",
+            labels=["needs-code-review", "origin:external"],
+            body=f"Closes #1\n\n{ORCHESTRATOR_PR_MARKER}",
+            state="open",
+        )
+        mock_repository_host.get_prs_with_label.return_value = [pr]
+
+        await startup_manager.run_startup(sample_state)
+
+        assert sample_state.pending_reviews == []
+        mock_repository_host.get_issue.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_ignores_pending_review_pr_from_prior_attempt_branch(
         self,
         startup_manager,

@@ -2,9 +2,10 @@
 
 A review or rework of a PR the integration effort governs (an adopted PR, or
 any external PR into the effort branch -
-:func:`~..domain.external_pr_adoption.effort_governs`) is queued under that
-effort's authority (``governing_effort`` on the queued item), then waits for a
-slot. Its issue may leave the effort or change its agent, its PR may lose its
+:func:`~..domain.external_pr_adoption.effort_governs`) is queued under a
+complete :class:`~..domain.external_pr_adoption.LaunchAuthority` (the effort,
+and exactly the PR, issue and agent it was admitted for), persisted with the
+queued item, then waits for a slot. Its issue may leave the effort or change its agent, its PR may lose its
 origin label, retarget, or point at another issue meanwhile. So each launch
 asks THE admission rule again - its FIRST stateful decision, before any
 provider, prompt or worktree step - on fresh reads, for exactly the PR, issue
@@ -15,11 +16,13 @@ and agent it would act as (:func:`~..domain.external_pr_adoption.launch_refusal`
 * unreadable -> a RETRYABLE_FAILURE, on the queue's bounded budget.
 
 The work counts as governed when its queued authority OR the PR's current
-facts say so: no later mix of edits erases that custody.
+facts say so: no later mix of edits erases that custody. Work queued under an
+authority whose effort this engine no longer runs (integration mode turned
+off, or another branch) fails closed: it is withdrawn, never launched unowned.
 
 Discovery asks the same question (:func:`pr_admission`) before it queues a
-review or a rework, and records the governing effort it finds on the fact the
-queued item is built from.
+review or a rework, and the authority it returns is the one the queued item
+carries (:func:`~..domain.external_pr_adoption.launch_authority` builds it).
 """
 
 from __future__ import annotations
@@ -35,10 +38,12 @@ from ..domain.external_pr_adoption import (
     LaunchRequest,
     LaunchVerdict,
     effort_governs,
+    launch_authority,
+    launch_refusal,
 )
 from ..infra.logging_config import issue_log
 from ..ports.repository_host import RepositoryHostError
-from .external_pr_adoption import ExternalPullRequestGate, write_gate
+from .external_pr_adoption import ExternalPullRequestGate, linked_issue_facts, write_gate
 from .session_launch_types import LaunchDisposition, LaunchResult
 
 if TYPE_CHECKING:
@@ -52,31 +57,37 @@ logger = logging.getLogger(__name__)
 def pr_admission(gate: ExternalPullRequestGate, request: LaunchRequest) -> LaunchAdmission:
     """Whether io may review or rework *request*'s PR as its issue's, on fresh
     reads: always for work no effort governs (by its queued authority or the
-    PR's current facts), otherwise only while THE admission rule admits it."""
+    PR's current facts), otherwise only while THE admission rule admits it -
+    the admission then carrying the authority such work is queued under."""
+    authority = request.authority
     if not gate.config.integration.enabled:
-        return LAUNCH_ADMITTED
+        if authority is None:
+            return LAUNCH_ADMITTED
+        return _withdrawn(f"queued under the `{authority.effort}` integration effort, which this engine no longer runs")
     pr_number, issue_number = request.pr_number, request.issue_number
     try:
         pr = gate.host.get_pr(pr_number)
         if pr is None:
-            return LaunchAdmission(LaunchVerdict.WITHDRAWN, f"PR #{pr_number} is gone")
+            # A PR found at launch that is not there is no PR the effort governs.
+            return LAUNCH_ADMITTED if request.resolved_at_launch else _withdrawn(f"PR #{pr_number} is gone")
         pr_labels = gate.host.get_issue_labels_fresh(pr_number)
         facts = gate.facts(pr, pr_labels=pr_labels)
-        governed = request.governing_effort is not None or effort_governs(gate.branch, facts)
-        if not governed:
+        if authority is None and not effort_governs(gate.branch, facts):
             return LAUNCH_ADMITTED
         issue = gate.host.get_issue(issue_number)
         if issue is None:
-            return LaunchAdmission(LaunchVerdict.WITHDRAWN, f"issue #{issue_number} is gone", gate.branch)
-        refused = gate.launch_refusal(
-            request, pr=pr, issue=issue, issue_labels=gate.host.get_issue_labels_fresh(issue_number),
-            pr_labels=pr_labels,
-        )
+            return _withdrawn(f"issue #{issue_number} is gone")
+        issue_facts = linked_issue_facts(gate.config, issue, labels=gate.host.get_issue_labels_fresh(issue_number))
+        refused = launch_refusal(gate.branch, request, facts, issue=issue_facts, custody=gate.custody.custody(issue_number))
     except RepositoryHostError as error:
         return LaunchAdmission(LaunchVerdict.UNREADABLE, f"PR #{pr_number} could not be re-read: {error}")
-    if refused is None:
-        return LaunchAdmission(LaunchVerdict.ADMITTED, governing_effort=gate.branch)
-    return LaunchAdmission(LaunchVerdict.WITHDRAWN, refused, gate.branch)
+    if refused is not None:
+        return _withdrawn(refused)
+    return LaunchAdmission(LaunchVerdict.ADMITTED, authority=launch_authority(gate.branch, facts, issue_facts))
+
+
+def _withdrawn(reason: str) -> LaunchAdmission:
+    return LaunchAdmission(LaunchVerdict.WITHDRAWN, reason)
 
 
 class ExternalLaunchAdmission(Protocol):

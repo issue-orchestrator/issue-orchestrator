@@ -71,8 +71,9 @@ from ..domain.integration_branch import (
 from ..domain.external_pr_adoption import (
     AdoptExternalPullRequest,
     ReportRefusedExternalPullRequest,
+    LaunchAuthority,
     ReturnExternalPullRequestToReview,
-    effort_governs,
+    launch_authority,
 )
 from ..events import EventName
 from ..infra.logging_config import issue_log
@@ -80,7 +81,7 @@ from ..ports import make_trace_event
 from ..ports.repository_host import RepositoryHostError
 from ..ports.standing_rulings import StandingRulingsUnavailable
 from .awaiting_merge_post_publish_policy import PostApprovalAction, build_escalation
-from .external_pr_adoption import ExternalPullRequestGate, external_step_refusal, review_lane
+from .external_pr_adoption import ExternalPullRequestGate, external_step_refusal, linked_issue_facts, review_lane
 from .external_pr_adoption_writes import write_external_step
 from .human_gates import holds_merge
 
@@ -273,10 +274,11 @@ class IntegrationBranchOwner:
         """Whether *pr* targets the integration branch (only those are io's to merge)."""
         return pr.base_branch == self.branch
 
-    def governs(self, pr: "PRInfo") -> str | None:
-        """The effort governing work on *pr* (its branch), queued under that authority (#9499); else None."""
+    def authority(self, pr: "PRInfo", issue: "Issue") -> LaunchAuthority | None:
+        """The authority work this owner routed onto *pr* for *issue* is queued
+        under when the effort governs it (#9499); else None."""
         facts = self.external.facts(pr, pr_labels=pr.labels)
-        return self.branch if effort_governs(self.branch, facts) else None
+        return launch_authority(self.branch, facts, linked_issue_facts(self.external.config, issue, labels=issue.labels))
 
     def gate_label(self) -> str:
         """The PR label required before io merges (``merge_after``)."""

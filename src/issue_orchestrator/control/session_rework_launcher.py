@@ -42,7 +42,7 @@ from .launch_transaction import (
     abandon_claim_unless_spawned,
 )
 from .launch_dependency_gate import dependency_blocked_result
-from .session_launch_types import LaunchResult
+from .session_launch_types import LaunchDisposition, LaunchResult
 from .stack_base import StackBaseDecision
 from .session_review_support import copy_review_feedback_to_rework, format_reviewer_feedback, combine_rework_feedback
 from .session_worktree_diagnostics import (
@@ -293,24 +293,44 @@ def _rework_launch_identity(
 def _rework_launch_target(
     rework: PendingRework, deps: ReworkLaunchDependencies,
 ) -> "LaunchResult | tuple[AgentConfig, int, PreparedLaunchPrompt, int, str]":
-    """The PR the rework acts on, still admitted by the integration effort under
-    the authority it was queued with - the launch's FIRST stateful decision,
-    before the prompt or the provider gate can write anything (#9499) - then
-    the launch identity."""
+    """The PR the rework acts on, admitted by the integration effort - the
+    launch's FIRST stateful decision, before the prompt or the provider gate
+    can write anything (#9499) - then the launch identity."""
     issue_number = rework.resolve_issue_number()
     if issue_number is None:
         return LaunchResult(None, False, f"Unresolved issue number for rework {rework.issue_key}")
-    pr_number, branch_name = resolve_rework_pr(deps.repository_host, rework, issue_number)
-    refused = deps.external_admission.refuse(LaunchRequest(
-        SessionKind.REWORK, issue_number, pr_number, rework.governing_effort, rework.agent_type,
-    ))
-    if refused is not None:
-        return refused
+    target = _admitted_rework_pr(rework, deps, issue_number)
+    if isinstance(target, LaunchResult):
+        return target
     resolved = _rework_launch_identity(rework, deps)
     if isinstance(resolved, LaunchResult):
         return resolved
     agent_config, _, prepared_coder_prompt = resolved
-    return agent_config, issue_number, prepared_coder_prompt, pr_number, branch_name
+    return agent_config, issue_number, prepared_coder_prompt, *target
+
+
+def _admitted_rework_pr(
+    rework: PendingRework, deps: ReworkLaunchDependencies, issue_number: int,
+) -> "LaunchResult | tuple[int, str]":
+    """Exactly the PR the rework was queued for, admitted against its queued
+    authority before anything is resolved. Work queued under an authority
+    never moves to another PR: its PR gone, it is withdrawn. Only a rework
+    queued without one may fall back to the issue's current PR, which is then
+    admitted on its own (and never one the effort governs)."""
+    admit = deps.external_admission.refuse
+    queued = rework.pr_number
+    if queued and (refused := admit(LaunchRequest(
+            SessionKind.REWORK, issue_number, queued, rework.authority, rework.agent_type))):
+        return refused
+    pr_number, branch_name = resolve_rework_pr(deps.repository_host, rework, issue_number)
+    if pr_number == queued:
+        return pr_number, branch_name
+    if rework.authority is not None:
+        return LaunchResult(None, False, f"Not admitted by the integration effort: queued PR #{queued} is gone",
+                            disposition=LaunchDisposition.WITHDRAWN)
+    refused = admit(LaunchRequest(
+        SessionKind.REWORK, issue_number, pr_number, None, rework.agent_type, resolved_at_launch=True))
+    return refused if refused is not None else (pr_number, branch_name)
 
 
 def launch_rework_session(

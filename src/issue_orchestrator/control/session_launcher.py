@@ -1575,7 +1575,7 @@ class SessionLauncher:
         if result := callback_endpoint_not_ready(self._agent_callback_endpoint):
             return result
         if result := self._external_admission.refuse(LaunchRequest(  # first stateful decision (#9499)
-                SessionKind.REVIEW, review.issue_number, review.pr_number, review.governing_effort, review.agent_label)):
+                SessionKind.REVIEW, review.issue_number, review.pr_number, review.authority, review.agent_label)):
             return result
         # Get the reviewer for this agent (per-agent override or default)
         agent_label = self.config.get_reviewer_for_agent(review.agent_label) if review.agent_label else self.config.code_review_agent

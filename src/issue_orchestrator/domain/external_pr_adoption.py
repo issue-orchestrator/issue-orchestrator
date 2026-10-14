@@ -81,6 +81,11 @@ def io_authored(body: str | None) -> bool:
     return ORCHESTRATOR_PR_MARKER in (body or "")
 
 
+def io_owned_pr(body: str | None, labels: Iterable[str]) -> bool:
+    """io's own PR: its marker, and never adopted (the origin label decides once it is on)."""
+    return io_authored(body) and ORIGIN_EXTERNAL_LABEL not in labels
+
+
 def in_effort(branch: str, issue_labels: Iterable[str]) -> bool:
     """Whether an issue with *issue_labels* belongs to the effort integrating on *branch*."""
     return effort_label(branch) in issue_labels
@@ -144,7 +149,7 @@ class PullRequestFacts:
     @property
     def io_owned(self) -> bool:
         """io's own PR: its marker, and never adopted (the label decides once it is on)."""
-        return io_authored(self.body) and not self.adopted
+        return io_owned_pr(self.body, self.labels)
 
 
 @dataclass(frozen=True)
@@ -332,19 +337,38 @@ class LaunchVerdict(StrEnum):
 
 
 @dataclass(frozen=True)
+class LaunchAuthority:
+    """The authority queued work on a PR the integration effort governs was
+    admitted under: the effort, and EXACTLY the PR, issue and agent it was
+    admitted for. Built once, when the work is queued, persisted with it, and
+    never re-derived: the launch is judged against it unchanged."""
+
+    effort: str
+    issue_number: int
+    pr_number: int
+    #: The agent the work runs as (a rework) or whose reviewer reviews it.
+    agent: str
+
+    def __post_init__(self) -> None:
+        if not self.effort or not self.agent:
+            raise ValueError("a launch authority names its effort and its agent")
+
+
+@dataclass(frozen=True)
 class LaunchAdmission:
     """THE admission rule's answer when review or rework of a PR is queued or launched."""
 
     verdict: LaunchVerdict
     reason: str = ""
-    #: The integration effort (its branch) that governs the work: the authority
-    #: the work is queued under, and re-judged by at its launch. None when no
-    #: effort governs it.
-    governing_effort: str | None = None
+    #: When an effort governs the admitted work: the complete authority it is
+    #: queued under. None when no effort governs it (or it was not admitted).
+    authority: LaunchAuthority | None = None
 
     def __post_init__(self) -> None:
         if (self.verdict is LaunchVerdict.ADMITTED) is bool(self.reason):
             raise ValueError("a refused launch says why, and an admitted one does not")
+        if self.authority is not None and self.verdict is not LaunchVerdict.ADMITTED:
+            raise ValueError("only admitted work carries an authority")
 
 
 LAUNCH_ADMITTED = LaunchAdmission(LaunchVerdict.ADMITTED)
@@ -352,18 +376,20 @@ LAUNCH_ADMITTED = LaunchAdmission(LaunchVerdict.ADMITTED)
 
 @dataclass(frozen=True)
 class LaunchRequest:
-    """Queued review or rework of a PR, with the authority it was queued under."""
+    """Review or rework of a PR about to be queued or launched."""
 
     kind: SessionKind
     issue_number: int
     pr_number: int
-    #: The effort whose admission rule admitted the work when it was queued;
-    #: None when no effort governed it then. Once set it never lapses: the
-    #: work stays governed whatever the PR's labels or base say at launch.
-    governing_effort: str | None
-    #: The agent the queued work names - a rework runs as it, a review's
-    #: reviewer is chosen by it; None when it names none.
+    #: The authority the work was queued under; None when no effort governed
+    #: it then. Once set it never lapses: the work stays governed whatever the
+    #: PR's labels or base say now, and only for exactly its PR, issue and agent.
+    authority: LaunchAuthority | None
+    #: The agent the work names when it carries no authority.
     agent: str | None
+    #: The PR was found at launch, not named by the queued work (a PR-less
+    #: legacy rework): such work never acts on a PR the effort governs.
+    resolved_at_launch: bool = False
 
 
 def launch_refusal(
@@ -374,20 +400,41 @@ def launch_refusal(
     Governed when its queued authority OR the PR's current facts put it in
     the effort, so no mix of later edits (the origin label dropped AND the
     base changed, io's marker pasted in) erases that custody. Governed work
-    launches only while THE admission rule admits the PR for exactly the
-    queued issue, and only as the agent the issue names now.
+    launches only on exactly the PR and issue its authority names, while THE
+    admission rule admits that PR for that issue, and as the agent the issue
+    names now - the one it was queued for.
     """
-    if request.governing_effort is None and not effort_governs(branch, pr):
+    authority = request.authority
+    if authority is None and not effort_governs(branch, pr):
         return None
+    if request.resolved_at_launch:
+        return (f"PR #{pr.number} was found at launch, not queued with the {request.kind.value}: io acts on a PR"
+                " the effort governs only under the authority it was queued with")
+    if authority is not None:
+        if authority.effort != branch:
+            return f"queued under the `{authority.effort}` effort, not `{branch}`"
+        if (authority.pr_number, authority.issue_number) != (pr.number, issue.number):
+            return (f"queued for PR #{authority.pr_number} of issue #{authority.issue_number},"
+                    f" not PR #{pr.number} of issue #{issue.number}")
     if pr.linked_issue != issue.number:
         return f"PR #{pr.number} references {pr.link.describe()}, not issue #{issue.number}"
     verdict = judge_external_pull_request(branch, ExternalPullRequestFacts(pr=pr, issue=issue, custody=custody))
     if verdict.admission is not Admission.ADMITTED:
         return verdict.detail or f"PR #{pr.number} is not an adopted PR io may act on ({verdict.admission.value})"
-    if request.agent is not None and issue.agent_type != request.agent:
-        return (f"issue #{issue.number} names `{issue.agent_type}` now, not `{request.agent}`"
-                f" the {request.kind.value} was queued for")
+    agent = authority.agent if authority is not None else request.agent
+    if agent is not None and issue.agent_type != agent:
+        return f"issue #{issue.number} names `{issue.agent_type}` now, not `{agent}` the {request.kind.value} was queued for"
     return None
+
+
+def launch_authority(branch: str, pr: PullRequestFacts, issue: LinkedIssueFacts) -> LaunchAuthority | None:
+    """The authority work on *pr* for *issue* is queued under when the effort
+    governs it (THE admission rule having admitted it); None when it does not."""
+    if not effort_governs(branch, pr):
+        return None
+    if issue.agent_type is None:
+        raise ValueError(f"admitted issue #{issue.number} names no agent")
+    return LaunchAuthority(effort=branch, issue_number=issue.number, pr_number=pr.number, agent=issue.agent_type)
 
 
 # -- reviewed-head custody -----------------------------------------------------------
@@ -654,6 +701,7 @@ __all__ = [
     "LAUNCH_ADMITTED",
     "LabelWrite",
     "LaunchAdmission",
+    "LaunchAuthority",
     "LaunchRequest",
     "LaunchVerdict",
     "LinkedIssueFacts",
@@ -669,8 +717,10 @@ __all__ = [
     "external_work",
     "in_effort",
     "io_authored",
+    "io_owned_pr",
     "issue_gap",
     "judge_external_pull_request",
+    "launch_authority",
     "launch_refusal",
     "merge_refusal",
     "refusal_marker",

@@ -16,7 +16,7 @@ from collections import OrderedDict
 from .blocked_open_pr import BlockedOpenPRLedger
 from .ci_failure import CiJobAssessment
 from .integration_branch import IntegrationDeliveryView, IntegrationStep
-from .external_pr_adoption import ExternalPullRequestLedger
+from .external_pr_adoption import ExternalPullRequestLedger, LaunchAuthority
 from .external_pr_adoption import ORCHESTRATOR_PR_MARKER as ORCHESTRATOR_PR_MARKER  # re-exported
 from .dependency_gates import DependencyGateSnapshot
 from .host_rate_limit import HostRateLimitWindow
@@ -1457,9 +1457,9 @@ class PendingReview:
     _issue_number: int  # The actual GitHub issue number (stable_id may not be numeric)
     agent_label: Optional[str] = None  # Agent that created the PR (for per-agent reviewer)
     issue_labels: tuple[str, ...] = field(default_factory=tuple, compare=False)
-    # The integration effort whose admission rule admitted this review when it
-    # was queued (#9499): its launch is re-judged under that authority.
-    governing_effort: str | None = field(default=None, compare=False)
+    # The authority this review was queued under when an integration effort
+    # governs it (#9499): its launch is judged against it, unchanged.
+    authority: "LaunchAuthority | None" = field(default=None, compare=False)
 
     @property
     def issue_number(self) -> int:
@@ -1503,7 +1503,7 @@ class DiscoveredReview:
     branch_name: str
     agent_label: Optional[str] = None  # Agent that created the PR (for per-agent reviewer)
     issue_key: str = ""  # stable_id; falls back to str(issue_number) when empty
-    governing_effort: str | None = None  # the integration effort that admitted it (#9499)
+    authority: "LaunchAuthority | None" = None  # when an integration effort admitted it (#9499)
 
 
 @dataclass(frozen=True)
@@ -1681,7 +1681,7 @@ class DiscoveredRework:
     # (post-publish REWORK_CHECK_FAILED). Only such a rework passes through the
     # CI-failure triage, which may re-run a transient failure instead (#8692).
     failed_check: bool = False
-    governing_effort: str | None = None  # the integration effort that admitted it (#9499)
+    authority: "LaunchAuthority | None" = None  # when an integration effort admitted it (#9499)
 
 
 @dataclass(frozen=True)
@@ -1898,9 +1898,9 @@ class PendingRework:
     source: str = "review_label"
     feedback: str | None = None
     scoped_request_keys: tuple[str, ...] = ()
-    # The integration effort whose admission rule admitted this rework when it
-    # was queued (#9499): its launch is re-judged under that authority.
-    governing_effort: str | None = field(default=None, compare=False)
+    # The authority this rework was queued under when an integration effort
+    # governs it (#9499): its launch is judged against it, unchanged.
+    authority: "LaunchAuthority | None" = field(default=None, compare=False)
 
     def resolve_issue_number(self) -> int | None:
         """Resolve issue number for GitHub workflows, if available."""

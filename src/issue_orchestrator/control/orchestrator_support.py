@@ -64,7 +64,6 @@ from .transition_log import log_transition
 from ..domain.models import (
     BLOCKED_HISTORY_STATUSES,
     PendingRetrospectiveReview,
-    PendingReview, PendingRework,
 )
 
 logger = logging.getLogger(__name__)
@@ -477,14 +476,7 @@ class OrchestratorSupport:
     def _handle_queue_review(self, action: "Action", result: "ActionResult") -> None:
         from .actions import QueueReviewAction
         a = cast(QueueReviewAction, action)
-        if not self.state.queue_pending_review(
-            PendingReview(
-                issue_key=self.repository_host.create_issue_key(a.issue_number),
-                pr_number=a.pr_number, pr_url=a.pr_url, branch_name=a.branch_name,
-                _issue_number=a.issue_number, agent_label=a.agent_label, issue_labels=a.issue_labels,
-                governing_effort=a.governing_effort,
-            )
-        ):
+        if not self.state.queue_pending_review(a.pending(self.repository_host.create_issue_key(a.issue_number))):
             return
         log_transition("review", a.pr_number, "CREATED", "QUEUED", f"from #{a.issue_number}")
         self.get_review_machine(a.pr_number, a.issue_number)
@@ -518,17 +510,7 @@ class OrchestratorSupport:
         from .actions import QueueReworkAction
         a = cast(QueueReworkAction, action)
         agent = next((r.agent_type for r in self.state.discovered_reworks if r.issue_number == a.issue_number), "agent:developer")
-        if not self.state.queue_pending_rework(
-            PendingRework(
-                self.repository_host.create_issue_key(a.issue_number),
-                agent,
-                a.rework_cycle,
-                issue_number=a.issue_number,
-                pr_number=a.pr_number or None,
-                source=a.source,
-                feedback=a.feedback, scoped_request_keys=a.scoped_request_keys, governing_effort=a.governing_effort,
-            )
-        ):
+        if not self.state.queue_pending_rework(a.pending(self.repository_host.create_issue_key(a.issue_number), agent)):
             return
         log_transition("rework", a.issue_number, "CREATED", "QUEUED", f"cycle {a.rework_cycle}")
 

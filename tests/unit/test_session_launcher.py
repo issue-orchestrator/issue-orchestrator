@@ -75,7 +75,9 @@ from issue_orchestrator.control.session_launch_types import (
     LaunchDisposition,
     LaunchResult,
 )
-from issue_orchestrator.domain.external_pr_adoption import LaunchRequest
+from issue_orchestrator.control.external_pr_launch import launch_gate
+from issue_orchestrator.domain.external_pr_adoption import LaunchAuthority, LaunchRequest
+from issue_orchestrator.infra.config_models import IntegrationConfig
 from tests.callback_endpoint_helpers import ready_callback_endpoint
 from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
 from issue_orchestrator.ports.issue_run_evidence import IssueRunLedger
@@ -2730,6 +2732,38 @@ class _AdmittingEffort(_RefusingEffort):
         return None
 
 
+_QUEUED = LaunchAuthority(effort="integration", issue_number=123, pr_number=456, agent="agent:web")
+
+
+def _effectful_owners(sample_config, mock_events, *, provider_ready: bool):
+    """Launch owners that WRITE when reached: a provider whose login expired
+    applies the shared provider transition; the prompt reads standing rulings."""
+    prompt = MagicMock(name="coder_prompt_addendum")
+    prompt.prepare.return_value = PreparedCoderPromptAddendum("ADDENDUM")
+    rulings = MagicMock(name="standing_rulings")
+    sample_config.agents["agent:web"].provider = "claude-code"
+    readiness = MagicMock(spec=ProviderReadinessProbe)
+    readiness.check_launch_readiness.return_value = (
+        ProviderReadiness.ready("claude-code") if provider_ready
+        else ProviderReadiness.auth_expired("claude-code", "not logged in")
+    )
+    kwargs = {
+        "coder_prompt_addendum": prompt, "standing_rulings": rulings, "provider_readiness_probe": readiness,
+        "provider_resilience": ProviderResilienceManager(
+            config=sample_config.provider_resilience, store=InMemoryProviderCircuitStore(), events=mock_events,
+        ),
+    }
+    return kwargs, (prompt, rulings, readiness)
+
+
+def _nothing_ran(bundle, owners, worktree_manager) -> None:
+    prompt, rulings, readiness = owners
+    assert prompt.method_calls == [] and rulings.method_calls == []
+    readiness.check_launch_readiness.assert_not_called()
+    bundle.action_applier.apply.assert_not_called()  # no shared provider transition, no label
+    assert bundle.create_session_calls == [] and worktree_manager.create_calls == []
+
+
 class TestExternalPullRequestLaunchAdmission:
     """A queued review or rework re-asks the effort's admission rule as its FIRST
     stateful decision - before the prompt or the provider gate can write (#9499 r4 F5)."""
@@ -2738,34 +2772,12 @@ class TestExternalPullRequestLaunchAdmission:
     def refusing(self, request, sample_config, mock_events, mock_repo_host, mock_worktree_manager, mock_working_copy,
                  mock_command_runner):
         effort = _RefusingEffort() if request.param == "refusing" else _AdmittingEffort()
-        prompt = MagicMock(name="coder_prompt_addendum")
-        prompt.prepare.return_value = PreparedCoderPromptAddendum("ADDENDUM")
-        rulings = MagicMock(name="standing_rulings")
-        # Effectful owners: a provider whose login expired writes the shared
-        # provider transition through the applier, and the prompt reads rulings.
-        sample_config.agents["agent:web"].provider = "claude-code"
-        readiness = MagicMock(spec=ProviderReadinessProbe)
-        readiness.check_launch_readiness.return_value = (
-            ProviderReadiness.auth_expired("claude-code", "not logged in") if request.param == "refusing"
-            else ProviderReadiness.ready("claude-code")
-        )
+        kwargs, owners = _effectful_owners(sample_config, mock_events, provider_ready=request.param != "refusing")
         bundle = _build_launcher_bundle(
             sample_config, mock_events, mock_repo_host, mock_worktree_manager, mock_working_copy,
-            mock_command_runner, external_admission=effort, coder_prompt_addendum=prompt, standing_rulings=rulings,
-            provider_resilience=ProviderResilienceManager(
-                config=sample_config.provider_resilience, store=InMemoryProviderCircuitStore(), events=mock_events,
-            ),
-            provider_readiness_probe=readiness,
+            mock_command_runner, external_admission=effort, **kwargs,
         )
-        return bundle, effort, (prompt, rulings, readiness)
-
-    @staticmethod
-    def _nothing_ran(bundle, owners, worktree_manager) -> None:
-        prompt, rulings, readiness = owners
-        assert prompt.method_calls == [] and rulings.method_calls == []
-        readiness.check_launch_readiness.assert_not_called()
-        bundle.action_applier.apply.assert_not_called()  # no shared provider transition, no label
-        assert bundle.create_session_calls == [] and worktree_manager.create_calls == []
+        return bundle, effort, owners
 
     def test_a_queued_review_the_effort_no_longer_admits_is_withdrawn_before_any_effect(
         self, refusing, mock_worktree_manager,
@@ -2774,14 +2786,14 @@ class TestExternalPullRequestLaunchAdmission:
         review = PendingReview(
             issue_key=GitHubIssueKey(repo="test/repo", external_id="123"), pr_number=456,
             pr_url="https://github.com/test/repo/pull/456", branch_name="123-feature", _issue_number=123,
-            agent_label="agent:web", governing_effort="integration",
+            agent_label="agent:web", authority=_QUEUED,
         )
 
         result = bundle.launcher.launch_review_session(review, active_sessions=[])
 
         assert (result.success, result.disposition) == (False, LaunchDisposition.WITHDRAWN)
-        assert effort.asked == [LaunchRequest(SessionKind.REVIEW, 123, 456, "integration", "agent:web")]
-        self._nothing_ran(bundle, owners, mock_worktree_manager)
+        assert effort.asked == [LaunchRequest(SessionKind.REVIEW, 123, 456, _QUEUED, "agent:web")]
+        _nothing_ran(bundle, owners, mock_worktree_manager)
 
     @pytest.mark.parametrize("refusing", ["admitting"], indirect=True)
     def test_an_admitted_rework_does_reach_the_owners_these_tests_guard(self, refusing, mock_repo_host):
@@ -2794,7 +2806,7 @@ class TestExternalPullRequestLaunchAdmission:
         )]
         rework = PendingRework(
             issue_key=GitHubIssueKey(repo="test/repo", external_id="123"), agent_type="agent:web", rework_cycle=1,
-            governing_effort="integration",
+            issue_number=123, pr_number=456, authority=_QUEUED,
         )
 
         bundle.launcher.launch_rework_session(rework, active_sessions=[])
@@ -2812,14 +2824,127 @@ class TestExternalPullRequestLaunchAdmission:
         )]
         rework = PendingRework(
             issue_key=GitHubIssueKey(repo="test/repo", external_id="123"), agent_type="agent:web", rework_cycle=1,
-            governing_effort="integration",
+            issue_number=123, pr_number=456, authority=_QUEUED,
         )
 
         result = bundle.launcher.launch_rework_session(rework, active_sessions=[])
 
         assert (result.success, result.disposition) == (False, LaunchDisposition.WITHDRAWN)
-        assert effort.asked == [LaunchRequest(SessionKind.REWORK, 123, 456, "integration", "agent:web")]
-        self._nothing_ran(bundle, owners, mock_worktree_manager)
+        # Exactly the queued PR, asked before anything was resolved.
+        assert effort.asked == [LaunchRequest(SessionKind.REWORK, 123, 456, _QUEUED, "agent:web")]
+        _nothing_ran(bundle, owners, mock_worktree_manager)
+
+
+class TestExternalPullRequestLaunchEndToEnd:
+    """#9499 r5: the real scanner, discovery, planner, queued item and launch
+    gate over one repository: the authority production records is the one the
+    launch judges, before any effectful owner runs."""
+
+    @pytest.fixture
+    def effort(self, sample_config, mock_events, mock_repo_host, mock_worktree_manager, mock_working_copy,
+               mock_command_runner):
+        sample_config.integration = IntegrationConfig(enabled=True)
+        sample_config.code_review_label = "needs-code-review"
+        sample_config.agents["agent:other"] = AgentConfig(prompt_path=sample_config.agents["agent:web"].prompt_path)
+        self._issue(mock_repo_host, "agent:web")
+        pr = self._adopted_pr(mock_repo_host, 456)
+        state = OrchestratorState()
+        kwargs, owners = _effectful_owners(sample_config, mock_events, provider_ready=False)
+        bundle = _build_launcher_bundle(
+            sample_config, mock_events, mock_repo_host, mock_worktree_manager, mock_working_copy,
+            mock_command_runner, external_admission=launch_gate(sample_config, mock_repo_host, lambda: state),
+            **kwargs,
+        )
+        return state, pr, bundle, owners
+
+    @staticmethod
+    def _issue(host, agent: str) -> None:
+        labels = [agent, "integrate:integration"]
+        host.issues[123] = Issue(number=123, title="Issue 123", labels=labels, repo="test/repo")
+        host.labels[123] = set(labels)
+
+    @staticmethod
+    def _adopted_pr(host, number: int) -> PRInfo:
+        pr = PRInfo(
+            number=number, title="Hand-made #123", url=f"https://github.com/test/repo/pull/{number}",
+            branch="123-feature", body="Closes #123", state="open", labels=["origin:external", "needs-code-review"],
+            base_branch="integration", head_sha="a" * 40,
+        )
+        host.prs.setdefault(123, []).append(pr)
+        host.labels[number] = set(pr.labels)
+        host.prs_with_label.append(pr)
+        return pr
+
+    def test_a_review_queued_for_the_issue_s_agent_is_withdrawn_once_the_issue_names_another(
+        self, effort, sample_config, mock_repo_host, mock_worktree_manager,
+    ):
+        from issue_orchestrator.control.actions import QueueReviewAction
+        from issue_orchestrator.control.github_workflow import GitHubWorkflow
+        from issue_orchestrator.control.label_manager import LabelManager
+        from issue_orchestrator.control.planner import Planner
+        from issue_orchestrator.control.planner_types import OrchestratorSnapshot
+        from issue_orchestrator.control.pr_scanner import PRScanner
+        from issue_orchestrator.control.scheduler import Scheduler
+        from issue_orchestrator.events import EventContext
+        from issue_orchestrator.ports import InMemoryEventSink
+
+        state, _pr, bundle, owners = effort
+        labels = LabelManager(sample_config)
+        workflow = GitHubWorkflow(
+            config=sample_config, events=InMemoryEventSink(), repository_host=mock_repo_host,
+            fact_gatherer=MagicMock(), label_sync=None, event_context=EventContext(), label_manager=labels,
+            pr_scanner=PRScanner(sample_config, mock_repo_host, InMemoryEventSink(), label_manager=labels),
+            standing_rulings=MagicMock(),
+        )
+        workflow.scan_needs_code_review_prs(state)
+        snapshot = OrchestratorSnapshot(
+            issues=(), active_sessions=(), pending_reviews=(), pending_reworks=(), pending_tech_lead=(), paused=False,
+            discovered_reviews=tuple(state.discovered_reviews),
+        )
+        plan = Planner(config=sample_config, scheduler=Scheduler(sample_config)).plan(snapshot)
+        [queue] = [action for action in plan.actions if isinstance(action, QueueReviewAction)]
+        review = queue.pending(mock_repo_host.create_issue_key(123))
+        assert (review.agent_label, review.authority) == ("agent:web", _QUEUED)
+
+        self._issue(mock_repo_host, "agent:other")  # another configured agent, while the review waits
+        result = bundle.launcher.launch_review_session(review, active_sessions=[])
+
+        assert (result.success, result.disposition) == (False, LaunchDisposition.WITHDRAWN)
+        assert "names `agent:other` now, not `agent:web`" in result.reason
+        _nothing_ran(bundle, owners, mock_worktree_manager)
+
+    def test_a_rework_queued_for_a_pr_that_is_gone_never_moves_to_another(
+        self, effort, mock_repo_host, mock_worktree_manager,
+    ):
+        """Review r5 F8: #456 is gone; #457, another adopted PR for the issue, is not reworked instead."""
+        _state, pr, bundle, owners = effort
+        mock_repo_host.prs[123].remove(pr)
+        self._adopted_pr(mock_repo_host, 457)
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"), agent_type="agent:web", rework_cycle=1,
+            issue_number=123, pr_number=456, authority=_QUEUED,
+        )
+
+        result = bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert (result.success, result.disposition) == (False, LaunchDisposition.WITHDRAWN)
+        assert "PR #456 is gone" in result.reason
+        _nothing_ran(bundle, owners, mock_worktree_manager)
+
+    def test_a_rework_queued_without_a_pr_never_falls_back_onto_an_adopted_one(
+        self, effort, mock_worktree_manager,
+    ):
+        _state, _pr, bundle, owners = effort
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"), agent_type="agent:web", rework_cycle=1,
+            issue_number=123,
+        )
+
+        result = bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert (result.success, result.disposition) == (False, LaunchDisposition.WITHDRAWN)
+        assert "found at launch" in result.reason
+        _nothing_ran(bundle, owners, mock_worktree_manager)
 
 
 class TestLaunchReworkSession:

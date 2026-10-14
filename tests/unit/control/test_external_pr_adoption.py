@@ -35,9 +35,11 @@ from issue_orchestrator.control.pr_scanner import PRScanner, ReviewScan, ReworkS
 from issue_orchestrator.control.session_launch_types import LaunchDisposition
 from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.board_snapshot import BoardTechLeadWriteHealth
+from issue_orchestrator.control.actions import QueueReviewAction, QueueReworkAction
 from issue_orchestrator.domain.external_pr_adoption import (
     AdoptExternalPullRequest,
     AdoptionRefusal,
+    LaunchAuthority,
     LaunchRequest,
     ReportRefusedExternalPullRequest,
     ReturnExternalPullRequestToReview,
@@ -759,9 +761,12 @@ def test_io_s_own_pr_approval_leaves_no_receipt() -> None:
 # -- the launch boundary re-asks THE admission rule (review r3 F5) ----------------------
 
 
+QUEUED_UNDER = LaunchAuthority(effort="integration", issue_number=231, pr_number=321, agent="agent:backend")
+
+
 def _queue(world: _World, kind: SessionKind) -> LaunchRequest:
-    """Discovery queues the review or rework of PR #321, admitted then: the
-    launch request its queued item carries - the governing effort included."""
+    """Discovery queues the review or rework of PR #321, admitted then; the
+    planner's action builds the queued item: the launch request it carries."""
     if kind is SessionKind.REVIEW:
         world.workflow.pr_scanner.scan_for_reviews.return_value = ReviewScan(  # type: ignore[attr-defined]
             reviews=[PendingReview(issue_key=world.host.create_issue_key(231), pr_number=321, pr_url="u321",
@@ -769,18 +774,24 @@ def _queue(world: _World, kind: SessionKind) -> LaunchRequest:
             blocked=[],
         )
         world.workflow.scan_needs_code_review_prs(world.state)
-        [review] = world.state.discovered_reviews
-        assert (review.pr_number, review.governing_effort) == (321, "integration")
-        return LaunchRequest(kind, review.issue_number, review.pr_number, review.governing_effort, review.agent_label)
+        [found] = world.state.discovered_reviews
+        review = QueueReviewAction(issue_number=found.issue_number, pr_number=found.pr_number, pr_url=found.pr_url,
+                                   branch_name=found.branch_name, agent_label=found.agent_label,
+                                   authority=found.authority).pending(world.host.create_issue_key(231))
+        # The admitted issue's agent and the whole authority, as production queues them.
+        assert (review.agent_label, review.authority) == ("agent:backend", QUEUED_UNDER)
+        return LaunchRequest(kind, review.issue_number, review.pr_number, review.authority, review.agent_label)
     world.workflow.pr_scanner.scan_for_reworks.return_value = ReworkScan(  # type: ignore[attr-defined]
         reworks=[PendingRework(issue_key=world.host.create_issue_key(231), agent_type="agent:backend",
                                issue_number=231, pr_number=321)],
         escalations=[], blocked=[],
     )
     world.workflow.scan_needs_rework_prs(world.state)
-    [rework] = world.state.discovered_reworks
-    assert (rework.pr_number, rework.governing_effort) == (321, "integration")
-    return LaunchRequest(kind, rework.issue_number, rework.pr_number, rework.governing_effort, rework.agent_type)
+    [found_rework] = world.state.discovered_reworks
+    rework = QueueReworkAction(issue_number=found_rework.issue_number, pr_number=found_rework.pr_number,
+                               authority=found_rework.authority).pending(world.host.create_issue_key(231), "agent:x")
+    assert (rework.agent_type, rework.authority) == ("agent:backend", QUEUED_UNDER)
+    return LaunchRequest(kind, rework.issue_number, rework.pr_number or 0, rework.authority, rework.agent_type)
 
 
 def _no_longer_admitted(world: _World, pr: PRInfo, change: str) -> None:
@@ -830,8 +841,6 @@ def test_queued_work_on_an_adopted_pr_is_withdrawn_at_launch_once_the_pr_is_no_l
     world.effort_issue(232)
     pr = _adopted_and_approved(world)
     request = _queue(world, kind)
-    if change == "agent_changed":
-        request = replace(request, agent="agent:backend")  # the agent the queued work names
     gate = launch_gate(world.config, world.host, lambda: world.state)
     assert gate.refuse(request) is None
 
@@ -852,8 +861,23 @@ def test_without_its_queued_authority_the_same_edits_would_look_ungoverned() -> 
 
     gate = launch_gate(world.config, world.host, lambda: world.state)
 
-    assert gate.refuse(replace(request, governing_effort=None)) is None
+    assert gate.refuse(replace(request, authority=None)) is None
     assert gate.refuse(request) is not None
+
+
+def test_queued_work_whose_effort_this_engine_no_longer_runs_fails_closed() -> None:
+    """Review r5 F9: a restart with integration mode off never launches work
+    queued under an effort's authority unowned."""
+    world = _World()
+    _adopted_and_approved(world)
+    request = _queue(world, SessionKind.REWORK)
+    world.config.integration = IntegrationConfig(enabled=False)
+    gate = launch_gate(world.config, world.host, lambda: world.state)
+
+    refused = gate.refuse(request)
+
+    assert refused is not None and refused.disposition is LaunchDisposition.WITHDRAWN
+    assert gate.refuse(replace(request, authority=None)) is None  # unowned work runs as without the effort
 
 
 def test_a_launch_whose_admission_cannot_be_read_is_retried_not_withdrawn() -> None:
@@ -881,6 +905,18 @@ def test_work_on_a_pr_the_effort_does_not_govern_launches_as_without_it(pr_kind:
     assert launch_gate(world.config, world.host, lambda: world.state).refuse(
         LaunchRequest(SessionKind.REVIEW, 231, 321, None, None),
     ) is None
+
+
+def test_a_pr_found_at_launch_that_the_effort_governs_is_not_reworked() -> None:
+    """Review r5 F8: a rework queued without a PR never falls back onto an adopted one."""
+    world = _World()
+    _adopted_and_approved(world)
+
+    refused = launch_gate(world.config, world.host, lambda: world.state).refuse(
+        LaunchRequest(SessionKind.REWORK, 231, 321, None, "agent:backend", resolved_at_launch=True),
+    )
+
+    assert refused is not None and refused.disposition is LaunchDisposition.WITHDRAWN
 
 
 def test_a_review_of_an_adopted_pr_no_longer_admitted_is_not_queued() -> None:
