@@ -4,10 +4,9 @@ A PR opened off to the side - by the coordinator, the operator, another tool -
 is the splice point: once io adopts it, it rides exactly the lanes io's own
 PRs ride, and nothing else has to move it.
 
-* **Adoption.** An open, non-draft PR without io's marker that targets the
-  effort's branch and references an issue in the effort (open, in this
-  engine's scope, labelled ``integrate:<branch>``, with an agent label so io
-  can rework it) is adopted: io routes it into its own review lane and marks it
+* **Adoption.** An external PR that THE admission rule
+  (:func:`~..domain.external_pr_adoption.judge_external_pull_request`) finds
+  adoptable is routed into io's own review lane and marked
   ``origin:external``. From there the existing lanes own it - review discovery
   puts ``pr-pending`` on the issue and queues the review, the review's
   completion records the issue's awaiting-merge history, rework runs on its
@@ -15,80 +14,309 @@ PRs ride, and nothing else has to move it.
   under the same gates as io's own work (standing rulings included), so it is
   listed in the delivery. No validated-work record is made: the work lives in
   the PR, and the PR is what every lane follows.
-* **Refusal.** A PR into the effort branch that references no issue, or one
-  outside the effort, and a PR for an issue in the effort that targets another
-  base, are refused: told why on the PR once, and never merged. The merge gate
-  (:class:`~.integration_branch.MergeGatekeeper`) re-asks
-  :func:`~..domain.external_pr_adoption.merge_provenance` at every merge and
-  update, so a review label applied by hand cannot carry an unadopted PR in.
+* **Refusal.** A PR the rule refuses is told why on the PR once per reason,
+  and never merged.
+* **One rule, every boundary.** :class:`ExternalPullRequestGate` reads the
+  facts the rule judges - the PR, the issue it references (complete scope),
+  and io's own hold on that issue (:class:`~..domain.external_pr_adoption.IoCustody`,
+  from an :class:`IoCustodyReader`) - and is asked by discovery here, by the
+  integration owner's routing of an approved PR (rework, update, merge), and
+  by the applier's re-check before every write (adoption, refusal report,
+  return to review, update, merge), each time on that boundary's own reads.
+* **Reviewed-head custody.** :meth:`ExternalPullRequestGate.head_reviewed`
+  asks for io's review receipt for the PR's CURRENT head
+  (:func:`~..domain.external_pr_adoption.reviewed_head_receipt`, an exact
+  comment written under io's own credential when io's reviewer approves).
 
-Layering, as for the integration owner: discovery here only READS (one open-PR
-listing per general scan, plus the linked issue of a PR into the branch); each
-write is an :data:`~..domain.integration_branch.IntegrationStep` the planner
-turns into an :class:`~.actions.AdvanceIntegrationAction`, applied through
+Layering, as for the integration owner: discovery here only READS (one
+complete open-PR listing per general scan, plus the issue each PR into the
+branch references); each write is an
+:data:`~..domain.integration_branch.IntegrationStep` the planner turns into an
+:class:`~.actions.AdvanceIntegrationAction`, applied through
 :func:`~.integration_branch.apply_integration_step`, which asks
-:func:`adoption_step_refusal` to re-check on fresh reads and
-:func:`~.external_pr_adoption_writes.write_adoption_step` to write.
+:func:`external_step_refusal` to re-judge on fresh reads and
+:func:`~.external_pr_adoption_writes.write_external_step` to write.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING, Protocol, TypeAlias
 
 from ..domain.external_pr_adoption import (
+    Admission,
     AdoptedExternalPullRequest,
     AdoptExternalPullRequest,
-    AdoptionRefusal,
-    ExternalStanding,
+    ExternalAdmission,
+    ExternalPullRequestFacts,
+    IoCustody,
+    LinkedIssueFacts,
+    PullRequestFacts,
     ReportRefusedExternalPullRequest,
-    adoption_obstacle,
-    effort_gap,
-    external_standing,
+    ReturnExternalPullRequestToReview,
+    external_work,
     in_effort,
+    judge_external_pull_request,
+    merge_refusal,
+    reviewed_head_receipt,
 )
+from ..domain.models import Issue as IssueSnapshot
 from ..infra import gh_audit
 from ..infra.repo_scope import require_repo
 from ..ports.repository_host import RepositoryHostError
-from .review_scope import ReviewScopeChecker, extract_issue_number_from_pr, issues_linked
+from .issue_scope import evaluate_issue_scope
+from .review_scope import extract_issue_number_from_pr, issues_linked
 
 if TYPE_CHECKING:
+    from ..domain.external_pr_adoption import ExternalPullRequestLedger
     from ..domain.integration_branch import IntegrationStep
-    from ..domain.models import OrchestratorState
+    from ..domain.models import OrchestratorState, SessionHistoryEntry
     from ..infra.config import Config
+    from ..ports.issue import Issue
     from ..ports.pull_request_tracker import PRInfo
     from ..ports.repository_host import RepositoryHost
-    from .label_manager import LabelManager
 
 logger = logging.getLogger(__name__)
 
-#: The open PRs one scan lists (GitHub's largest page): adoption is not
-#: lifecycle-critical, so a PR past it waits for the listing to reach it.
-OPEN_PR_LISTING_LIMIT = 100
+_Verdict: TypeAlias = "AdoptExternalPullRequest | ReportRefusedExternalPullRequest | None"
 
-_Verdict: TypeAlias = "AdoptedExternalPullRequest | AdoptExternalPullRequest | ReportRefusedExternalPullRequest"
+
+# -- the facts -------------------------------------------------------------------
+
+
+def linked_issue(pr: "PRInfo", *, repo_slug: str) -> int | None:
+    """The issue every PR lane resolves for *pr*, when the PR really references one.
+
+    Review discovery and the awaiting-merge lanes resolve a PR's issue by
+    :func:`extract_issue_number_from_pr`, which falls back to the PR's own
+    number; only a reference the PR actually makes counts here.
+    """
+    linked = issues_linked(branch=pr.branch, body=pr.body, repo_slug=repo_slug)
+    primary = extract_issue_number_from_pr(pr, repo_slug=repo_slug)
+    return primary if primary in linked else None
+
+
+def pull_request_facts(pr: "PRInfo", *, repo_slug: str, labels: Iterable[str]) -> PullRequestFacts:
+    """*pr* as the admission rule reads it, with *labels* as the boundary read them."""
+    return PullRequestFacts(
+        number=pr.number, open=(pr.state or "").strip().lower() == "open", draft=bool(pr.draft),
+        body=pr.body or "", branch=pr.branch, base_branch=pr.base_branch, labels=frozenset(labels),
+        linked_issue=linked_issue(pr, repo_slug=repo_slug),
+    )
+
+
+def linked_issue_facts(config: "Config", issue: "Issue", *, labels: Iterable[str]) -> LinkedIssueFacts:
+    """*issue* as the admission rule reads it, with *labels* as the boundary read
+    them: the engine's COMPLETE scope (open, milestone, label filters,
+    single-issue scope)."""
+    snapshot = IssueSnapshot(
+        number=issue.number, title=issue.title, labels=list(labels), state=issue.state, milestone=issue.milestone,
+    )
+    scope = evaluate_issue_scope(
+        config, snapshot, require_open=True, include_milestone_filter=True, include_issue_number_filter=True,
+    )
+    return LinkedIssueFacts(
+        number=issue.number, scope_gap=None if scope.in_scope else (scope.detail or scope.code),
+        labels=frozenset(snapshot.labels), agent_type=snapshot.agent_type,
+    )
+
+
+def io_attempts(prs: Iterable["PRInfo"], *, repo_slug: str) -> dict[int, frozenset[int]]:
+    """Per issue: the open PRs that are io's own or adopted attempts at it."""
+    attempts: dict[int, set[int]] = {}
+    for pr in prs:
+        facts = pull_request_facts(pr, repo_slug=repo_slug, labels=pr.labels)
+        if facts.open and facts.linked_issue is not None and (facts.io_owned or facts.adopted):
+            attempts.setdefault(facts.linked_issue, set()).add(pr.number)
+    return {number: frozenset(numbers) for number, numbers in attempts.items()}
+
+
+def published_attempts(history: Iterable["SessionHistoryEntry"], issue_number: int) -> frozenset[int]:
+    """io's published PRs for the issue, awaiting merge until reconciled."""
+    return frozenset(
+        identity[1] for entry in history
+        if (identity := entry.publication_identity) is not None and identity[0] == issue_number
+    )
+
+
+class IoCustodyReader(Protocol):
+    """io's own hold on an issue, as one boundary reads it."""
+
+    def custody(self, issue_number: int) -> IoCustody: ...
+
+
+@dataclass(frozen=True)
+class ScanCustody:
+    """Discovery's view: io's worktrees, its published history, and the scan's
+    own complete open-PR listing."""
+
+    issue_branches: Mapping[int, str]
+    history: Sequence["SessionHistoryEntry"]
+    attempts: Mapping[int, frozenset[int]]
+
+    def custody(self, issue_number: int) -> IoCustody:
+        return IoCustody(
+            working_branch=self.issue_branches.get(issue_number),
+            pull_requests=self.attempts.get(issue_number, frozenset()) | published_attempts(self.history, issue_number),
+        )
+
+
+@dataclass(frozen=True)
+class StateCustody:
+    """The routing's view between scans: io's live sessions, its published
+    history, and the attempts the last complete scan listed."""
+
+    state: "OrchestratorState"
+
+    def custody(self, issue_number: int) -> IoCustody:
+        return IoCustody(
+            working_branch=session_branch(self.state, issue_number),
+            pull_requests=(self.state.external_pull_requests.attempts_at(issue_number)
+                           | published_attempts(self.state.session_history, issue_number)),
+        )
+
+
+def session_branch(state: "OrchestratorState", issue_number: int) -> str | None:
+    """The branch a live io session works *issue_number* on, if one does."""
+    return next(
+        (session.branch_name for session in state.active_sessions if session.issue.number == issue_number), None,
+    )
 
 
 @dataclass
-class ExternalPullRequestAdoption:
-    """One discovery pass over the open PRs (module docstring)."""
+class FreshCustody:
+    """A write's view: io's live sessions and published history, and a FRESH
+    complete open-PR listing (read once, on first use)."""
+
+    host: "RepositoryHost"
+    repo_slug: str
+    active_branch: Callable[[int], str | None]
+    history: Callable[[], Sequence["SessionHistoryEntry"]]
+    _attempts: dict[int, frozenset[int]] | None = field(default=None, init=False)
+
+    def custody(self, issue_number: int) -> IoCustody:
+        if self._attempts is None:
+            self._attempts = io_attempts(self.host.list_open_prs_complete(), repo_slug=self.repo_slug)
+        return IoCustody(
+            working_branch=self.active_branch(issue_number),
+            pull_requests=self._attempts.get(issue_number, frozenset()) | published_attempts(self.history(), issue_number),
+        )
+
+
+# -- THE gate ----------------------------------------------------------------------
+
+
+@dataclass
+class ExternalPullRequestGate:
+    """THE admission rule and reviewed-head custody, on one boundary's reads.
+
+    ``ledger`` memoizes found review receipts between scans (the routing);
+    None at a write, which always re-reads the receipt.
+    """
 
     config: "Config"
     host: "RepositoryHost"
-    label_manager: "LabelManager"
-    #: The label io's review discovery lists PRs by; None without a review lane.
-    review_lane: str | None = field(init=False)
-
-    def __post_init__(self) -> None:
-        if not self.config.integration.enabled:
-            raise RuntimeError("external PRs are adopted only into an enabled integration effort")
-        self.review_lane = self.config.code_review_label if self.config.code_review_agent else None
+    custody: IoCustodyReader
+    ledger: "ExternalPullRequestLedger | None" = None
 
     @property
     def branch(self) -> str:
         return self.config.integration.branch
+
+    @property
+    def repo_slug(self) -> str:
+        return require_repo(self.config)
+
+    def facts(self, pr: "PRInfo", *, pr_labels: Iterable[str]) -> PullRequestFacts:
+        return pull_request_facts(pr, repo_slug=self.repo_slug, labels=pr_labels)
+
+    def judge(self, pr: "PRInfo", *, pr_labels: Iterable[str]) -> ExternalAdmission:
+        """THE admission rule for *pr*, reading the issue it references (one read)."""
+        facts = self.facts(pr, pr_labels=pr_labels)
+        issue = self._read_issue(facts.linked_issue) if facts.linked_issue is not None else None
+        custody = self.custody.custody(facts.linked_issue) if facts.linked_issue is not None else IoCustody(None, frozenset())
+        return judge_external_pull_request(self.branch, ExternalPullRequestFacts(pr=facts, issue=issue, custody=custody))
+
+    def refusal(
+        self, *, pr: "PRInfo", issue: "Issue", issue_labels: Iterable[str], pr_labels: Iterable[str],
+    ) -> str | None:
+        """Why io may not rework, update or merge *pr* as *issue*'s PR; None when it may."""
+        facts = self.facts(pr, pr_labels=pr_labels)
+        if facts.io_owned:
+            return None
+        return merge_refusal(
+            self.branch, facts, issue=linked_issue_facts(self.config, issue, labels=issue_labels),
+            custody=self.custody.custody(issue.number),
+        )
+
+    def head_reviewed(self, pr: "PRInfo", *, pr_labels: Iterable[str]) -> bool:
+        """Whether io's review approved exactly *pr*'s current head (io's own PR: its lanes own that)."""
+        facts = self.facts(pr, pr_labels=pr_labels)
+        if facts.io_owned:
+            return True
+        head = pr.head_sha
+        if not head:
+            return False
+        if self.ledger is not None and self.ledger.reviewed_heads.get(pr.number) == head:
+            return True
+        found = self.host.find_issue_comment_receipt(pr.number, body=reviewed_head_receipt(pr.number, head)) is not None
+        if found and self.ledger is not None:
+            self.ledger.reviewed_heads[pr.number] = head
+        return found
+
+    def _read_issue(self, number: int) -> LinkedIssueFacts:
+        issue = self.host.get_issue(number)
+        if issue is None:
+            # A reference to an issue that does not exist: nothing io could adopt it for.
+            return LinkedIssueFacts(number=number, scope_gap="it does not exist", labels=frozenset(), agent_type=None)
+        return linked_issue_facts(self.config, issue, labels=issue.labels)
+
+
+def review_lane(config: "Config") -> str | None:
+    """The label io's review discovery lists PRs by; None without a review lane."""
+    return config.code_review_label if config.code_review_agent else None
+
+
+def routing_gate(config: "Config", host: "RepositoryHost", state: "OrchestratorState") -> ExternalPullRequestGate:
+    """The integration owner's gate between scans: io's live state and the last
+    complete scan's attempts; found receipts memoized in the ledger."""
+    return ExternalPullRequestGate(config, host, StateCustody(state), ledger=state.external_pull_requests)
+
+
+def write_gate(
+    config: "Config", host: "RepositoryHost", state: Callable[[], "OrchestratorState"],
+) -> ExternalPullRequestGate:
+    """A write's gate: io's live state and a FRESH complete listing; every
+    receipt re-read."""
+    return ExternalPullRequestGate(config, host, FreshCustody(
+        host, require_repo(config), active_branch=lambda number: session_branch(state(), number),
+        history=lambda: state().session_history,
+    ))
+
+
+# -- discovery ---------------------------------------------------------------------
+
+
+@dataclass
+class ExternalPullRequestAdoption:
+    """One discovery pass over every open PR (module docstring)."""
+
+    config: "Config"
+    host: "RepositoryHost"
+
+    def __post_init__(self) -> None:
+        if not self.config.integration.enabled:
+            raise RuntimeError("external PRs are adopted only into an enabled integration effort")
+
+    @property
+    def branch(self) -> str:
+        return self.config.integration.branch
+
+    @property
+    def review_lane(self) -> str | None:
+        return review_lane(self.config)
 
     def discover(self, state: "OrchestratorState", *, issue_branches: Mapping[int, str]) -> list["IntegrationStep"]:
         """The pass's adoptions and the refusals not yet told; records the board's view."""
@@ -97,6 +325,7 @@ class ExternalPullRequestAdoption:
             # (so never merged): nothing to adopt into.
             logger.debug("Adoption: no review lane configured; external PRs are not adopted")
             return []
+        repo = require_repo(self.config)
         # A PR into another base is reported only for an issue io already holds
         # in the effort: no such PR costs a GitHub read.
         effort_issues = frozenset(
@@ -104,147 +333,127 @@ class ExternalPullRequestAdoption:
         )
         try:
             with gh_audit.context(reason=gh_audit.AuditReason.PR_SCAN, scope=gh_audit.AuditScope.PERIODIC):
-                prs = self.host.list_prs(state="open", limit=OPEN_PR_LISTING_LIMIT)
-            verdicts = [
-                verdict for pr in prs
-                if (verdict := self._judge(pr, state, issue_branches, effort_issues)) is not None
-            ]
+                # Complete or an error, never a page: a PR past any page would
+                # wait forever, and the board's view is replaced only by a whole scan.
+                prs = self.host.list_open_prs_complete()
+            attempts = io_attempts(prs, repo_slug=repo)
+            gate = ExternalPullRequestGate(
+                self.config, self.host, ScanCustody(issue_branches, tuple(state.session_history), attempts),
+            )
+            verdicts = [self._verdict(pr, gate, effort_issues) for pr in prs]
         except RepositoryHostError as error:
             # Nothing adopted or refused on a partial read; the next scan reads again.
             logger.warning("Adoption: could not read the open PRs or their issues: %s", error)
             return []
-        adoptions = [v for v in verdicts if isinstance(v, AdoptExternalPullRequest)]
+        adoptions = [verdict for verdict in verdicts if isinstance(verdict, AdoptExternalPullRequest)]
         untold = state.external_pull_requests.record_scan(
-            (v for v in verdicts if isinstance(v, AdoptedExternalPullRequest)),
-            (v for v in verdicts if isinstance(v, ReportRefusedExternalPullRequest)),
+            (AdoptedExternalPullRequest(pr_number=pr.number, issue_number=linked_issue(pr, repo_slug=repo), pr_url=pr.url)
+             for pr in prs if gate.facts(pr, pr_labels=pr.labels).adopted),
+            (verdict for verdict in verdicts if isinstance(verdict, ReportRefusedExternalPullRequest)),
+            attempts,
         )
         for step in untold:
             logger.warning("Adoption: refused external PR #%d (%s): %s", step.pr_number, step.refusal.value,
                            step.detail)
         return [*adoptions, *untold]
 
-    # -- one PR ------------------------------------------------------------------
+    def _verdict(self, pr: "PRInfo", gate: ExternalPullRequestGate, effort_issues: frozenset[int]) -> _Verdict:
+        facts = gate.facts(pr, pr_labels=pr.labels)
+        if not external_work(self.branch, facts):
+            return None  # io's own, a draft, the delivery PR: no issue read
+        if facts.base_branch != self.branch and facts.linked_issue not in effort_issues:
+            return None  # another base, for an issue io does not hold in the effort: not io's business
+        admission = gate.judge(pr, pr_labels=pr.labels)
+        return external_step(pr, admission, branch=self.branch, review_label=self._lane())
 
-    def _judge(
-        self, pr: "PRInfo", state: "OrchestratorState", issue_branches: Mapping[int, str],
-        effort_issues: frozenset[int],
-    ) -> _Verdict | None:
-        standing = external_standing(
-            branch=self.branch, pr_body=pr.body, pr_branch=pr.branch, base_branch=pr.base_branch,
-            draft=pr.draft, pr_labels=pr.labels,
-        )
-        issue_number = self._linked_issue(pr)
-        match standing:
-            case ExternalStanding.NOT_EXTERNAL:
-                return None
-            case ExternalStanding.OTHER_BASE:
-                if issue_number not in effort_issues:
-                    return None  # not io's business
-                return self._refused(
-                    pr, issue_number, AdoptionRefusal.WRONG_BASE,
-                    f"it targets `{pr.base_branch}`, but issue #{issue_number} integrates on `{self.branch}`",
-                )
-            case ExternalStanding.ADOPTED:
-                # The lanes own it now, and the merge gate re-checks its provenance.
-                return AdoptedExternalPullRequest(pr_number=pr.number, issue_number=issue_number, pr_url=pr.url)
-            case ExternalStanding.CANDIDATE:
-                return self._candidate(pr, issue_number, state, issue_branches)
+    def _lane(self) -> str:
+        lane = self.review_lane
+        assert lane is not None, "discover() runs only with a review lane"
+        return lane
 
-    def _candidate(
-        self, pr: "PRInfo", issue_number: int | None, state: "OrchestratorState",
-        issue_branches: Mapping[int, str],
-    ) -> AdoptExternalPullRequest | ReportRefusedExternalPullRequest:
-        """A PR into the effort branch, not adopted yet: its issue decides."""
-        if issue_number is None:
-            return self._refused(pr, None, AdoptionRefusal.NO_ISSUE_REFERENCE,
-                                 f"it targets `{self.branch}` but references no issue")
-        outside = self._outside_effort(pr, issue_number)
-        if outside is not None:
-            return self._refused(pr, issue_number, AdoptionRefusal.ISSUE_NOT_IN_EFFORT, outside)
-        elsewhere = _io_work_elsewhere(pr, issue_number, state, issue_branches)
-        if elsewhere is not None:
-            return self._refused(pr, issue_number, AdoptionRefusal.IO_WORK_IN_FLIGHT, elsewhere)
-        assert self.review_lane is not None  # discover() runs only with a review lane
+
+def external_step(
+    pr: "PRInfo", admission: ExternalAdmission, *, branch: str, review_label: str,
+) -> "AdoptExternalPullRequest | ReportRefusedExternalPullRequest | None":
+    """The write THE admission rule's verdict asks for: an adoption, a refusal report, or none."""
+    if admission.admission is Admission.ADOPTABLE:
+        assert admission.issue_number is not None
         return AdoptExternalPullRequest(
-            issue_number=issue_number, pr_number=pr.number, pr_url=pr.url, pr_title=pr.title,
-            integration_branch=self.branch, review_label=self.review_lane,
+            issue_number=admission.issue_number, pr_number=pr.number, pr_url=pr.url, pr_title=pr.title,
+            integration_branch=branch, review_label=review_label,
         )
-
-    def _linked_issue(self, pr: "PRInfo") -> int | None:
-        """The issue every PR lane resolves for *pr*, when the PR really references one.
-
-        Review discovery and the awaiting-merge lanes resolve a PR's issue by
-        :func:`extract_issue_number_from_pr`, which falls back to the PR's own
-        number; only a reference the PR actually makes counts here.
-        """
-        repo = require_repo(self.config)
-        linked = issues_linked(branch=pr.branch, body=pr.body, repo_slug=repo)
-        primary = extract_issue_number_from_pr(pr, repo_slug=repo)
-        return primary if primary in linked else None
-
-    def _outside_effort(self, pr: "PRInfo", issue_number: int) -> str | None:
-        """Why *issue_number* is not in the effort; None when it is (one issue read)."""
-        scope = ReviewScopeChecker(self.config, self.host, log_prefix="ADOPTION", require_open_issue=True)
-        decision = scope.check_issue_number(issue_number, pr.number)
-        issue = decision.issue
-        if not decision.in_scope or issue is None:
-            return f"issue #{issue_number} is not open in this engine's scope ({decision.reason})"
-        return effort_gap(branch=self.branch, issue_number=issue_number, issue_labels=issue.labels,
-                          agent_type=issue.agent_type)
-
-    def _refused(
-        self, pr: "PRInfo", issue_number: int | None, refusal: AdoptionRefusal, detail: str,
-    ) -> ReportRefusedExternalPullRequest:
+    if admission.admission is Admission.REFUSED:
+        assert admission.refusal is not None
         return ReportRefusedExternalPullRequest(
-            pr_number=pr.number, pr_url=pr.url, issue_number=issue_number, base_branch=pr.base_branch or "",
-            integration_branch=self.branch, refusal=refusal, detail=detail,
+            pr_number=pr.number, pr_url=pr.url, issue_number=admission.issue_number,
+            base_branch=pr.base_branch or "", integration_branch=branch, refusal=admission.refusal,
+            detail=admission.detail,
         )
-
-
-def _io_work_elsewhere(
-    pr: "PRInfo", issue_number: int, state: "OrchestratorState", issue_branches: Mapping[int, str],
-) -> str | None:
-    """io's own attempt at the issue, when it has one: two authors never share an issue."""
-    active = issue_branches.get(issue_number)
-    if active and active != pr.branch:
-        return f"io is working issue #{issue_number} on its own branch `{active}`"
-    # A completed issue/PR pair is io's published PR, awaiting merge until reconciled.
-    others = sorted(
-        identity[1] for entry in state.session_history
-        if (identity := entry.publication_identity) is not None
-        and identity[0] == issue_number and identity[1] != pr.number
-    )
-    if others:
-        return f"io's own PR #{others[0]} for issue #{issue_number} is awaiting merge"
     return None
 
 
 # -- the write re-check ----------------------------------------------------------
 
 
-def adoption_step_refusal(
-    step: "AdoptExternalPullRequest | ReportRefusedExternalPullRequest", host: "RepositoryHost",
-) -> str | None:
-    """Why *step* must not be written now, on fresh reads; None when it may."""
+ExternalStep: TypeAlias = (
+    "AdoptExternalPullRequest | ReportRefusedExternalPullRequest | ReturnExternalPullRequestToReview"
+)
+
+
+def external_step_refusal(step: ExternalStep, gate: ExternalPullRequestGate) -> str | None:
+    """Why *step* must not be written now, re-judged by THE admission rule on
+    fresh reads; None when it may."""
     try:
-        pr = host.get_pr(step.pr_number)
-        if isinstance(step, ReportRefusedExternalPullRequest):
-            return None if _is_open(pr) else f"PR #{step.pr_number} is no longer open"
-        fresh = host.get_issue_labels_fresh(step.issue_number)
+        pr = gate.host.get_pr(step.pr_number)
+        if pr is None:
+            return f"PR #{step.pr_number} is gone"
+        pr_labels = gate.host.get_issue_labels_fresh(step.pr_number)
+        admission = gate.judge(pr, pr_labels=pr_labels)
+        if isinstance(step, ReturnExternalPullRequestToReview):
+            return _return_refusal(step, pr, admission, gate=gate, pr_labels=pr_labels)
     except RepositoryHostError as error:
         return f"PR #{step.pr_number} could not be re-read before it is written: {error}"
-    return adoption_obstacle(
-        step, pr_open=_is_open(pr), base_branch=pr.base_branch if pr is not None else None,
-        pr_body=pr.body if pr is not None else None, issue_labels=fresh,
-    )
+    if isinstance(step, AdoptExternalPullRequest):
+        if admission.admission is Admission.ADOPTABLE and admission.issue_number == step.issue_number:
+            return None
+        return f"PR #{step.pr_number} is no longer adoptable for issue #{step.issue_number}: {_said(admission)}"
+    if admission.admission is Admission.REFUSED and admission.refusal is step.refusal:
+        return None  # the same refusal still holds
+    return f"PR #{step.pr_number} is no longer refused for {step.refusal.value}: {_said(admission)}"
 
 
-def _is_open(pr: "PRInfo | None") -> bool:
-    return pr is not None and (pr.state or "").strip().lower() == "open"
+def _return_refusal(
+    step: ReturnExternalPullRequestToReview, pr: "PRInfo", admission: ExternalAdmission, *,
+    gate: ExternalPullRequestGate, pr_labels: Sequence[str],
+) -> str | None:
+    if pr.head_sha != step.head_sha:
+        return f"PR #{step.pr_number} head moved since it was judged; re-checked next pass"
+    if admission.admission is not Admission.ADMITTED or admission.issue_number != step.issue_number:
+        return f"PR #{step.pr_number} is not an admitted PR of issue #{step.issue_number}: {_said(admission)}"
+    approved = gate.head_reviewed(pr, pr_labels=pr_labels)
+    return f"io's review approved PR #{step.pr_number} at {step.head_sha[:8]} meanwhile" if approved else None
+
+
+def _said(admission: ExternalAdmission) -> str:
+    return admission.detail or admission.admission.value
 
 
 __all__ = [
     "ExternalPullRequestAdoption",
-    "OPEN_PR_LISTING_LIMIT",
-    "adoption_step_refusal",
+    "ExternalPullRequestGate",
+    "ExternalStep",
+    "FreshCustody",
+    "IoCustodyReader",
+    "ScanCustody",
+    "StateCustody",
+    "external_step",
+    "external_step_refusal",
+    "io_attempts",
+    "linked_issue",
+    "linked_issue_facts",
+    "pull_request_facts",
+    "review_lane",
+    "routing_gate",
+    "session_branch",
+    "write_gate",
 ]

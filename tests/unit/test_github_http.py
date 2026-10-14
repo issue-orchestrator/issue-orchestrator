@@ -2911,10 +2911,11 @@ def _graphql_body(request: httpx.Request) -> dict:
     return _json.loads(request.content)
 
 
-def _pr_node(number: int, *, draft: bool = False) -> dict:
+def _pr_node(number: int, *, draft: bool = False, labels: tuple[str, ...] = (), more_labels: bool = False) -> dict:
     return {"number": number, "title": f"PR {number}", "url": "u", "body": "",
             "headRefName": f"{number}-work", "headRefOid": "a" * 40, "baseRefName": "main",
-            "isDraft": draft}
+            "isDraft": draft, "labels": {"pageInfo": {"hasNextPage": more_labels},
+                                         "nodes": [{"name": name} for name in labels]}}
 
 
 def test_list_open_prs_complete_walks_by_cursor_without_search() -> None:
@@ -2992,6 +2993,43 @@ def test_list_open_prs_complete_refuses_a_node_without_its_draft_flag() -> None:
     client = _client_with_transport(httpx.MockTransport(handler))
 
     with pytest.raises(GitHubScanIncompleteError, match="malformed node"):
+        client.list_open_prs_complete()
+
+
+def test_list_open_prs_complete_carries_each_pr_s_labels() -> None:
+    """External-PR adoption reads the origin label off this one listing (#9499)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "labels(first: 100)" in _graphql_body(request)["query"]
+        return httpx.Response(200, json={"data": {"repository": {"pullRequests": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+            "nodes": [_pr_node(1, labels=("origin:external", "needs-code-review")), _pr_node(2)],
+        }}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    assert [pr["labels"] for pr in client.list_open_prs_complete()] == [
+        [{"name": "origin:external"}, {"name": "needs-code-review"}],
+        [],
+    ]
+
+
+@pytest.mark.parametrize("damage", ["more_labels", "no_labels"])
+def test_list_open_prs_complete_refuses_a_pr_whose_labels_it_cannot_read_whole(damage: str) -> None:
+    """A caller deciding from a label's absence never reads a truncated set."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        node = _pr_node(1, more_labels=damage == "more_labels")
+        if damage == "no_labels":
+            del node["labels"]
+        return httpx.Response(200, json={"data": {"repository": {"pullRequests": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+            "nodes": [node],
+        }}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match="labels"):
         client.list_open_prs_complete()
 
 

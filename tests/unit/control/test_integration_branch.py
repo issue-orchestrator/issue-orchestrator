@@ -14,6 +14,7 @@ from dataclasses import replace
 import pytest
 
 from issue_orchestrator.control.awaiting_merge_reconciler import AwaitingMergeReconciler
+from issue_orchestrator.control.external_pr_adoption import routing_gate, write_gate
 from issue_orchestrator.control.integration_branch import (
     INTEGRATION_UPKEEP_INTERVAL_SECONDS,
     IntegrationBranchOwner,
@@ -86,6 +87,7 @@ class _World:
         return IntegrationBranchOwner(
             config=self.config.integration, host=self.host, label_manager=self.labels,
             standing_rulings=self.rulings, clock=self.clock,
+            external=routing_gate(self.config, self.host, self.state),
         )
 
     def approved_pr(  # io's own PR: its body carries io's marker (#9499)
@@ -458,6 +460,7 @@ def test_an_upkeep_read_failure_is_contained() -> None:
 def _apply(world: _World, step) -> object:
     [action] = plan_integration_steps([step])
     return apply_integration_step(action, host=world.host, labels=world.labels, rulings=world.rulings,
+                                  external=write_gate(world.config, world.host, lambda: world.state),
                                   events=world.events)
 
 

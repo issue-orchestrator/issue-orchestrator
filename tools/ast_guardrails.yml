@@ -105,6 +105,10 @@ deny_attr_calls:
       # it runs ONLY from the create-PR completion action - and its governed
       # label is refused there by the capability rather than written.
       - src/issue_orchestrator/control/completion_pr_labels.py
+      # The completion processor's approval boundary, extracted for its line
+      # budget (#9499): io's review receipt on an adopted PR, written ONLY from
+      # the ADD_CODE_REVIEWED_LABEL completion action, just before that label.
+      - src/issue_orchestrator/control/completion_reviewed_head.py
       - src/issue_orchestrator/control/label_sync.py
       # The shared needs-human block's one owner (#6999 F2 round 3). It is the
       # only writer of that label BY DESIGN - every acquisition, cause release
@@ -146,10 +150,11 @@ deny_attr_calls:
       - src/issue_orchestrator/control/tech_lead_approval_writes.py
       - src/issue_orchestrator/control/tech_lead_approval_migration.py
       # External-PR adoption's writes (#9499): the origin/review labels an
-      # adoption puts on the PR and a refusal's comment. They run ONLY inside
-      # the ADVANCE_INTEGRATION applier handler, after the step was re-checked
-      # on fresh reads - the same applier IO boundary as action_applier.py's
-      # own. Discovery (external_pr_adoption.py) stays denied.
+      # adoption puts on the PR, a refusal's comment, and the labels that send
+      # an adopted PR back to review. They run ONLY inside the
+      # ADVANCE_INTEGRATION applier handler, after the step was re-judged on
+      # fresh reads - the same applier IO boundary as action_applier.py's own.
+      # Discovery (external_pr_adoption.py) stays denied.
       - src/issue_orchestrator/control/external_pr_adoption_writes.py
   - name: entrypoints_no_direct_label_mutations
     description: "Entrypoint handlers must apply label/comment mutations via ActionApplier"

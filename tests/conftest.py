@@ -632,6 +632,18 @@ class MockGitHubAdapter:
         """Whether a recorded comment on the issue/PR carries ``marker`` (mock)."""
         return any(c["number"] == issue_number and marker in c["body"] for c in self.comments)
 
+    def find_issue_comment_receipt(self, issue_number: int, *, body: str):
+        """An exact-body comment written under THIS credential (mock): every
+        ``add_comment`` is the engine's own; a test records another author's
+        comment with an ``author`` key."""
+        from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
+
+        for index, comment in enumerate(self.comments):
+            if comment["number"] == issue_number and comment["body"] == body and comment.get("author") is None:
+                return IssueCommentReceipt(str(index + 1), f"https://github.com/test/repo/issues/{issue_number}"
+                                           f"#issuecomment-{index + 1}", "github-user:1", "sha256")
+        return None
+
     # IntegrationBranchHost (#8144) -------------------------------------------
 
     def _integration_failure(self, method: str) -> None:

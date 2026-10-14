@@ -2521,7 +2521,9 @@ class GitHubHttpClient:
         mid-walk cannot shift another one past a page boundary the way offset
         pagination does. Every node is validated; a malformed node, a missing
         connection or a walk longer than ``page_cap`` pages raises
-        ``GitHubScanIncompleteError``.
+        ``GitHubScanIncompleteError``. Each PR carries its labels (REST shape),
+        and a PR with more labels than one page holds raises too: a caller
+        deciding from a label's absence never reads a truncated set (#9499).
         """
         owner, repo = self._config.repo.split("/", 1)
         query = """
@@ -2530,7 +2532,10 @@ class GitHubHttpClient:
                 pullRequests(states: OPEN, first: 100, after: $after,
                              orderBy: {field: CREATED_AT, direction: ASC}) {
                     pageInfo { hasNextPage endCursor }
-                    nodes { number title url body headRefName headRefOid baseRefName isDraft }
+                    nodes {
+                        number title url body headRefName headRefOid baseRefName isDraft
+                        labels(first: 100) { pageInfo { hasNextPage } nodes { name } }
+                    }
                 }
             }
         }
@@ -2559,7 +2564,7 @@ class GitHubHttpClient:
                     raise self._incomplete_open_prs(f"returned a malformed node: {node!r}")
                 # ``draft`` is the REST spelling ``_pr_info_from_api`` reads;
                 # an open PR is always one or the other (#7490).
-                prs.append({**node, "state": "open", "draft": node["isDraft"]})
+                prs.append({**node, "state": "open", "draft": node["isDraft"], "labels": self._pr_node_labels(node)})
             page_info = connection.get("pageInfo")
             if not isinstance(page_info, dict) or type(page_info.get("hasNextPage")) is not bool:
                 raise self._incomplete_open_prs("returned no pageInfo.hasNextPage")
@@ -2569,6 +2574,19 @@ class GitHubHttpClient:
             if not isinstance(after, str) or not after:
                 raise self._incomplete_open_prs("reported another page without a cursor")
         raise self._incomplete_open_prs(f"exceeded the {page_cap * 100}-PR page cap")
+
+    def _pr_node_labels(self, node: dict[str, Any]) -> list[dict[str, str]]:
+        """One open-PR node's labels in REST shape, or an error: never a truncated set."""
+        labels = node.get("labels")
+        page_info = labels.get("pageInfo") if isinstance(labels, dict) else None
+        names = labels.get("nodes") if isinstance(labels, dict) else None
+        if not isinstance(page_info, dict) or not isinstance(names, list) or not all(
+            isinstance(label, dict) and isinstance(label.get("name"), str) for label in names
+        ):
+            raise self._incomplete_open_prs(f"returned PR #{node['number']} without readable labels")
+        if page_info.get("hasNextPage") is not False:
+            raise self._incomplete_open_prs(f"returned PR #{node['number']} with more labels than one page")
+        return [{"name": label["name"]} for label in names]
 
     def list_prs_numbered_above(
         self, number_floor: int, *, page_cap: int = 20

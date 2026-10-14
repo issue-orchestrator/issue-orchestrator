@@ -9,23 +9,39 @@ merge into the effort's branch, the delivery. The PR is the splice point.
   (``integrate:<branch>``).
 * **Provenance.** io's own PRs carry :data:`ORCHESTRATOR_PR_MARKER` in their
   body. Any other PR is external, and io acts on it - reviews, reworks,
-  updates, merges it - only once it has been ADOPTED: it targets the effort's
-  branch, references an issue in the effort, and carries
-  :data:`ORIGIN_EXTERNAL_LABEL`. That label is also what lets the tech lead,
-  the improver and an evaluation separate adopted work from io's own.
-* **Fail closed.** A PR that targets the effort branch without referencing an
-  issue in the effort, or that references one but targets another base, is
-  :class:`AdoptionRefusal`-refused: never adopted, reported once, never merged.
-  :func:`merge_provenance` is the rule every merge and update re-asks, so a
-  hand-applied review label cannot carry an unadopted PR into the branch.
+  updates, merges it - only once it is ADOPTED (it carries
+  :data:`ORIGIN_EXTERNAL_LABEL`, which also lets the tech lead, the improver
+  and an evaluation separate adopted work from io's own) and still ADMITTED.
+  Once adopted, the label decides: a body that later carries io's marker does
+  not make the PR io's own.
+* **THE admission rule.** :func:`judge_external_pull_request` is the one
+  decision every boundary asks, on :class:`ExternalPullRequestFacts` it reads
+  itself: discovery, the applier's re-check before each adoption, refusal,
+  return-to-review, update or merge write, and the merge/update/rework routing
+  (through :func:`merge_refusal`). A PR is admitted while it is open, targets
+  the effort branch, references exactly one issue that is open, in the
+  engine's complete scope, labelled for the effort and reworkable (an agent
+  label), and io holds no other attempt at that issue (:class:`IoCustody`).
+* **Fail closed.** A PR into the effort branch that is not admitted, and a PR
+  for an issue in the effort that targets another base, is
+  :class:`AdoptionRefusal`-refused: reported once per reason, never merged.
+* **Reviewed-head custody.** An approval binds to the exact head io's
+  reviewer reviewed, not to the ``code-reviewed`` label (which survives a
+  push): io's approval of an adopted PR leaves a
+  :func:`reviewed_head_receipt` on the PR, written under io's own credential,
+  and the merge gate requires one for the PR's current head. A head without
+  one - pushed after the approval, pushed while the review was completing, or
+  io's own mechanical update onto the effort tip - is not merged; it goes back
+  to io's review (:class:`ReturnExternalPullRequestToReview`).
 
 Pure values: the owner (:mod:`~..control.external_pr_adoption`) reads GitHub
-and decides; the two steps here are facts its planner turns into actions.
+and decides; the steps here are facts its planner turns into actions.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -39,6 +55,7 @@ ORIGIN_EXTERNAL_LABEL = "origin:external"
 EFFORT_LABEL_PREFIX = "integrate:"
 
 _REFUSAL_MARKER_PREFIX = "<!-- io:external-pr-refused reason="
+_SHA = re.compile(r"[0-9a-f]{40}")
 
 
 def effort_label(branch: str) -> str:
@@ -53,89 +70,232 @@ def io_authored(body: str | None) -> bool:
     return ORCHESTRATOR_PR_MARKER in (body or "")
 
 
-class MergeProvenance(StrEnum):
-    """Where a PR into the effort branch came from, as io's merge gate reads it."""
-
-    IO_AUTHORED = "io_authored"
-    ADOPTED = "adopted"
-    #: External and never adopted: io does not act on it.
-    NOT_ADOPTED = "not_adopted"
-    #: Adopted, but its issue no longer carries the effort label.
-    LEFT_EFFORT = "left_effort"
-
-    @property
-    def admitted(self) -> bool:
-        """Whether io may review, update or merge the PR at all."""
-        return self in (MergeProvenance.IO_AUTHORED, MergeProvenance.ADOPTED)
-
-
-def merge_provenance(
-    *, branch: str, pr_body: str | None, pr_labels: Sequence[str], issue_labels: Sequence[str]
-) -> MergeProvenance:
-    """THE provenance rule for a PR into the effort integrating on *branch*."""
-    if io_authored(pr_body):
-        return MergeProvenance.IO_AUTHORED
-    if ORIGIN_EXTERNAL_LABEL not in pr_labels:
-        return MergeProvenance.NOT_ADOPTED
-    if not in_effort(branch, issue_labels):
-        return MergeProvenance.LEFT_EFFORT
-    return MergeProvenance.ADOPTED
-
-
-class ExternalStanding(StrEnum):
-    """Where one open PR stands with respect to the effort, before its issue is read."""
-
-    #: io's own, a draft not offered yet, or the delivery PR itself.
-    NOT_EXTERNAL = "not_external"
-    #: External, into another base: io's business only for an issue in the effort.
-    OTHER_BASE = "other_base"
-    #: External, into the effort branch, adopted already.
-    ADOPTED = "adopted"
-    #: External, into the effort branch, not adopted yet: its issue decides.
-    CANDIDATE = "candidate"
-
-
-def external_standing(
-    *, branch: str, pr_body: str | None, pr_branch: str, base_branch: str | None, draft: bool | None,
-    pr_labels: Sequence[str],
-) -> ExternalStanding:
-    """THE classification of an open PR for the effort integrating on *branch*."""
-    if io_authored(pr_body) or draft or pr_branch == branch:
-        return ExternalStanding.NOT_EXTERNAL
-    if base_branch != branch:
-        return ExternalStanding.OTHER_BASE
-    if ORIGIN_EXTERNAL_LABEL in pr_labels:
-        return ExternalStanding.ADOPTED
-    return ExternalStanding.CANDIDATE
-
-
-def in_effort(branch: str, issue_labels: Sequence[str]) -> bool:
+def in_effort(branch: str, issue_labels: Iterable[str]) -> bool:
     """Whether an issue with *issue_labels* belongs to the effort integrating on *branch*."""
     return effort_label(branch) in issue_labels
 
 
-def effort_gap(
-    *, branch: str, issue_number: int, issue_labels: Sequence[str], agent_type: str | None,
-) -> str | None:
-    """Why an open, in-scope issue is still not in the effort; None when it is."""
-    if not in_effort(branch, issue_labels):
-        return f"issue #{issue_number} is not labelled `{effort_label(branch)}`"
-    if agent_type is None:
-        return f"issue #{issue_number} has no agent label, so io could not rework it"
-    return None
+# -- the facts THE admission rule judges -------------------------------------------
+
+
+@dataclass(frozen=True)
+class PullRequestFacts:
+    """One PR, as GitHub reports it now."""
+
+    number: int
+    open: bool
+    draft: bool
+    body: str
+    branch: str
+    base_branch: str | None
+    labels: frozenset[str]
+    #: The issue the PR really references - the one every lane resolves it to,
+    #: when the PR's branch or body actually names it; None when it names none.
+    linked_issue: int | None
+
+    @property
+    def adopted(self) -> bool:
+        return ORIGIN_EXTERNAL_LABEL in self.labels
+
+    @property
+    def io_owned(self) -> bool:
+        """io's own PR: its marker, and never adopted (the label decides once it is on)."""
+        return io_authored(self.body) and not self.adopted
+
+
+@dataclass(frozen=True)
+class LinkedIssueFacts:
+    """The issue a PR references, as GitHub reports it now."""
+
+    number: int
+    #: Why the issue is outside the engine's complete scope (closed, milestone,
+    #: label filters, single-issue scope); None when it is inside.
+    scope_gap: str | None
+    labels: frozenset[str]
+    agent_type: str | None
+
+
+@dataclass(frozen=True)
+class IoCustody:
+    """io's own hold on one issue, as the boundary asking reads it."""
+
+    #: The branch an io session or worktree works the issue on, if any.
+    working_branch: str | None
+    #: io's own PRs for the issue (open, or published and awaiting merge) and
+    #: every adopted one: two attempts never share an issue.
+    pull_requests: frozenset[int]
+
+    def conflict(self, issue_number: int, pr: PullRequestFacts) -> str | None:
+        """io's other attempt at *issue_number*, when *pr* is not it; None when there is none."""
+        if self.working_branch and self.working_branch != pr.branch:
+            return f"io is working issue #{issue_number} on its own branch `{self.working_branch}`"
+        others = sorted(self.pull_requests - {pr.number})
+        if others:
+            return f"PR #{others[0]} is already an attempt at issue #{issue_number} that io owns"
+        return None
+
+
+@dataclass(frozen=True)
+class ExternalPullRequestFacts:
+    """Everything THE admission rule reads about one PR."""
+
+    pr: PullRequestFacts
+    #: The referenced issue, read whenever the PR references one.
+    issue: LinkedIssueFacts | None
+    custody: IoCustody
+
+    def __post_init__(self) -> None:
+        read = None if self.issue is None else self.issue.number
+        if read != self.pr.linked_issue:
+            raise ValueError(f"PR #{self.pr.number} references issue {self.pr.linked_issue}, facts read {read}")
 
 
 class AdoptionRefusal(StrEnum):
-    """Why an external PR was not adopted. Each one is reported, none is merged."""
+    """Why an external PR is not admitted. Each one is reported, none is merged."""
 
     #: It targets the effort branch but references no issue.
     NO_ISSUE_REFERENCE = "no_issue_reference"
-    #: It targets the effort branch, but its issue is not in the effort.
+    #: It targets the effort branch, but its issue is not (or no longer) in the effort.
     ISSUE_NOT_IN_EFFORT = "issue_not_in_effort"
     #: Its issue is in the effort, but it targets another base.
     WRONG_BASE = "wrong_base"
-    #: Its issue is in the effort, but io is already working it on another branch or PR.
+    #: Its issue is in the effort, but io already holds another attempt at it.
     IO_WORK_IN_FLIGHT = "io_work_in_flight"
+
+
+class Admission(StrEnum):
+    """Where one open PR stands with the effort."""
+
+    #: Not external work in this effort: io's own, a draft, closed, the
+    #: delivery PR, or into another base for an issue outside the effort.
+    IGNORED = "ignored"
+    #: External, into the effort branch, eligible, not adopted yet.
+    ADOPTABLE = "adoptable"
+    #: Adopted and still eligible: io's lanes may act on it.
+    ADMITTED = "admitted"
+    #: External work io will not adopt or act on (``refusal`` says why).
+    REFUSED = "refused"
+
+
+@dataclass(frozen=True)
+class ExternalAdmission:
+    """THE admission rule's verdict on one PR."""
+
+    admission: Admission
+    #: The issue the PR references (None when it references none).
+    issue_number: int | None
+    refusal: AdoptionRefusal | None = None
+    detail: str = ""
+
+    def __post_init__(self) -> None:
+        if (self.refusal is None) is (self.admission is Admission.REFUSED):
+            raise ValueError("a refusal names its reason, and only a refusal does")
+
+
+def issue_gap(branch: str, issue: LinkedIssueFacts) -> str | None:
+    """Why *issue* is not (or no longer) in the effort; None when it is."""
+    if issue.scope_gap is not None:
+        return f"issue #{issue.number} is not open in this engine's scope ({issue.scope_gap})"
+    if not in_effort(branch, issue.labels):
+        return f"issue #{issue.number} is not labelled `{effort_label(branch)}`"
+    if issue.agent_type is None:
+        return f"issue #{issue.number} has no agent label, so io could not rework it"
+    return None
+
+
+def external_work(branch: str, pr: PullRequestFacts) -> bool:
+    """Whether *pr* is external work at all (before its issue is read): open,
+    ready, not io's own, and not the effort's delivery PR."""
+    return pr.open and not pr.draft and not pr.io_owned and pr.branch != branch
+
+
+def judge_external_pull_request(branch: str, facts: ExternalPullRequestFacts) -> ExternalAdmission:
+    """THE admission rule for one PR and the effort integrating on *branch*."""
+    pr, issue = facts.pr, facts.issue
+    if not external_work(branch, pr):
+        return ExternalAdmission(Admission.IGNORED, pr.linked_issue)
+    if pr.base_branch != branch:
+        if issue is not None and in_effort(branch, issue.labels) and issue.scope_gap is None:
+            return _refused(issue.number, AdoptionRefusal.WRONG_BASE,
+                            f"it targets `{pr.base_branch}`, but issue #{issue.number} integrates on `{branch}`")
+        return ExternalAdmission(Admission.IGNORED, pr.linked_issue)
+    if issue is None:
+        return _refused(None, AdoptionRefusal.NO_ISSUE_REFERENCE, f"it targets `{branch}` but references no issue")
+    gap = issue_gap(branch, issue)
+    if gap is not None:
+        return _refused(issue.number, AdoptionRefusal.ISSUE_NOT_IN_EFFORT, gap)
+    conflict = facts.custody.conflict(issue.number, pr)
+    if conflict is not None:
+        return _refused(issue.number, AdoptionRefusal.IO_WORK_IN_FLIGHT, conflict)
+    return ExternalAdmission(Admission.ADMITTED if pr.adopted else Admission.ADOPTABLE, issue.number)
+
+
+def _refused(issue_number: int | None, refusal: AdoptionRefusal, detail: str) -> ExternalAdmission:
+    return ExternalAdmission(Admission.REFUSED, issue_number, refusal=refusal, detail=detail)
+
+
+def merge_refusal(
+    branch: str, pr: PullRequestFacts, *, issue: LinkedIssueFacts, custody: IoCustody,
+) -> str | None:
+    """Why io may not rework, update or merge *pr* as *issue*'s PR; None when it may.
+
+    io's own PR is its lanes' to act on. An external one must be ADMITTED by
+    THE admission rule for exactly *issue*: an edit that drops the reference,
+    or points it at another issue, takes it out of every lane.
+    """
+    if pr.io_owned:
+        return None
+    if pr.linked_issue != issue.number:
+        named = "no issue" if pr.linked_issue is None else f"issue #{pr.linked_issue}"
+        return f"PR #{pr.number} references {named}, not issue #{issue.number}"
+    verdict = judge_external_pull_request(branch, ExternalPullRequestFacts(pr=pr, issue=issue, custody=custody))
+    if verdict.admission is Admission.ADMITTED:
+        return None
+    if verdict.admission is Admission.REFUSED:
+        return verdict.detail
+    return f"PR #{pr.number} is not an adopted PR io may act on ({verdict.admission.value})"
+
+
+# -- reviewed-head custody -----------------------------------------------------------
+
+
+def reviewed_head_receipt(pr_number: int, head_sha: str) -> str:
+    """The exact comment io's approval of an adopted PR leaves: one per reviewed head.
+
+    Exact on purpose: the merge gate asks for THIS body, written under io's
+    own credential, for the PR's current head - never a marker substring,
+    which anyone who can comment could write.
+    """
+    if not _SHA.fullmatch(head_sha):
+        raise ValueError(f"a reviewed head is a full commit SHA, got {head_sha!r}")
+    return "\n".join([
+        f"<!-- io:reviewed-head pr={pr_number} sha={head_sha} -->",
+        f"issue-orchestrator's review approved this pull request at `{head_sha}`.",
+        "",
+        "Only that commit is approved: io merges this PR only while it is the PR's head;"
+        " any other head goes back to io's review first.",
+    ])
+
+
+@dataclass(frozen=True)
+class ReturnExternalPullRequestToReview:
+    """Send an adopted PR whose head io's review never approved back to that review.
+
+    Its approval labels were given to another head (a push after the
+    approval, or io's own mechanical update onto the effort tip): they are
+    removed, and the PR re-enters io's review lane.
+    """
+
+    issue_number: int
+    pr_number: int
+    #: The head io's review never approved; the write re-checks it is still the head.
+    head_sha: str
+    integration_branch: str
+    #: The label io's review discovery lists PRs by.
+    review_label: str
+
+
+# -- adoption and refusal steps --------------------------------------------------------
 
 
 _REMEDIES: dict[AdoptionRefusal, str] = {
@@ -144,11 +304,12 @@ _REMEDIES: dict[AdoptionRefusal, str] = {
         " the issue must carry `{label}`."
     ),
     AdoptionRefusal.ISSUE_NOT_IN_EFFORT: (
-        "The issue it references must be open, in this engine's scope and labelled `{label}`."
+        "The issue it references must be open, in this engine's scope, labelled `{label}`"
+        " and carry an agent label."
     ),
     AdoptionRefusal.WRONG_BASE: "Change its base branch to `{branch}`.",
     AdoptionRefusal.IO_WORK_IN_FLIGHT: (
-        "io is already working this issue; close one of the two attempts."
+        "io already holds another attempt at this issue; close one of the two attempts."
     ),
 }
 
@@ -171,26 +332,9 @@ class AdoptExternalPullRequest:
     review_label: str
 
 
-def adoption_obstacle(
-    step: AdoptExternalPullRequest, *, pr_open: bool, base_branch: str | None, pr_body: str | None,
-    issue_labels: Sequence[str],
-) -> str | None:
-    """Why *step* must not be written on what GitHub says now; None when it may."""
-    if not pr_open:
-        return f"PR #{step.pr_number} is no longer open"
-    if base_branch != step.integration_branch:
-        return f"PR #{step.pr_number} now targets {base_branch!r}, not {step.integration_branch!r}"
-    if io_authored(pr_body):
-        return f"PR #{step.pr_number} is io's own"
-    if not in_effort(step.integration_branch, issue_labels):
-        return (f"issue #{step.issue_number} left the {step.integration_branch} effort;"
-                f" PR #{step.pr_number} not adopted")
-    return None
-
-
 @dataclass(frozen=True)
-class AdoptionLabelWrites:
-    """The PR label writes that adopt it, in order: removals, then additions."""
+class PullRequestLabelWrites:
+    """The PR label writes of one step, in order: removals, then additions."""
 
     remove: tuple[str, ...]
     add: tuple[str, ...]
@@ -198,16 +342,27 @@ class AdoptionLabelWrites:
 
 def adoption_label_writes(
     current: Iterable[str], *, review_label: str, reviewed_label: str,
-) -> AdoptionLabelWrites:
+) -> PullRequestLabelWrites:
     """Nothing once adopted; otherwise drop an approval io did not give, enter
     io's review lane, and mark the origin LAST, so a PR counts as adopted only
     once it is in the lane."""
     present = frozenset(current)
     if ORIGIN_EXTERNAL_LABEL in present:
-        return AdoptionLabelWrites(remove=(), add=())
-    return AdoptionLabelWrites(
+        return PullRequestLabelWrites(remove=(), add=())
+    return PullRequestLabelWrites(
         remove=tuple(label for label in (reviewed_label,) if label in present),
         add=(*(label for label in (review_label,) if label not in present), ORIGIN_EXTERNAL_LABEL),
+    )
+
+
+def return_to_review_label_writes(
+    current: Iterable[str], *, review_label: str, approval_labels: Iterable[str],
+) -> PullRequestLabelWrites:
+    """Drop every approval the PR carries, then re-enter io's review lane."""
+    present = frozenset(current)
+    return PullRequestLabelWrites(
+        remove=tuple(label for label in dict.fromkeys(approval_labels) if label in present),
+        add=(review_label,) if review_label not in present else (),
     )
 
 
@@ -246,40 +401,57 @@ def render_refusal_comment(step: ReportRefusedExternalPullRequest) -> str:
     ])
 
 
+# -- what the owner last saw -----------------------------------------------------------
+
+
 @dataclass(frozen=True)
 class AdoptedExternalPullRequest:
-    """One adopted PR as the board shows it."""
+    """One open PR carrying the origin label, as the board shows it."""
 
     pr_number: int
-    #: The issue it references; None once an edit removed the reference (the
-    #: merge gate then refuses it, as for any PR without an issue in the effort).
+    #: The issue it references; None once an edit removed the reference (it
+    #: is then refused, and no lane acts on it).
     issue_number: int | None
     pr_url: str
 
 
 @dataclass
 class ExternalPullRequestLedger:
-    """What the adoption owner last saw, for the board and its own reporting.
+    """What the adoption owner saw on its last COMPLETE scan, for the board and
+    the lanes between scans.
 
     In memory, like the queues beside it: the first scan after a restart
-    rebuilds it from the PRs' labels. ``reported`` holds the refusals this
-    process already handed to the planner, so each is told once per reason
-    (the write also skips a PR already carrying that reason's comment).
+    rebuilds it from GitHub. Only a complete listing replaces it, so a read
+    that failed part-way never drops a PR from the board. ``reported`` holds
+    the refusals this process already handed to the planner, so each is told
+    once per reason (the write also skips a PR already carrying that reason's
+    comment). ``reviewed_heads`` memoizes the heads whose review receipt was
+    found, so the routing does not re-read it each pass; the receipt on the PR
+    is the record, and every write re-reads it.
     """
 
     adopted: dict[int, AdoptedExternalPullRequest] = field(default_factory=dict)
     reported: dict[int, AdoptionRefusal] = field(default_factory=dict)
+    #: Per issue: the open PRs that are io's own or adopted attempts at it.
+    attempts: dict[int, frozenset[int]] = field(default_factory=dict)
+    reviewed_heads: dict[int, str] = field(default_factory=dict)
 
     def adopted_pr_numbers(self) -> frozenset[int]:
         return frozenset(self.adopted)
+
+    def attempts_at(self, issue_number: int) -> frozenset[int]:
+        return self.attempts.get(issue_number, frozenset())
 
     def record_scan(
         self,
         adopted: Iterable[AdoptedExternalPullRequest],
         refused: Iterable[ReportRefusedExternalPullRequest],
+        attempts: Mapping[int, frozenset[int]],
     ) -> tuple[ReportRefusedExternalPullRequest, ...]:
         """Replace the view with one complete scan; return the refusals not yet told."""
         self.adopted = {item.pr_number: item for item in adopted}
+        self.attempts = dict(attempts)
+        self.reviewed_heads = {number: head for number, head in self.reviewed_heads.items() if number in self.adopted}
         refusals = {step.pr_number: step for step in refused}
         untold = tuple(step for number, step in sorted(refusals.items())
                        if self.reported.get(number) is not step.refusal)
@@ -290,23 +462,30 @@ class ExternalPullRequestLedger:
 __all__ = [
     "AdoptExternalPullRequest",
     "AdoptedExternalPullRequest",
-    "AdoptionLabelWrites",
+    "Admission",
     "AdoptionRefusal",
     "EFFORT_LABEL_PREFIX",
+    "ExternalAdmission",
+    "ExternalPullRequestFacts",
     "ExternalPullRequestLedger",
-    "ExternalStanding",
-    "MergeProvenance",
+    "IoCustody",
+    "LinkedIssueFacts",
     "ORCHESTRATOR_PR_MARKER",
     "ORIGIN_EXTERNAL_LABEL",
+    "PullRequestFacts",
+    "PullRequestLabelWrites",
     "ReportRefusedExternalPullRequest",
+    "ReturnExternalPullRequestToReview",
     "adoption_label_writes",
-    "adoption_obstacle",
-    "effort_gap",
     "effort_label",
-    "external_standing",
+    "external_work",
     "in_effort",
     "io_authored",
-    "merge_provenance",
+    "issue_gap",
+    "judge_external_pull_request",
+    "merge_refusal",
     "refusal_marker",
     "render_refusal_comment",
+    "return_to_review_label_writes",
+    "reviewed_head_receipt",
 ]

@@ -40,7 +40,7 @@ from ..domain.models import (
 from ..ports import EventSink, make_trace_event, RepositoryHost
 from .awaiting_merge_reconciler import AwaitingMergeReconciler
 from .ci_failure_triage import CiFailureTriage
-from .external_pr_adoption import ExternalPullRequestAdoption
+from .external_pr_adoption import ExternalPullRequestAdoption, routing_gate
 from .integration_branch import IntegrationBranchOwner
 from .merge_queue_coordinator import MergeQueueCoordinator
 from .retrospective_review import discover_retrospective_review_issues
@@ -244,11 +244,10 @@ class GitHubWorkflow:
         """Adopt or refuse externally authored PRs into the integration effort (#9499)."""
         if not self.config.integration.enabled:
             return
-        assert self.label_manager is not None, "integration mode needs the label manager"
-        adoption = ExternalPullRequestAdoption(self.config, self.repository_host, self.label_manager)
+        adoption = ExternalPullRequestAdoption(self.config, self.repository_host)
         state.discovered_integration_steps.extend(adoption.discover(state, issue_branches=issue_branches))
 
-    def _integration_owner(self) -> IntegrationBranchOwner | None:
+    def _integration_owner(self, state: "OrchestratorState") -> IntegrationBranchOwner | None:
         """This pass's integration-branch owner when the mode is on (#8144)."""
         if not self.config.integration.enabled:
             return None
@@ -260,6 +259,7 @@ class GitHubWorkflow:
             label_manager=self.label_manager,
             standing_rulings=self.standing_rulings,
             clock=self.clock,
+            external=routing_gate(self.config, self.repository_host, state),
         )
 
     def _merge_queue_coordinator(self) -> MergeQueueCoordinator | None:
@@ -280,7 +280,7 @@ class GitHubWorkflow:
 
     def scan_awaiting_merge_followups(self, state: "OrchestratorState") -> None:
         """Discover post-approval PR follow-up work for awaiting-merge issues."""
-        integration = self._integration_owner()
+        integration = self._integration_owner(state)
         result = AwaitingMergeReconciler(
             self.repository_host,
             label_manager=self.label_manager,

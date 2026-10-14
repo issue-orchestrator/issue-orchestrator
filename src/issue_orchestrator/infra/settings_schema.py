@@ -2276,8 +2276,10 @@ class IntegrationSettings(BaseModel):
                 " a merge commit. A PR opened outside io (no io marker) is adopted when it"
                 " targets the integration branch and references an issue labelled"
                 " integrate:<branch>: io labels it origin:external and runs it through its own"
-                " review, merge and delivery. Any other such PR is refused with a comment"
-                " and never merged. Cannot be combined with merge_queue.enabled."
+                " review, merge and delivery, merging it only at the exact head its review"
+                " approved (any later push, or io's own update onto the integration tip,"
+                " goes back to io's review first). Any other such PR is refused with a"
+                " comment and never merged. Cannot be combined with merge_queue.enabled."
             ),
             "section": "Integration Branch",
             "config_attr": "integration.enabled",

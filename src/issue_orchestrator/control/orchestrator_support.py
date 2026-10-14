@@ -80,6 +80,7 @@ def init_orchestrator_components(orch: "Orchestrator") -> None:
     Helpers are exposed via @cached_property on Orchestrator - no fields set here.
     """
     from ..observation.observer import SessionObserver
+    from .external_pr_adoption import write_gate
     from .session_history import SessionHistoryOwner
 
     # Wire up the scheduler from the planner
@@ -98,6 +99,10 @@ def init_orchestrator_components(orch: "Orchestrator") -> None:
             ),
             None,
         )
+    )
+    # A write's external-PR gate (#9499): bound to live state, read fresh per step.
+    orch.deps.action_applier.external_pr_gate = lambda: write_gate(
+        orch.config, orch.repository_host, lambda: orch.state,
     )
     # Bind to live state (not the current list object): recovery/retry paths
     # replace ``state.session_history`` wholesale, and a captured list would go

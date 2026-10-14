@@ -13,10 +13,14 @@ by the reconciler's close-on-merge path, and the delivery PR lists all three.
 from __future__ import annotations
 
 from itertools import count
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from issue_orchestrator.control.actions import ActionType
+from issue_orchestrator.control.completion_reviewed_head import record_reviewed_head
 from issue_orchestrator.control.github_workflow import GitHubWorkflow
+from issue_orchestrator.control.external_pr_adoption import write_gate
 from issue_orchestrator.control.integration_branch import apply_integration_step
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.planner import Planner
@@ -29,7 +33,13 @@ from issue_orchestrator.domain.integration_branch import (
     MergedIntoBranch,
     delivered_tip,
 )
-from issue_orchestrator.domain.models import ORCHESTRATOR_PR_MARKER, Issue, OrchestratorState, SessionHistoryEntry
+from issue_orchestrator.domain.models import (
+    ORCHESTRATOR_PR_MARKER,
+    Issue,
+    OrchestratorState,
+    RequestedAction,
+    SessionHistoryEntry,
+)
 from issue_orchestrator.events import EventContext
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.config_models import IntegrationConfig
@@ -180,6 +190,7 @@ class _Engine:
         plan = Planner(config=self.config, scheduler=Scheduler(self.config)).plan(snapshot)
         for action in plan.actions_of_type(ActionType.ADVANCE_INTEGRATION):
             apply_integration_step(action, host=self.github, labels=self.labels, rulings=self.rulings,
+                                   external=write_gate(self.config, self.github, lambda: self.state),
                                    events=self.events)
         # A merged PR leaves the awaiting-merge history once reconciled.
         self.state.session_history = [
@@ -273,7 +284,13 @@ def test_a_hand_opened_pr_in_the_effort_is_reviewed_merged_and_delivered_and_one
         [], [], issue_branches={},
     )
     assert [review.pr_number for review in scan.reviews] == [321]  # io's own review lane, and only it
-    # io's reviewer approves: what that review's completion records.
+    # io's reviewer approves: what that review's completion records - its
+    # receipt for the head the review read, then the approval and the history.
+    assert record_reviewed_head(
+        RequestedAction.ADD_CODE_REVIEWED_LABEL, Path("/review-321"), issue_number=231, pr_number=321,
+        pr_adapter=engine.github, git_adapter=SimpleNamespace(get_head_sha=lambda _worktree: adopted.head_sha),
+        actions_taken=[], errors=[],
+    )
     engine.github.remove_label(321, "needs-code-review")
     engine.github.add_label(321, engine.labels.code_reviewed)
     engine.state.session_history.append(SessionHistoryEntry(

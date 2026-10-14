@@ -109,6 +109,7 @@ from .completion_result_artifacts import (
 from .completion_review_exchange import CompletionReviewExchange
 from .completion_ports import GitAdapter, LabelAdapter, PRAdapter
 from .completion_pr_labels import apply_pr_labels, route_reserved_pr_labels
+from .completion_reviewed_head import record_reviewed_head
 from .completion_types import (
     ERROR_PREFIX_CREATE_PR,
     ERROR_PREFIX_PUBLISH_BLOCKED,
@@ -1820,12 +1821,11 @@ class CompletionProcessor:
                 actions_taken=actions_taken,
             )
         else:
+            if not record_reviewed_head(action, worktree, issue_number=issue_number, pr_number=label_target,  # #9499
+                                        pr_adapter=self.pr_adapter, git_adapter=self.git_adapter, actions_taken=actions_taken, errors=errors):
+                return self._ActionResult(halt=True)
             label_result = self._execute_label_mutation_action(
-                action=action,
-                issue_number=issue_number,
-                label_target=label_target,
-                actions_taken=actions_taken,
-            )
+                action=action, issue_number=issue_number, label_target=label_target, actions_taken=actions_taken)
             if label_result is not None:
                 return label_result
 
