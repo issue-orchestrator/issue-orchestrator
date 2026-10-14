@@ -2274,7 +2274,7 @@ class IntegrationSettings(BaseModel):
                 " tip, updates a behind PR mechanically before any agent rework, and keeps"
                 " one delivery PR (integration -> default branch) open for you to merge with"
                 " a merge commit. A PR opened outside io (no io marker) is adopted when it"
-                " targets the integration branch and references an issue labelled"
+                " targets the integration branch and references exactly one issue, labelled"
                 " integrate:<branch> whose agent label names a configured agent (so io can"
                 " rework it): io labels it origin:external and runs it through its own"
                 " review, merge and delivery, merging it only at the exact head its review"

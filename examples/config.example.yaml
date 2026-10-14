@@ -240,8 +240,8 @@ merge_queue:
 # rework, and keeps ONE delivery PR (branch -> default branch) open: merge that
 # with a merge commit and io fast-forwards the branch to the default branch.
 # A PR held by needs-human, or whose issue carries a standing ruling, is never
-# auto-merged. A PR opened outside io that targets the branch and references an
-# issue labelled integrate:<branch> (with an agent label naming a configured
+# auto-merged. A PR opened outside io that targets the branch and references
+# exactly one issue, labelled integrate:<branch> (with an agent label naming a configured
 # agent) is adopted (labelled origin:external), runs
 # through io's own review, and is merged only at the exact head io's review
 # approved (#9499); any other such PR is refused with a comment.
