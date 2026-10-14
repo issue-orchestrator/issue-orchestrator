@@ -183,9 +183,10 @@ class GitHubWorkflow:
                 SessionKind.REVIEW, r.issue_number, r.pr_number, None, r.agent_label))
             if admission is None:
                 continue
-            state.discovered_reviews.append(DiscoveredReview(
-                r.issue_number, r.pr_number, r.pr_url, r.branch_name, governing_effort=admission.governing_effort,
-            ))
+            state.discovered_reviews.append(
+                DiscoveredReview(r.issue_number, r.pr_number, r.pr_url, r.branch_name,
+                                 governing_effort=admission.governing_effort)
+            )
 
     def scan_needs_rework_prs(
         self,
