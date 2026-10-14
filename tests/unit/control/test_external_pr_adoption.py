@@ -46,6 +46,7 @@ from issue_orchestrator.domain.integration_branch import (
 )
 from issue_orchestrator.domain.models import (
     ORCHESTRATOR_PR_MARKER,
+    AgentConfig,
     Issue,
     OrchestratorState,
     PendingReview,
@@ -79,6 +80,7 @@ class _World:
         self.config.code_review_agent = "agent:reviewer"
         self.config.code_review_label = "needs-code-review"
         self.config.filtering.label = EFFORT
+        self.config.agents = {"agent:backend": AgentConfig(prompt_path=Path("backend.md"))}
         self.labels = LabelManager(self.config)
         self.host = MockGitHubAdapter(repo="owner/repo")
         self.host.branches = {"main": MAIN, "integration": TIP}
@@ -294,6 +296,7 @@ def _refusal(world: _World) -> ReportRefusedExternalPullRequest:
         ("closed", AdoptionRefusal.ISSUE_NOT_IN_EFFORT, "not open in this engine's scope"),
         ("outside_milestone", AdoptionRefusal.ISSUE_NOT_IN_EFFORT, "milestone"),
         ("no_agent", AdoptionRefusal.ISSUE_NOT_IN_EFFORT, "no agent label"),
+        ("unknown_agent", AdoptionRefusal.ISSUE_NOT_IN_EFFORT, "`agent:unknown` names no agent this engine runs"),
         ("wrong_base", AdoptionRefusal.WRONG_BASE, "targets `main`, but issue #231 integrates on `integration`"),
     ],
 )
@@ -318,6 +321,10 @@ def test_a_pr_outside_the_effort_is_refused_told_once_and_never_adopted(
     elif setup == "no_agent":
         world.issue(231, EFFORT)
         world.pr(321, issue=231)
+    elif setup == "unknown_agent":
+        # An agent label io has no agent for: io could never rework the PR (review r2 F1).
+        world.issue(231, "agent:unknown", EFFORT)
+        world.pr(321, issue=231)
     else:
         world.effort_issue(231)
         world.pr(321, issue=231, base="main")
@@ -328,7 +335,7 @@ def test_a_pr_outside_the_effort_is_refused_told_once_and_never_adopted(
     world.apply(step)
 
     [comment] = world.comments_on(321)
-    assert comment.startswith(refusal_marker(refusal))
+    assert comment.startswith(refusal_marker(step))
     assert "will never merge it" in comment
     assert world.host.add_label_calls == []
     # Told once: neither the next scan nor a replayed write tells it again.
@@ -392,7 +399,7 @@ def test_an_unreadable_listing_adopts_refuses_and_forgets_nothing() -> None:
     world.pr(321, issue=231, labels=("origin:external", "needs-code-review"))
     world.discover()
     assert world.state.external_pull_requests.adopted_pr_numbers() == frozenset({321})
-    world.state.external_pull_requests.reported[400] = AdoptionRefusal.NO_ISSUE_REFERENCE
+    world.state.external_pull_requests.reported[400] = "<!-- io:external-pr-refused reason=x id=y -->"
 
     world.host.list_open_prs_complete = MagicMock(  # type: ignore[method-assign]
         side_effect=RepositoryHostError("502 listing pulls"),
@@ -400,7 +407,7 @@ def test_an_unreadable_listing_adopts_refuses_and_forgets_nothing() -> None:
 
     assert world.discover() == []
     assert world.state.external_pull_requests.adopted_pr_numbers() == frozenset({321})
-    assert world.state.external_pull_requests.reported == {400: AdoptionRefusal.NO_ISSUE_REFERENCE}
+    assert world.state.external_pull_requests.reported == {400: "<!-- io:external-pr-refused reason=x id=y -->"}
 
 
 def test_without_integration_mode_nothing_is_listed() -> None:
@@ -513,15 +520,19 @@ def test_io_s_review_receipt_outlives_a_restart() -> None:
     assert isinstance(merge, MergeIntoIntegration)
 
 
-@pytest.mark.parametrize("state", ["not_adopted", "left_effort"])
+@pytest.mark.parametrize("state", ["not_adopted", "left_effort", "unknown_agent"])
 def test_io_never_merges_reworks_or_updates_an_unadmitted_external_pr(state: str) -> None:
-    """A review label applied by hand cannot carry an unadopted PR into the branch."""
+    """A review label applied by hand cannot carry an unadopted PR into the branch;
+    an adopted PR whose issue left the effort, or now names an agent io does
+    not run (review r2 F1), is not reworked, updated or merged either."""
     world = _World()
     world.effort_issue(231)
-    labels = ("origin:external",) if state == "left_effort" else ()  # adopted once, then the issue left
+    labels = () if state == "not_adopted" else ("origin:external",)  # adopted once, then the issue changed
     pr = world.pr(321, issue=231, labels=labels)
     if state == "left_effort":
         world.relabel(231, "agent:backend")
+    elif state == "unknown_agent":
+        world.relabel(231, "agent:unknown", EFFORT)
     world.host.add_label(321, world.labels.code_reviewed)
     world.state.session_history.append(SessionHistoryEntry(
         issue_number=231, title="Issue 231", agent_type="agent:backend", status="completed",
@@ -571,6 +582,7 @@ def test_an_adopted_pr_whose_issue_link_changes_is_never_reworked_updated_or_mer
         ("moved", 231, False),  # the scan's stale issue: the PR now references #232
         ("moved", 232, False),  # the issue it now references is outside the effort
         ("removed", 231, False),
+        ("unknown_agent", 231, False),  # its issue now names an agent io does not run (review r2 F1)
     ],
 )
 def test_a_review_s_rework_of_an_adopted_pr_needs_the_pr_still_admitted(
@@ -585,6 +597,8 @@ def test_a_review_s_rework_of_an_adopted_pr_needs_the_pr_still_admitted(
         pr.body, pr.branch = "Closes #232", "hand-made-321"
     elif link == "removed":
         pr.body, pr.branch = "No issue", "hand-made-321"
+    elif link == "unknown_agent":
+        world.relabel(231, "agent:unknown", EFFORT)
     world.workflow.pr_scanner.scan_for_reworks.return_value = ReworkScan(  # type: ignore[attr-defined]
         reworks=[PendingRework(issue_key=world.host.create_issue_key(rework_issue), agent_type="agent:backend",
                                issue_number=rework_issue, pr_number=321)],
@@ -725,6 +739,121 @@ def test_io_s_own_pr_approval_leaves_no_receipt() -> None:
         actions_taken=[], errors=[],
     )
     assert world.comments_on(321) == []
+
+
+# -- writes that fail part-way converge (review r2 F2, F3) -----------------------------
+
+
+def _fail_once(world: _World, method: str, failing: str) -> None:
+    """The host's *method* fails once, for the label or comment *failing* names."""
+    original = getattr(world.host, method)
+    failed: list[str] = []
+
+    def flaky(number: int, value: str) -> object:
+        if failing in value and not failed:
+            failed.append(value)
+            raise RepositoryHostError(f"502 {method} {value}")
+        return original(number, value)
+
+    setattr(world.host, method, flaky)
+
+
+def _failed(result) -> bool:
+    return result.result_type is ActionResultType.FAILURE  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("method", "label"),
+    [("remove_label", "tech-lead-reviewed"), ("add_label", "needs-code-review"), ("remove_label", "code-reviewed")],
+)
+def test_a_return_to_review_that_fails_part_way_is_planned_again_and_converges(method: str, label: str) -> None:
+    world = _World()
+    pr = _adopted_and_approved(world)
+    world.host.add_label(321, world.labels.tech_lead_reviewed)
+    pr.head_sha = PUSHED
+    world.current(PUSHED)
+    [step], _ = world.merge_pass()
+    _fail_once(world, method, label)
+
+    assert _failed(world.apply(step))
+    # Every partial state still carries code-reviewed, so the next pass plans
+    # the same return: never a PR outside every lane, nor a stale approval.
+    [again], _ = world.merge_pass()
+    assert again == step
+    assert world.apply(again).result_type is ActionResultType.SUCCESS  # type: ignore[attr-defined]
+
+    assert set(pr.labels) == {"origin:external", "needs-code-review"}
+    assert world.review_queue() == [321]
+
+
+@pytest.mark.parametrize(
+    ("method", "label"),
+    [("remove_label", "code-reviewed"), ("add_label", "needs-code-review"), ("add_label", "origin:external")],
+)
+def test_an_adoption_that_fails_part_way_is_planned_again_and_converges(method: str, label: str) -> None:
+    world = _World()
+    world.effort_issue(231)
+    pr = world.pr(321, issue=231, labels=("code-reviewed",))
+    [step] = world.discover()
+    _fail_once(world, method, label)
+
+    assert _failed(world.apply(step))
+    [again] = world.discover()  # no origin label yet: still a candidate
+    assert again == step
+    assert world.apply(again).result_type is ActionResultType.SUCCESS  # type: ignore[attr-defined]
+
+    assert set(pr.labels) == {"needs-code-review", "origin:external"}
+
+
+def test_a_refusal_whose_comment_failed_is_told_on_the_next_scan() -> None:
+    world = _World()
+    world.pr(321, issue=None)
+    step = _refusal(world)
+    _fail_once(world, "add_comment", "io:external-pr-refused")
+
+    assert _failed(world.apply(step))
+    assert world.comments_on(321) == []
+    # Planned is not told: the next scan plans it again, and only a report seen
+    # on the PR is acknowledged.
+    assert _refusal(world) == step
+    world.apply(step)
+    assert len(world.comments_on(321)) == 1
+    assert world.discover() == []
+
+
+def test_a_refusal_whose_issue_changed_before_its_write_is_not_written_as_planned() -> None:
+    """Review r2 F4: the same reason for another issue is another refusal."""
+    world = _World()
+    world.config.filtering.label = None
+    world.issue(231, "agent:backend")
+    world.issue(232, "agent:backend")  # neither is in the effort
+    pr = world.pr(321, issue=231)
+    planned = _refusal(world)
+    pr.body, pr.branch = "Closes #232", "hand-made-321"
+
+    assert _skipped(world.apply(planned))
+    assert world.comments_on(321) == []
+    fresh = _refusal(world)
+    assert (fresh.refusal, fresh.issue_number) == (planned.refusal, 232)
+    world.apply(fresh)
+    [comment] = world.comments_on(321)
+    assert "issue #232" in comment and "issue #231" not in comment
+
+
+def test_a_report_about_one_issue_never_stands_for_another() -> None:
+    world = _World()
+    world.config.filtering.label = None
+    world.issue(231, "agent:backend")
+    world.issue(232, "agent:backend")
+    pr = world.pr(321, issue=231)
+    world.apply(_refusal(world))
+    pr.body, pr.branch = "Closes #232", "hand-made-321"
+
+    world.apply(_refusal(world))
+
+    first, second = world.comments_on(321)
+    assert "issue #231" in first and "issue #232" in second
+    assert world.discover() == []
 
 
 # -- the board ---------------------------------------------------------------------

@@ -34,26 +34,30 @@ def write_external_step(step: "ExternalStep", host: "RepositoryHost", labels: "L
     """Adopt the PR (review lane first, origin last), tell it why it was
     refused, or send it back to io's review (approvals off, review lane on)."""
     if isinstance(step, ReportRefusedExternalPullRequest):
-        if not host.issue_comment_marker_present(step.pr_number, refusal_marker(step.refusal)):
+        if not host.issue_comment_marker_present(step.pr_number, refusal_marker(step)):
             host.add_comment(step.pr_number, render_refusal_comment(step))
         return
     current = host.get_issue_labels_fresh(step.pr_number)
     if isinstance(step, AdoptExternalPullRequest):
-        writes = adoption_label_writes(current, review_label=step.review_label, reviewed_label=labels.code_reviewed)
+        writes = adoption_label_writes(
+            current, review_label=step.review_label, approvals=(labels.code_reviewed, labels.tech_lead_reviewed),
+        )
     else:
         assert isinstance(step, ReturnExternalPullRequestToReview)
         writes = return_to_review_label_writes(
-            current, review_label=step.review_label,
-            approval_labels=(labels.code_reviewed, labels.tech_lead_reviewed),
+            current, review_label=step.review_label, reviewed_label=labels.code_reviewed,
+            other_approvals=(labels.tech_lead_reviewed,),
         )
     _write_labels(step.pr_number, writes, host)
 
 
 def _write_labels(pr_number: int, writes: PullRequestLabelWrites, host: "RepositoryHost") -> None:
-    for name in writes.remove:
-        host.remove_label(pr_number, name)
-    for name in writes.add:
-        host.add_label(pr_number, name)
+    """In the step's order: a failure leaves a prefix the owner plans the step from again."""
+    for write in writes.writes:
+        if write.add:
+            host.add_label(pr_number, write.label)
+        else:
+            host.remove_label(pr_number, write.label)
 
 
 __all__ = ["write_external_step"]

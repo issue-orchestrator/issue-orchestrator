@@ -14,6 +14,7 @@ from issue_orchestrator.domain.external_pr_adoption import (
     ExternalPullRequestFacts,
     ExternalPullRequestLedger,
     IoCustody,
+    LabelWrite,
     LinkedIssueFacts,
     PullRequestFacts,
     PullRequestLabelWrites,
@@ -36,7 +37,10 @@ PR = PullRequestFacts(
     number=70, open=True, draft=False, body="Closes #7", branch="7-by-hand", base_branch="integration",
     labels=frozenset(), linked_issue=7,
 )
-ISSUE = LinkedIssueFacts(number=7, scope_gap=None, labels=frozenset({EFFORT, "agent:backend"}), agent_type="agent:backend")
+ISSUE = LinkedIssueFacts(
+    number=7, scope_gap=None, labels=frozenset({EFFORT, "agent:backend"}), agent_type="agent:backend",
+    agent_configured=True,
+)
 
 
 def _judge(pr: PullRequestFacts = PR, issue: LinkedIssueFacts | None = ISSUE, custody: IoCustody = NOBODY):
@@ -81,7 +85,10 @@ def test_which_prs_are_external_work(pr: PullRequestFacts, expected: Admission) 
          "not open in this engine's scope (issue is closed)"),
         (PR, replace(ISSUE, labels=frozenset({"agent:backend"})), NOBODY, AdoptionRefusal.ISSUE_NOT_IN_EFFORT,
          f"not labelled `{EFFORT}`"),
-        (PR, replace(ISSUE, agent_type=None), NOBODY, AdoptionRefusal.ISSUE_NOT_IN_EFFORT, "no agent label"),
+        (PR, replace(ISSUE, agent_type=None, agent_configured=False), NOBODY, AdoptionRefusal.ISSUE_NOT_IN_EFFORT,
+         "no agent label"),
+        (PR, replace(ISSUE, agent_type="agent:unknown", agent_configured=False), NOBODY,
+         AdoptionRefusal.ISSUE_NOT_IN_EFFORT, "`agent:unknown` names no agent this engine runs"),
         (replace(PR, base_branch="main"), ISSUE, NOBODY, AdoptionRefusal.WRONG_BASE, "targets `main`"),
         (PR, ISSUE, IoCustody("7-io", frozenset()), AdoptionRefusal.IO_WORK_IN_FLIGHT, "own branch `7-io`"),
         (PR, ISSUE, IoCustody(None, frozenset({69, 70})), AdoptionRefusal.IO_WORK_IN_FLIGHT, "PR #69"),
@@ -116,7 +123,10 @@ def test_a_pr_into_another_base_for_an_issue_outside_the_effort_is_not_io_s_busi
         (PR, ISSUE, "not an adopted PR"),
         (replace(PR, labels=frozenset({"origin:external"}), linked_issue=None), ISSUE, "references no issue, not issue #7"),
         (replace(PR, labels=frozenset({"origin:external"}), linked_issue=8), ISSUE, "references issue #8, not issue #7"),
-        (replace(PR, labels=frozenset({"origin:external"})), replace(ISSUE, agent_type=None), "no agent label"),
+        (replace(PR, labels=frozenset({"origin:external"})), replace(ISSUE, agent_type=None, agent_configured=False),
+         "no agent label"),
+        (replace(PR, labels=frozenset({"origin:external"})), replace(ISSUE, agent_configured=False),
+         "names no agent this engine runs"),
     ],
 )
 def test_the_merge_side_re_asks_the_whole_rule_for_exactly_its_issue(
@@ -136,26 +146,42 @@ def test_the_reviewed_head_receipt_names_its_pr_and_exact_head() -> None:
         reviewed_head_receipt(70, "abc123")
 
 
-def test_adoption_enters_the_review_lane_before_its_origin_and_drops_a_foreign_approval() -> None:
-    assert adoption_label_writes(["code-reviewed", "bug"], review_label="needs-code-review",
-                                 reviewed_label="code-reviewed") == PullRequestLabelWrites(
-        remove=("code-reviewed",), add=("needs-code-review", "origin:external"),
+APPROVALS = ("code-reviewed", "tech-lead-reviewed")
+
+
+def _writes(*steps: tuple[str, bool]) -> PullRequestLabelWrites:
+    return PullRequestLabelWrites(tuple(LabelWrite(label, add) for label, add in steps))
+
+
+def test_adoption_drops_foreign_approvals_enters_the_review_lane_and_marks_its_origin_last() -> None:
+    assert adoption_label_writes(["code-reviewed", "tech-lead-reviewed", "bug"], review_label="needs-code-review",
+                                 approvals=APPROVALS) == _writes(
+        ("code-reviewed", False), ("tech-lead-reviewed", False), ("needs-code-review", True),
+        ("origin:external", True),
     )
+    # A prefix already applied is not written again.
     assert adoption_label_writes(["needs-code-review"], review_label="needs-code-review",
-                                 reviewed_label="code-reviewed").add == ("origin:external",)
+                                 approvals=APPROVALS) == _writes(("origin:external", True))
     # Adopted already: nothing to write (a replayed step is a no-op).
     assert adoption_label_writes(["origin:external", "code-reviewed"], review_label="needs-code-review",
-                                 reviewed_label="code-reviewed") == PullRequestLabelWrites(remove=(), add=())
+                                 approvals=APPROVALS) == _writes()
 
 
-def test_a_return_to_review_drops_every_approval_and_re_enters_the_lane() -> None:
+def test_a_return_to_review_drops_its_routing_approval_last() -> None:
+    """Every prefix keeps ``code-reviewed`` until the review label is on, so a
+    write failing part-way is planned again, never stranded outside every lane."""
     assert return_to_review_label_writes(
         ["origin:external", "code-reviewed", "tech-lead-reviewed"], review_label="needs-code-review",
-        approval_labels=("code-reviewed", "tech-lead-reviewed"),
-    ) == PullRequestLabelWrites(remove=("code-reviewed", "tech-lead-reviewed"), add=("needs-code-review",))
+        reviewed_label="code-reviewed", other_approvals=("tech-lead-reviewed",),
+    ) == _writes(("tech-lead-reviewed", False), ("needs-code-review", True), ("code-reviewed", False))
     assert return_to_review_label_writes(
-        ["needs-code-review"], review_label="needs-code-review", approval_labels=("code-reviewed",),
-    ) == PullRequestLabelWrites(remove=(), add=())
+        ["needs-code-review", "code-reviewed"], review_label="needs-code-review", reviewed_label="code-reviewed",
+        other_approvals=("code-reviewed",),  # tech-lead-reviewed configured as code-reviewed itself
+    ) == _writes(("code-reviewed", False))
+    assert return_to_review_label_writes(
+        ["needs-code-review"], review_label="needs-code-review", reviewed_label="code-reviewed",
+        other_approvals=("tech-lead-reviewed",),
+    ) == _writes()
 
 
 def _refused(number: int, refusal: AdoptionRefusal) -> ReportRefusedExternalPullRequest:
@@ -165,17 +191,32 @@ def _refused(number: int, refusal: AdoptionRefusal) -> ReportRefusedExternalPull
     )
 
 
-def test_the_ledger_tells_each_refusal_once_per_reason() -> None:
+def test_the_ledger_acknowledges_a_refusal_only_once_its_report_is_seen() -> None:
     ledger = ExternalPullRequestLedger()
     first = _refused(80, AdoptionRefusal.NO_ISSUE_REFERENCE)
 
     assert ledger.record_scan([], [first], {}) == (first,)
+    # Planned is not told: until the report is acknowledged, every scan returns it.
+    assert ledger.record_scan([], [first], {}) == (first,)
+    ledger.acknowledge(first)
     assert ledger.record_scan([], [first], {}) == ()
     changed = _refused(80, AdoptionRefusal.WRONG_BASE)
     assert ledger.record_scan([], [changed], {}) == (changed,)
-    # A PR no longer refused is forgotten: refused again later, it is told again.
+    ledger.acknowledge(changed)
+    # A PR no longer refused that way is forgotten: refused again later, it is returned again.
     assert ledger.record_scan([], [], {}) == ()
     assert ledger.record_scan([], [changed], {}) == (changed,)
+
+
+def test_a_refusal_s_identity_is_its_reason_issue_bases_and_detail() -> None:
+    step = replace(_refused(80, AdoptionRefusal.ISSUE_NOT_IN_EFFORT), issue_number=231, detail="issue #231 closed")
+
+    assert refusal_marker(step) == refusal_marker(replace(step, pr_url="another url"))
+    for changed in (
+        replace(step, issue_number=232), replace(step, detail="issue #232 closed"), replace(step, base_branch="main"),
+        replace(step, integration_branch="other"), replace(step, refusal=AdoptionRefusal.WRONG_BASE),
+    ):
+        assert refusal_marker(changed) != refusal_marker(step)
 
 
 def test_the_ledger_keeps_found_receipts_only_for_adopted_prs() -> None:
@@ -193,5 +234,5 @@ def test_the_ledger_keeps_found_receipts_only_for_adopted_prs() -> None:
 def test_a_refusal_comment_carries_its_reason_marker_and_the_remedy() -> None:
     comment = render_refusal_comment(_refused(80, AdoptionRefusal.NO_ISSUE_REFERENCE))
 
-    assert comment.startswith(refusal_marker(AdoptionRefusal.NO_ISSUE_REFERENCE))
+    assert comment.startswith(refusal_marker(_refused(80, AdoptionRefusal.NO_ISSUE_REFERENCE)))
     assert "`integrate:integration`" in comment and "will never merge it" in comment

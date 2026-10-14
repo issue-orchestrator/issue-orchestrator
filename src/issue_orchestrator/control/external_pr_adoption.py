@@ -60,6 +60,7 @@ from ..domain.external_pr_adoption import (
     in_effort,
     judge_external_pull_request,
     merge_refusal,
+    refusal_marker,
     reviewed_head_receipt,
 )
 from ..domain.models import Issue as IssueSnapshot
@@ -117,9 +118,12 @@ def linked_issue_facts(config: "Config", issue: "Issue", *, labels: Iterable[str
     scope = evaluate_issue_scope(
         config, snapshot, require_open=True, include_milestone_filter=True, include_issue_number_filter=True,
     )
+    agent = snapshot.agent_type
     return LinkedIssueFacts(
         number=issue.number, scope_gap=None if scope.in_scope else (scope.detail or scope.code),
-        labels=frozenset(snapshot.labels), agent_type=snapshot.agent_type,
+        labels=frozenset(snapshot.labels), agent_type=agent,
+        # The rework launcher's own rule: an agent this engine has a config for.
+        agent_configured=agent is not None and bool(config.agents.get(agent)),
     )
 
 
@@ -270,7 +274,10 @@ class ExternalPullRequestGate:
         issue = self.host.get_issue(number)
         if issue is None:
             # A reference to an issue that does not exist: nothing io could adopt it for.
-            return LinkedIssueFacts(number=number, scope_gap="it does not exist", labels=frozenset(), agent_type=None)
+            return LinkedIssueFacts(
+                number=number, scope_gap="it does not exist", labels=frozenset(), agent_type=None,
+                agent_configured=False,
+            )
         return linked_issue_facts(self.config, issue, labels=issue.labels)
 
 
@@ -346,16 +353,30 @@ class ExternalPullRequestAdoption:
             logger.warning("Adoption: could not read the open PRs or their issues: %s", error)
             return []
         adoptions = [verdict for verdict in verdicts if isinstance(verdict, AdoptExternalPullRequest)]
-        untold = state.external_pull_requests.record_scan(
+        ledger = state.external_pull_requests
+        unacknowledged = ledger.record_scan(
             (AdoptedExternalPullRequest(pr_number=pr.number, issue_number=linked_issue(pr, repo_slug=repo), pr_url=pr.url)
              for pr in prs if gate.facts(pr, pr_labels=pr.labels).adopted),
             (verdict for verdict in verdicts if isinstance(verdict, ReportRefusedExternalPullRequest)),
             attempts,
         )
+        untold = [step for step in unacknowledged if not self._seen_on_pr(step, ledger)]
         for step in untold:
             logger.warning("Adoption: refused external PR #%d (%s): %s", step.pr_number, step.refusal.value,
                            step.detail)
         return [*adoptions, *untold]
+
+    def _seen_on_pr(self, step: ReportRefusedExternalPullRequest, ledger: "ExternalPullRequestLedger") -> bool:
+        """Whether *step*'s report is already on the PR - acknowledged then, and
+        only then: a report whose write failed is planned again next scan."""
+        try:
+            seen = self.host.issue_comment_marker_present(step.pr_number, refusal_marker(step))
+        except RepositoryHostError as error:
+            logger.warning("Adoption: PR #%d's refusal reports unreadable: %s", step.pr_number, error)
+            return False  # planned: the write re-reads the marker before it comments
+        if seen:
+            ledger.acknowledge(step)
+        return seen
 
     def _verdict(self, pr: "PRInfo", gate: ExternalPullRequestGate, effort_issues: frozenset[int]) -> _Verdict:
         facts = gate.facts(pr, pr_labels=pr.labels)
@@ -382,14 +403,20 @@ def external_step(
             issue_number=admission.issue_number, pr_number=pr.number, pr_url=pr.url, pr_title=pr.title,
             integration_branch=branch, review_label=review_label,
         )
-    if admission.admission is Admission.REFUSED:
-        assert admission.refusal is not None
-        return ReportRefusedExternalPullRequest(
-            pr_number=pr.number, pr_url=pr.url, issue_number=admission.issue_number,
-            base_branch=pr.base_branch or "", integration_branch=branch, refusal=admission.refusal,
-            detail=admission.detail,
-        )
-    return None
+    return refusal_report(pr, admission, branch=branch)
+
+
+def refusal_report(
+    pr: "PRInfo", admission: ExternalAdmission, *, branch: str,
+) -> ReportRefusedExternalPullRequest | None:
+    """The refusal report THE admission rule's verdict asks for; None unless it refused."""
+    if admission.refusal is None:
+        return None
+    return ReportRefusedExternalPullRequest(
+        pr_number=pr.number, pr_url=pr.url, issue_number=admission.issue_number,
+        base_branch=pr.base_branch or "", integration_branch=branch, refusal=admission.refusal,
+        detail=admission.detail,
+    )
 
 
 # -- the write re-check ----------------------------------------------------------
@@ -417,9 +444,10 @@ def external_step_refusal(step: ExternalStep, gate: ExternalPullRequestGate) -> 
         if admission.admission is Admission.ADOPTABLE and admission.issue_number == step.issue_number:
             return None
         return f"PR #{step.pr_number} is no longer adoptable for issue #{step.issue_number}: {_said(admission)}"
-    if admission.admission is Admission.REFUSED and admission.refusal is step.refusal:
-        return None  # the same refusal still holds
-    return f"PR #{step.pr_number} is no longer refused for {step.refusal.value}: {_said(admission)}"
+    fresh = refusal_report(pr, admission, branch=step.integration_branch)
+    if fresh is not None and refusal_marker(fresh) == refusal_marker(step):
+        return None  # the same refusal - reason, issue, bases and detail - still holds
+    return f"PR #{step.pr_number} is no longer refused as planned ({step.detail}): {_said(admission)}"
 
 
 def _return_refusal(
@@ -452,6 +480,7 @@ __all__ = [
     "linked_issue",
     "linked_issue_facts",
     "pull_request_facts",
+    "refusal_report",
     "review_lane",
     "routing_gate",
     "session_branch",

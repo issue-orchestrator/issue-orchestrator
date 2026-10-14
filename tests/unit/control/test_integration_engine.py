@@ -35,6 +35,7 @@ from issue_orchestrator.domain.integration_branch import (
 )
 from issue_orchestrator.domain.models import (
     ORCHESTRATOR_PR_MARKER,
+    AgentConfig,
     Issue,
     OrchestratorState,
     RequestedAction,
@@ -273,6 +274,7 @@ def test_a_hand_opened_pr_in_the_effort_is_reviewed_merged_and_delivered_and_one
     engine = _Engine()
     engine.config.code_review_agent, engine.config.code_review_label = "agent:reviewer", "needs-code-review"
     engine.config.filtering.label = "integrate:integration"
+    engine.config.agents = {"agent:backend": AgentConfig(prompt_path=Path("backend.md"))}  # io can rework it
     engine.tick()  # creates the integration branch
     adopted = engine.hand_opened_pr(231, 321, in_effort=True)
     outside = engine.hand_opened_pr(232, 322, in_effort=False)

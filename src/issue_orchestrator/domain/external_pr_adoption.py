@@ -24,7 +24,12 @@ merge into the effort's branch, the delivery. The PR is the splice point.
   label), and io holds no other attempt at that issue (:class:`IoCustody`).
 * **Fail closed.** A PR into the effort branch that is not admitted, and a PR
   for an issue in the effort that targets another base, is
-  :class:`AdoptionRefusal`-refused: reported once per reason, never merged.
+  :class:`AdoptionRefusal`-refused: never merged, and reported once per
+  refusal identity (reason, issue, bases, detail - :func:`refusal_marker`),
+  acknowledged only once that report is seen on the PR.
+* **Convergent writes.** Each multi-label write is ordered so that every
+  prefix of it - a write that failed part-way - is a state the owner plans
+  the same write from again (:class:`PullRequestLabelWrites`).
 * **Reviewed-head custody.** An approval binds to the exact head io's
   reviewer reviewed, not to the ``code-reviewed`` label (which survives a
   push): io's approval of an adopted PR leaves a
@@ -40,6 +45,7 @@ and decides; the steps here are facts its planner turns into actions.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -112,7 +118,14 @@ class LinkedIssueFacts:
     #: label filters, single-issue scope); None when it is inside.
     scope_gap: str | None
     labels: frozenset[str]
+    #: The issue's agent label (``agent:<name>``), if it carries one.
     agent_type: str | None
+    #: Whether that agent is one this engine runs: only then can io rework the PR.
+    agent_configured: bool
+
+    def __post_init__(self) -> None:
+        if self.agent_configured and self.agent_type is None:
+            raise ValueError(f"issue #{self.number} has no agent label, so no configured agent")
 
 
 @dataclass(frozen=True)
@@ -200,6 +213,9 @@ def issue_gap(branch: str, issue: LinkedIssueFacts) -> str | None:
         return f"issue #{issue.number} is not labelled `{effort_label(branch)}`"
     if issue.agent_type is None:
         return f"issue #{issue.number} has no agent label, so io could not rework it"
+    if not issue.agent_configured:
+        return (f"issue #{issue.number}'s agent label `{issue.agent_type}` names no agent this engine"
+                " runs, so io could not rework it")
     return None
 
 
@@ -319,8 +335,9 @@ class AdoptExternalPullRequest:
     """Adopt one external PR into the effort.
 
     The write routes it into io's own review lane - an approval io did not
-    give (``code-reviewed`` already on the PR) never stands for io's review -
-    and marks its origin LAST, so a PR is adopted only once it is in the lane.
+    give (``code-reviewed`` or ``tech-lead-reviewed`` already on the PR) never
+    stands for io's review - and marks its origin LAST, so a PR is adopted
+    only once it is in the lane.
     """
 
     issue_number: int
@@ -333,36 +350,58 @@ class AdoptExternalPullRequest:
 
 
 @dataclass(frozen=True)
-class PullRequestLabelWrites:
-    """The PR label writes of one step, in order: removals, then additions."""
+class LabelWrite:
+    """One PR label write."""
 
-    remove: tuple[str, ...]
-    add: tuple[str, ...]
+    label: str
+    #: True adds the label; False removes it.
+    add: bool
+
+
+@dataclass(frozen=True)
+class PullRequestLabelWrites:
+    """The PR label writes of one step, IN ORDER.
+
+    The order is the contract: a write that fails part-way leaves a prefix of
+    them applied, and every prefix is a state the owner plans the same step
+    from again, so the next pass converges on the whole.
+    """
+
+    writes: tuple[LabelWrite, ...]
+
+    @staticmethod
+    def of(current: Iterable[str], *steps: tuple[str, bool]) -> "PullRequestLabelWrites":
+        """*steps* in order, without the ones *current* already satisfies."""
+        present = frozenset(current)
+        return PullRequestLabelWrites(tuple(
+            LabelWrite(label, add) for label, add in steps if (label in present) is not add
+        ))
 
 
 def adoption_label_writes(
-    current: Iterable[str], *, review_label: str, reviewed_label: str,
+    current: Iterable[str], *, review_label: str, approvals: Iterable[str],
 ) -> PullRequestLabelWrites:
-    """Nothing once adopted; otherwise drop an approval io did not give, enter
-    io's review lane, and mark the origin LAST, so a PR counts as adopted only
-    once it is in the lane."""
-    present = frozenset(current)
-    if ORIGIN_EXTERNAL_LABEL in present:
-        return PullRequestLabelWrites(remove=(), add=())
-    return PullRequestLabelWrites(
-        remove=tuple(label for label in (reviewed_label,) if label in present),
-        add=(*(label for label in (review_label,) if label not in present), ORIGIN_EXTERNAL_LABEL),
+    """Nothing once adopted; otherwise drop every approval io did not give,
+    enter io's review lane, and mark the origin LAST: until the origin is on,
+    the PR is a candidate the next scan plans this adoption for again."""
+    if ORIGIN_EXTERNAL_LABEL in frozenset(current):
+        return PullRequestLabelWrites(())
+    dropped = [label for label in dict.fromkeys(approvals) if label != review_label]
+    return PullRequestLabelWrites.of(
+        current, *((label, False) for label in dropped), (review_label, True), (ORIGIN_EXTERNAL_LABEL, True),
     )
 
 
 def return_to_review_label_writes(
-    current: Iterable[str], *, review_label: str, approval_labels: Iterable[str],
+    current: Iterable[str], *, review_label: str, reviewed_label: str, other_approvals: Iterable[str],
 ) -> PullRequestLabelWrites:
-    """Drop every approval the PR carries, then re-enter io's review lane."""
-    present = frozenset(current)
-    return PullRequestLabelWrites(
-        remove=tuple(label for label in dict.fromkeys(approval_labels) if label in present),
-        add=(review_label,) if review_label not in present else (),
+    """Drop every other approval, enter io's review lane, and drop
+    *reviewed_label* LAST: while it stands, the integration owner routes the
+    PR and plans this return again, so a write that failed part-way never
+    leaves the PR outside every lane, nor keeps a stale approval past it."""
+    others = [label for label in dict.fromkeys(other_approvals) if label not in (reviewed_label, review_label)]
+    return PullRequestLabelWrites.of(
+        current, *((label, False) for label in others), (review_label, True), (reviewed_label, False),
     )
 
 
@@ -380,9 +419,15 @@ class ReportRefusedExternalPullRequest:
     detail: str
 
 
-def refusal_marker(refusal: AdoptionRefusal) -> str:
-    """The hidden marker a refusal comment carries: one comment per reason."""
-    return f"{_REFUSAL_MARKER_PREFIX}{refusal.value} -->"
+def refusal_marker(step: ReportRefusedExternalPullRequest) -> str:
+    """The hidden marker a refusal comment carries: one comment per refusal
+    IDENTITY - reason, referenced issue, both bases and the detail - so a
+    report about another issue or another cause never stands for this one."""
+    identity = "\x1f".join([
+        step.refusal.value, str(step.issue_number), step.base_branch, step.integration_branch, step.detail,
+    ])
+    digest = hashlib.sha256(identity.encode()).hexdigest()[:16]
+    return f"{_REFUSAL_MARKER_PREFIX}{step.refusal.value} id={digest} -->"
 
 
 def render_refusal_comment(step: ReportRefusedExternalPullRequest) -> str:
@@ -391,7 +436,7 @@ def render_refusal_comment(step: ReportRefusedExternalPullRequest) -> str:
         label=effort_label(step.integration_branch), branch=step.integration_branch,
     )
     return "\n".join([
-        refusal_marker(step.refusal),
+        refusal_marker(step),
         f"issue-orchestrator will not adopt this pull request into the `{step.integration_branch}`"
         " integration effort, and will never merge it.",
         "",
@@ -422,16 +467,17 @@ class ExternalPullRequestLedger:
 
     In memory, like the queues beside it: the first scan after a restart
     rebuilds it from GitHub. Only a complete listing replaces it, so a read
-    that failed part-way never drops a PR from the board. ``reported`` holds
-    the refusals this process already handed to the planner, so each is told
-    once per reason (the write also skips a PR already carrying that reason's
-    comment). ``reviewed_heads`` memoizes the heads whose review receipt was
-    found, so the routing does not re-read it each pass; the receipt on the PR
-    is the record, and every write re-reads it.
+    that failed part-way never drops a PR from the board. ``reported`` holds,
+    per PR, the :func:`refusal_marker` of the refusal its comment was SEEN on
+    the PR to carry - acknowledged only after the remote write, never when it
+    is planned, so a failed write is planned again. ``reviewed_heads``
+    memoizes the heads whose review receipt was found, so the routing does not
+    re-read it each pass; the receipt on the PR is the record, and every
+    write re-reads it.
     """
 
     adopted: dict[int, AdoptedExternalPullRequest] = field(default_factory=dict)
-    reported: dict[int, AdoptionRefusal] = field(default_factory=dict)
+    reported: dict[int, str] = field(default_factory=dict)
     #: Per issue: the open PRs that are io's own or adopted attempts at it.
     attempts: dict[int, frozenset[int]] = field(default_factory=dict)
     reviewed_heads: dict[int, str] = field(default_factory=dict)
@@ -455,15 +501,21 @@ class ExternalPullRequestLedger:
         refused: Iterable[ReportRefusedExternalPullRequest],
         attempts: Mapping[int, frozenset[int]],
     ) -> tuple[ReportRefusedExternalPullRequest, ...]:
-        """Replace the view with one complete scan; return the refusals not yet told."""
+        """Replace the view with one complete scan; return the refusals not yet
+        acknowledged (a PR no longer refused that way is forgotten)."""
         self.adopted = {item.pr_number: item for item in adopted}
         self.attempts = dict(attempts)
         self.reviewed_heads = {number: head for number, head in self.reviewed_heads.items() if number in self.adopted}
         refusals = {step.pr_number: step for step in refused}
-        untold = tuple(step for number, step in sorted(refusals.items())
-                       if self.reported.get(number) is not step.refusal)
-        self.reported = {number: step.refusal for number, step in refusals.items()}
-        return untold
+        self.reported = {
+            number: marker for number, marker in self.reported.items()
+            if number in refusals and refusal_marker(refusals[number]) == marker
+        }
+        return tuple(step for number, step in sorted(refusals.items()) if number not in self.reported)
+
+    def acknowledge(self, step: ReportRefusedExternalPullRequest) -> None:
+        """*step*'s report was seen on the PR: it is not told again."""
+        self.reported[step.pr_number] = refusal_marker(step)
 
 
 __all__ = [
@@ -476,6 +528,7 @@ __all__ = [
     "ExternalPullRequestFacts",
     "ExternalPullRequestLedger",
     "IoCustody",
+    "LabelWrite",
     "LinkedIssueFacts",
     "ORCHESTRATOR_PR_MARKER",
     "ORIGIN_EXTERNAL_LABEL",
