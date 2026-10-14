@@ -482,6 +482,7 @@ class OrchestratorSupport:
                 issue_key=self.repository_host.create_issue_key(a.issue_number),
                 pr_number=a.pr_number, pr_url=a.pr_url, branch_name=a.branch_name,
                 _issue_number=a.issue_number, agent_label=a.agent_label, issue_labels=a.issue_labels,
+                governing_effort=a.governing_effort,
             )
         ):
             return
@@ -525,7 +526,7 @@ class OrchestratorSupport:
                 issue_number=a.issue_number,
                 pr_number=a.pr_number or None,
                 source=a.source,
-                feedback=a.feedback, scoped_request_keys=a.scoped_request_keys,
+                feedback=a.feedback, scoped_request_keys=a.scoped_request_keys, governing_effort=a.governing_effort,
             )
         ):
             return

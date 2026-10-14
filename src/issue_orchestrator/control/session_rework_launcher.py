@@ -53,6 +53,8 @@ from .transition_log import log_transition
 from .worktree_context import WorktreeContext
 from .needs_human_block import NeedsHumanCause
 
+from ..domain.external_pr_adoption import LaunchRequest
+
 if TYPE_CHECKING:
     from .external_pr_launch import ExternalLaunchAdmission
     from .label_manager import LabelManager
@@ -262,13 +264,15 @@ def _rework_preflight(
 def _rework_launch_identity(
     rework: PendingRework, deps: ReworkLaunchDependencies
 ) -> "LaunchResult | tuple[AgentConfig, int, PreparedLaunchPrompt]":
-    """Everything a rework launch must know before it reads anything remote.
+    """Everything a rework launch must know about what it runs as.
 
     The agent it will run as, the issue it belongs to, required prompt input,
     and whether that agent's provider is usable. Prompt preparation comes first
     because provider refusal can write a shared blocked label and durable record.
-    All of this stays ahead of :func:`resolve_rework_pr`; the prompt reads GitHub
-    only to hydrate an issue's standing rulings the engine has never seen.
+    It runs only once :func:`_rework_launch_target` resolved the PR and the
+    integration effort admitted it (#9499): nothing here may write for work
+    the effort withdraws. The prompt reads GitHub only to hydrate an issue's
+    standing rulings the engine has never seen.
     """
     agent_config = deps.config.agents.get(rework.agent_type)
     if not agent_config:
@@ -289,15 +293,24 @@ def _rework_launch_identity(
 def _rework_launch_target(
     rework: PendingRework, deps: ReworkLaunchDependencies,
 ) -> "LaunchResult | tuple[AgentConfig, int, PreparedLaunchPrompt, int, str]":
-    """The launch identity, then the PR it reworks - while the integration
-    effort still admits it (#9499): re-asked here, before any launch effect."""
+    """The PR the rework acts on, still admitted by the integration effort under
+    the authority it was queued with - the launch's FIRST stateful decision,
+    before the prompt or the provider gate can write anything (#9499) - then
+    the launch identity."""
+    issue_number = rework.resolve_issue_number()
+    if issue_number is None:
+        return LaunchResult(None, False, f"Unresolved issue number for rework {rework.issue_key}")
+    pr_number, branch_name = resolve_rework_pr(deps.repository_host, rework, issue_number)
+    refused = deps.external_admission.refuse(LaunchRequest(
+        SessionKind.REWORK, issue_number, pr_number, rework.governing_effort, rework.agent_type,
+    ))
+    if refused is not None:
+        return refused
     resolved = _rework_launch_identity(rework, deps)
     if isinstance(resolved, LaunchResult):
         return resolved
-    agent_config, issue_number, prepared_coder_prompt = resolved
-    pr_number, branch_name = resolve_rework_pr(deps.repository_host, rework, issue_number)
-    refused = deps.external_admission.refuse(kind=SessionKind.REWORK, issue_number=issue_number, pr_number=pr_number)
-    return refused if refused is not None else (agent_config, issue_number, prepared_coder_prompt, pr_number, branch_name)
+    agent_config, _, prepared_coder_prompt = resolved
+    return agent_config, issue_number, prepared_coder_prompt, pr_number, branch_name
 
 
 def launch_rework_session(

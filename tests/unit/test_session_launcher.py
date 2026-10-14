@@ -75,6 +75,7 @@ from issue_orchestrator.control.session_launch_types import (
     LaunchDisposition,
     LaunchResult,
 )
+from issue_orchestrator.domain.external_pr_adoption import LaunchRequest
 from tests.callback_endpoint_helpers import ready_callback_endpoint
 from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
 from issue_orchestrator.ports.issue_run_evidence import IssueRunLedger
@@ -2715,57 +2716,110 @@ class _RefusingEffort:
     """An integration effort that no longer admits the PR (#9499): records what it was asked."""
 
     def __init__(self) -> None:
-        self.asked: list[tuple[SessionKind, int, int]] = []
+        self.asked: list[LaunchRequest] = []
 
-    def refuse(self, *, kind: SessionKind, issue_number: int, pr_number: int) -> LaunchResult | None:
-        self.asked.append((kind, issue_number, pr_number))
+    def refuse(self, request: LaunchRequest) -> LaunchResult | None:
+        self.asked.append(request)
         return LaunchResult(None, False, "Not admitted by the integration effort: issue #123 left the effort",
                             disposition=LaunchDisposition.WITHDRAWN)
 
 
-class TestExternalPullRequestLaunchAdmission:
-    """A queued review or rework re-asks the effort's admission rule before any effect (#9499 r3 F5)."""
+class _AdmittingEffort(_RefusingEffort):
+    def refuse(self, request: LaunchRequest) -> LaunchResult | None:
+        self.asked.append(request)
+        return None
 
-    @pytest.fixture
-    def refusing(self, sample_config, mock_events, mock_repo_host, mock_worktree_manager, mock_working_copy,
+
+class TestExternalPullRequestLaunchAdmission:
+    """A queued review or rework re-asks the effort's admission rule as its FIRST
+    stateful decision - before the prompt or the provider gate can write (#9499 r4 F5)."""
+
+    @pytest.fixture(params=["refusing"])
+    def refusing(self, request, sample_config, mock_events, mock_repo_host, mock_worktree_manager, mock_working_copy,
                  mock_command_runner):
-        effort = _RefusingEffort()
+        effort = _RefusingEffort() if request.param == "refusing" else _AdmittingEffort()
+        prompt = MagicMock(name="coder_prompt_addendum")
+        prompt.prepare.return_value = PreparedCoderPromptAddendum("ADDENDUM")
+        rulings = MagicMock(name="standing_rulings")
+        # Effectful owners: a provider whose login expired writes the shared
+        # provider transition through the applier, and the prompt reads rulings.
+        sample_config.agents["agent:web"].provider = "claude-code"
+        readiness = MagicMock(spec=ProviderReadinessProbe)
+        readiness.check_launch_readiness.return_value = (
+            ProviderReadiness.auth_expired("claude-code", "not logged in") if request.param == "refusing"
+            else ProviderReadiness.ready("claude-code")
+        )
         bundle = _build_launcher_bundle(
             sample_config, mock_events, mock_repo_host, mock_worktree_manager, mock_working_copy,
-            mock_command_runner, external_admission=effort,
+            mock_command_runner, external_admission=effort, coder_prompt_addendum=prompt, standing_rulings=rulings,
+            provider_resilience=ProviderResilienceManager(
+                config=sample_config.provider_resilience, store=InMemoryProviderCircuitStore(), events=mock_events,
+            ),
+            provider_readiness_probe=readiness,
         )
-        return bundle, effort
+        return bundle, effort, (prompt, rulings, readiness)
 
-    def test_a_queued_review_the_effort_no_longer_admits_is_withdrawn(self, refusing, mock_worktree_manager):
-        bundle, effort = refusing
+    @staticmethod
+    def _nothing_ran(bundle, owners, worktree_manager) -> None:
+        prompt, rulings, readiness = owners
+        assert prompt.method_calls == [] and rulings.method_calls == []
+        readiness.check_launch_readiness.assert_not_called()
+        bundle.action_applier.apply.assert_not_called()  # no shared provider transition, no label
+        assert bundle.create_session_calls == [] and worktree_manager.create_calls == []
+
+    def test_a_queued_review_the_effort_no_longer_admits_is_withdrawn_before_any_effect(
+        self, refusing, mock_worktree_manager,
+    ):
+        bundle, effort, owners = refusing
         review = PendingReview(
             issue_key=GitHubIssueKey(repo="test/repo", external_id="123"), pr_number=456,
             pr_url="https://github.com/test/repo/pull/456", branch_name="123-feature", _issue_number=123,
+            agent_label="agent:web", governing_effort="integration",
         )
 
         result = bundle.launcher.launch_review_session(review, active_sessions=[])
 
         assert (result.success, result.disposition) == (False, LaunchDisposition.WITHDRAWN)
-        assert effort.asked == [(SessionKind.REVIEW, 123, 456)]
-        assert bundle.create_session_calls == [] and mock_worktree_manager.create_calls == []
+        assert effort.asked == [LaunchRequest(SessionKind.REVIEW, 123, 456, "integration", "agent:web")]
+        self._nothing_ran(bundle, owners, mock_worktree_manager)
 
-    def test_a_queued_rework_the_effort_no_longer_admits_is_withdrawn(
-        self, refusing, mock_repo_host, mock_worktree_manager,
-    ):
-        bundle, effort = refusing
+    @pytest.mark.parametrize("refusing", ["admitting"], indirect=True)
+    def test_an_admitted_rework_does_reach_the_owners_these_tests_guard(self, refusing, mock_repo_host):
+        """The control: with the effort admitting, the same launch reaches the
+        prompt and provider owners the refusing tests prove untouched."""
+        bundle, _effort, (prompt, _rulings, readiness) = refusing
         mock_repo_host.prs[123] = [PRInfo(
             number=456, title="Hand-made #123", url="https://github.com/test/repo/pull/456", branch="123-feature",
             body="Closes #123", state="open", labels=["origin:external"],
         )]
         rework = PendingRework(
             issue_key=GitHubIssueKey(repo="test/repo", external_id="123"), agent_type="agent:web", rework_cycle=1,
+            governing_effort="integration",
+        )
+
+        bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        prompt.prepare.assert_called()
+        readiness.check_launch_readiness.assert_called()
+
+    def test_a_queued_rework_the_effort_no_longer_admits_is_withdrawn_before_any_effect(
+        self, refusing, mock_repo_host, mock_worktree_manager,
+    ):
+        bundle, effort, owners = refusing
+        mock_repo_host.prs[123] = [PRInfo(
+            number=456, title="Hand-made #123", url="https://github.com/test/repo/pull/456", branch="123-feature",
+            body="Closes #123", state="open", labels=["origin:external"],
+        )]
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"), agent_type="agent:web", rework_cycle=1,
+            governing_effort="integration",
         )
 
         result = bundle.launcher.launch_rework_session(rework, active_sessions=[])
 
         assert (result.success, result.disposition) == (False, LaunchDisposition.WITHDRAWN)
-        assert effort.asked == [(SessionKind.REWORK, 123, 456)]
-        assert bundle.create_session_calls == [] and mock_worktree_manager.create_calls == []
+        assert effort.asked == [LaunchRequest(SessionKind.REWORK, 123, 456, "integration", "agent:web")]
+        self._nothing_ran(bundle, owners, mock_worktree_manager)
 
 
 class TestLaunchReworkSession:

@@ -53,6 +53,7 @@ from ..domain.external_pr_adoption import (
     ExternalPullRequestFacts,
     IoCustody,
     IssueLink,
+    LaunchRequest,
     LinkedIssueFacts,
     PullRequestFacts,
     ReportRefusedExternalPullRequest,
@@ -60,6 +61,7 @@ from ..domain.external_pr_adoption import (
     external_work,
     in_effort,
     judge_external_pull_request,
+    launch_refusal,
     merge_refusal,
     refusal_marker,
     reviewed_head_receipt,
@@ -260,6 +262,16 @@ class ExternalPullRequestGate:
         return merge_refusal(
             self.branch, facts, issue=linked_issue_facts(self.config, issue, labels=issue_labels),
             custody=self.custody.custody(issue.number),
+        )
+
+    def launch_refusal(
+        self, request: LaunchRequest, *, pr: "PRInfo", issue: "Issue", issue_labels: Iterable[str],
+        pr_labels: Iterable[str],
+    ) -> str | None:
+        """Why queued *request* must not launch now; None when it may (domain :func:`launch_refusal`)."""
+        return launch_refusal(
+            self.branch, request, self.facts(pr, pr_labels=pr_labels),
+            issue=linked_issue_facts(self.config, issue, labels=issue_labels), custody=self.custody.custody(issue.number),
         )
 
     def head_reviewed(self, pr: "PRInfo", *, pr_labels: Iterable[str]) -> bool:

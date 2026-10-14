@@ -40,7 +40,8 @@ from ..domain.models import (
 from ..ports import EventSink, make_trace_event, RepositoryHost
 from .awaiting_merge_reconciler import AwaitingMergeReconciler
 from .ci_failure_triage import CiFailureTriage
-from ..domain.external_pr_adoption import LaunchVerdict
+from ..domain.external_pr_adoption import LAUNCH_ADMITTED, LaunchAdmission, LaunchRequest, LaunchVerdict
+from ..domain.session_kind import SessionKind
 from .external_pr_adoption import ExternalPullRequestAdoption, routing_gate
 from .external_pr_launch import pr_admission
 from .integration_branch import IntegrationBranchOwner
@@ -178,11 +179,13 @@ class GitHubWorkflow:
             BlockedPRLane.REVIEW, scan.blocked, at=datetime.now(UTC)
         )
         for r in scan.reviews:
-            if not self._admitted(state, "Review", r.issue_number, r.pr_number):
+            admission = self._admitted(state, LaunchRequest(
+                SessionKind.REVIEW, r.issue_number, r.pr_number, None, r.agent_label))
+            if admission is None:
                 continue
-            state.discovered_reviews.append(
-                DiscoveredReview(r.issue_number, r.pr_number, r.pr_url, r.branch_name)
-            )
+            state.discovered_reviews.append(DiscoveredReview(
+                r.issue_number, r.pr_number, r.pr_url, r.branch_name, governing_effort=admission.governing_effort,
+            ))
 
     def scan_needs_rework_prs(
         self,
@@ -213,7 +216,9 @@ class GitHubWorkflow:
                     r.issue_key,
                 )
                 continue
-            if r.pr_number and not self._admitted(state, "Rework", issue_number, r.pr_number):
+            admission = self._admitted(state, LaunchRequest(
+                SessionKind.REWORK, issue_number, r.pr_number, None, r.agent_type)) if r.pr_number else LAUNCH_ADMITTED
+            if admission is None:
                 continue
             state.discovered_reworks.append(
                 DiscoveredRework(
@@ -223,19 +228,21 @@ class GitHubWorkflow:
                     r.agent_type,
                     r.rework_cycle,
                     feedback=r.feedback, scoped_request_keys=r.scoped_request_keys,
+                    governing_effort=admission.governing_effort,
                 )
             )
 
-    def _admitted(self, state: "OrchestratorState", lane: str, issue_number: int, pr_number: int) -> bool:
+    def _admitted(self, state: "OrchestratorState", request: LaunchRequest) -> LaunchAdmission | None:
         """THE admission rule before a review or rework of a PR the integration
-        effort governs is queued (#9499); the launch asks again before its effects."""
-        gate = routing_gate(self.config, self.repository_host, state)
-        admission = pr_admission(gate, issue_number=issue_number, pr_number=pr_number)
-        admitted = admission.verdict is LaunchVerdict.ADMITTED
-        if not admitted:
-            logger.info("[SCANNER] %s of PR #%d for issue #%d not queued (%s): %s", lane, pr_number, issue_number,
-                        admission.verdict.value, admission.reason)
-        return admitted
+        effort governs is queued (#9499): the admission, carrying the effort the
+        work is queued under; None when it is not admitted. The launch asks again,
+        under that authority, before its effects."""
+        admission = pr_admission(routing_gate(self.config, self.repository_host, state), request)
+        if admission.verdict is LaunchVerdict.ADMITTED:
+            return admission
+        logger.info("[SCANNER] %s of PR #%d for issue #%d not queued (%s): %s", request.kind.value,
+                    request.pr_number, request.issue_number, admission.verdict.value, admission.reason)
+        return None
 
     def scan_pending_pr_work(
         self,

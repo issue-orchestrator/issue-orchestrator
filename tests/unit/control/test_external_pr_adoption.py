@@ -10,6 +10,7 @@ owner's merge gate are production code.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,6 +38,7 @@ from issue_orchestrator.domain.board_snapshot import BoardTechLeadWriteHealth
 from issue_orchestrator.domain.external_pr_adoption import (
     AdoptExternalPullRequest,
     AdoptionRefusal,
+    LaunchRequest,
     ReportRefusedExternalPullRequest,
     ReturnExternalPullRequestToReview,
     refusal_marker,
@@ -757,8 +759,9 @@ def test_io_s_own_pr_approval_leaves_no_receipt() -> None:
 # -- the launch boundary re-asks THE admission rule (review r3 F5) ----------------------
 
 
-def _queue(world: _World, kind: SessionKind) -> None:
-    """Discovery queues the review or rework of PR #321: admitted when queued."""
+def _queue(world: _World, kind: SessionKind) -> LaunchRequest:
+    """Discovery queues the review or rework of PR #321, admitted then: the
+    launch request its queued item carries - the governing effort included."""
     if kind is SessionKind.REVIEW:
         world.workflow.pr_scanner.scan_for_reviews.return_value = ReviewScan(  # type: ignore[attr-defined]
             reviews=[PendingReview(issue_key=world.host.create_issue_key(231), pr_number=321, pr_url="u321",
@@ -766,19 +769,22 @@ def _queue(world: _World, kind: SessionKind) -> None:
             blocked=[],
         )
         world.workflow.scan_needs_code_review_prs(world.state)
-        assert [review.pr_number for review in world.state.discovered_reviews] == [321]
-    else:
-        world.workflow.pr_scanner.scan_for_reworks.return_value = ReworkScan(  # type: ignore[attr-defined]
-            reworks=[PendingRework(issue_key=world.host.create_issue_key(231), agent_type="agent:backend",
-                                   issue_number=231, pr_number=321)],
-            escalations=[], blocked=[],
-        )
-        world.workflow.scan_needs_rework_prs(world.state)
-        assert [rework.pr_number for rework in world.state.discovered_reworks] == [321]
+        [review] = world.state.discovered_reviews
+        assert (review.pr_number, review.governing_effort) == (321, "integration")
+        return LaunchRequest(kind, review.issue_number, review.pr_number, review.governing_effort, review.agent_label)
+    world.workflow.pr_scanner.scan_for_reworks.return_value = ReworkScan(  # type: ignore[attr-defined]
+        reworks=[PendingRework(issue_key=world.host.create_issue_key(231), agent_type="agent:backend",
+                               issue_number=231, pr_number=321)],
+        escalations=[], blocked=[],
+    )
+    world.workflow.scan_needs_rework_prs(world.state)
+    [rework] = world.state.discovered_reworks
+    assert (rework.pr_number, rework.governing_effort) == (321, "integration")
+    return LaunchRequest(kind, rework.issue_number, rework.pr_number, rework.governing_effort, rework.agent_type)
 
 
 def _no_longer_admitted(world: _World, pr: PRInfo, change: str) -> None:
-    """One admission fact changes while the work waits for a slot."""
+    """Admission facts change while the work waits for a slot."""
     if change == "unknown_agent":
         world.relabel(231, "agent:unknown", EFFORT)
     elif change == "left_effort":
@@ -793,6 +799,18 @@ def _no_longer_admitted(world: _World, pr: PRInfo, change: str) -> None:
         pr.base_branch = "main"
     elif change == "origin_lost":
         world.host.remove_label(321, "origin:external")
+    elif change == "origin_lost_and_retargeted":
+        # Review r4 F5: together, the PR's current facts no longer say the
+        # effort governs it - only the queued authority does.
+        world.host.remove_label(321, "origin:external")
+        pr.base_branch = "main"
+    elif change == "origin_lost_and_io_marker":
+        world.host.remove_label(321, "origin:external")
+        pr.body = f"Closes #231\n\n*{ORCHESTRATOR_PR_MARKER}*"
+    elif change == "agent_changed":
+        # Another configured agent: the queued work would run as the old one.
+        world.config.agents["agent:frontend"] = AgentConfig(prompt_path=Path("frontend.md"))
+        world.relabel(231, "agent:frontend", EFFORT)
     else:
         world.state.active_sessions.append(SimpleNamespace(  # type: ignore[arg-type]
             issue=SimpleNamespace(number=231), branch_name="231-io-attempt",
@@ -803,7 +821,7 @@ def _no_longer_admitted(world: _World, pr: PRInfo, change: str) -> None:
 @pytest.mark.parametrize(
     "change",
     ["unknown_agent", "left_effort", "issue_closed", "link_moved", "ambiguous", "retargeted", "origin_lost",
-     "io_session_started"],
+     "origin_lost_and_retargeted", "origin_lost_and_io_marker", "agent_changed", "io_session_started"],
 )
 def test_queued_work_on_an_adopted_pr_is_withdrawn_at_launch_once_the_pr_is_no_longer_admitted(
     kind: SessionKind, change: str,
@@ -811,27 +829,42 @@ def test_queued_work_on_an_adopted_pr_is_withdrawn_at_launch_once_the_pr_is_no_l
     world = _World()
     world.effort_issue(232)
     pr = _adopted_and_approved(world)
-    _queue(world, kind)
+    request = _queue(world, kind)
+    if change == "agent_changed":
+        request = replace(request, agent="agent:backend")  # the agent the queued work names
     gate = launch_gate(world.config, world.host, lambda: world.state)
-    assert gate.refuse(kind=kind, issue_number=231, pr_number=321) is None
+    assert gate.refuse(request) is None
 
     _no_longer_admitted(world, pr, change)
-    refused = gate.refuse(kind=kind, issue_number=231, pr_number=321)
+    refused = gate.refuse(request)
 
     assert refused is not None and not refused.success
     assert refused.disposition is LaunchDisposition.WITHDRAWN, refused.reason
 
 
+def test_without_its_queued_authority_the_same_edits_would_look_ungoverned() -> None:
+    """Why the queued item carries the authority: the PR's facts alone (origin
+    label dropped, base moved to main) say the effort does not govern it."""
+    world = _World()
+    pr = _adopted_and_approved(world)
+    request = _queue(world, SessionKind.REWORK)
+    _no_longer_admitted(world, pr, "origin_lost_and_retargeted")
+
+    gate = launch_gate(world.config, world.host, lambda: world.state)
+
+    assert gate.refuse(replace(request, governing_effort=None)) is None
+    assert gate.refuse(request) is not None
+
+
 def test_a_launch_whose_admission_cannot_be_read_is_retried_not_withdrawn() -> None:
     world = _World()
     _adopted_and_approved(world)
+    request = _queue(world, SessionKind.REWORK)
     world.host.get_issue_labels_fresh = MagicMock(  # type: ignore[method-assign]
         side_effect=RepositoryHostError("502 labels"),
     )
 
-    refused = launch_gate(world.config, world.host, lambda: world.state).refuse(
-        kind=SessionKind.REWORK, issue_number=231, pr_number=321,
-    )
+    refused = launch_gate(world.config, world.host, lambda: world.state).refuse(request)
 
     assert refused is not None and refused.disposition is LaunchDisposition.RETRYABLE_FAILURE
 
@@ -846,7 +879,7 @@ def test_work_on_a_pr_the_effort_does_not_govern_launches_as_without_it(pr_kind:
         world.pr(321, issue=231, base="main")  # a person's PR into main: not the effort's business
 
     assert launch_gate(world.config, world.host, lambda: world.state).refuse(
-        kind=SessionKind.REVIEW, issue_number=231, pr_number=321,
+        LaunchRequest(SessionKind.REVIEW, 231, 321, None, None),
     ) is None
 
 

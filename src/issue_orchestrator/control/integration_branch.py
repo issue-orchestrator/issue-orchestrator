@@ -72,6 +72,7 @@ from ..domain.external_pr_adoption import (
     AdoptExternalPullRequest,
     ReportRefusedExternalPullRequest,
     ReturnExternalPullRequestToReview,
+    effort_governs,
 )
 from ..events import EventName
 from ..infra.logging_config import issue_log
@@ -271,6 +272,11 @@ class IntegrationBranchOwner:
     def owns(self, pr: "PRInfo") -> bool:
         """Whether *pr* targets the integration branch (only those are io's to merge)."""
         return pr.base_branch == self.branch
+
+    def governs(self, pr: "PRInfo") -> str | None:
+        """The effort governing work on *pr* (its branch), queued under that authority (#9499); else None."""
+        facts = self.external.facts(pr, pr_labels=pr.labels)
+        return self.branch if effort_governs(self.branch, facts) else None
 
     def gate_label(self) -> str:
         """The PR label required before io merges (``merge_after``)."""

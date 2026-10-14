@@ -250,6 +250,7 @@ class QueueReviewAction(Action):
     agent_label: Optional[str] = None  # Agent that created the PR (for per-agent reviewer)
     issue_key: str = ""  # stable_id for SSE events; falls back to str(issue_number) when empty
     issue_labels: tuple[str, ...] = ()
+    governing_effort: str | None = None  # the integration effort that admitted it (#9499)
     action_type: ActionType = field(default=ActionType.QUEUE_REVIEW, init=False)
 
 
@@ -280,6 +281,7 @@ class QueueReworkAction(Action):
     source: str = "review_label"
     feedback: str | None = None
     scoped_request_keys: tuple[str, ...] = ()
+    governing_effort: str | None = None  # the integration effort that admitted it (#9499)
     action_type: ActionType = field(default=ActionType.QUEUE_REWORK, init=False)
 
 

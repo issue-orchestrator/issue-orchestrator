@@ -108,7 +108,7 @@ from .launch_transaction import (
     abandon_claim_unless_spawned,
 )
 from .recovery_review_hold import NO_RECOVERY_HOLDS, RecoveryHolds
-from .external_pr_launch import NO_INTEGRATION_EFFORT, ExternalLaunchAdmission
+from .external_pr_launch import NO_INTEGRATION_EFFORT, ExternalLaunchAdmission, LaunchRequest
 from .tech_lead_approval import unapproved_proposal_launch
 from .session_launch_types import (
     ClaimAcquisitionResult,
@@ -1549,9 +1549,6 @@ class SessionLauncher:
             self.events,
         ):
             return result
-        if result := self._external_admission.refuse(kind=SessionKind.REVIEW, issue_number=review.issue_number,
-                                                     pr_number=review.pr_number):
-            return result
 
         if any(s.terminal_id == session_name for s in active_sessions):
             log_transition("review", review.pr_number, "QUEUED", "SKIP", "already in active_sessions")
@@ -1576,6 +1573,9 @@ class SessionLauncher:
     ) -> LaunchResult:
         """Launch a code review session for a PR."""
         if result := callback_endpoint_not_ready(self._agent_callback_endpoint):
+            return result
+        if result := self._external_admission.refuse(LaunchRequest(  # first stateful decision (#9499)
+                SessionKind.REVIEW, review.issue_number, review.pr_number, review.governing_effort, review.agent_label)):
             return result
         # Get the reviewer for this agent (per-agent override or default)
         agent_label = self.config.get_reviewer_for_agent(review.agent_label) if review.agent_label else self.config.code_review_agent

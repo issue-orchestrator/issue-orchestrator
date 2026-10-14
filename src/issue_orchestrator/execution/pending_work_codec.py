@@ -149,6 +149,7 @@ def _encode_review(request: PendingWorkRequest) -> dict[str, Any]:
         "issue_number": request.issue_number,
         "agent_label": request.agent_label,
         "issue_labels": list(request.issue_labels),
+        "governing_effort": request.governing_effort,
     }
 
 
@@ -161,7 +162,16 @@ def _decode_review(payload: dict[str, Any]) -> PendingReview:
         _issue_number=int(payload["issue_number"]),
         agent_label=payload["agent_label"],
         issue_labels=tuple(payload["issue_labels"]),
+        governing_effort=_governing_effort(payload),
     )
+
+
+def _governing_effort(payload: dict[str, Any]) -> str | None:
+    """The queued authority (#9499); absent from a claim recorded before it existed."""
+    value = payload.get("governing_effort")
+    if value is not None and not isinstance(value, str):
+        raise ValueError(f"governing_effort must be a branch name, got {value!r}")
+    return value
 
 
 def _encode_retrospective_review(request: PendingWorkRequest) -> dict[str, Any]:
@@ -204,6 +214,7 @@ def _encode_rework(request: PendingWorkRequest) -> dict[str, Any]:
         "source": request.source,
         "feedback": request.feedback,
         "scoped_request_keys": list(request.scoped_request_keys),
+        "governing_effort": request.governing_effort,
     }
 
 
@@ -217,6 +228,7 @@ def _decode_rework(payload: dict[str, Any]) -> PendingRework:
         source=str(payload["source"]),
         feedback=payload["feedback"],
         scoped_request_keys=tuple(payload.get("scoped_request_keys", ())),
+        governing_effort=_governing_effort(payload),
     )
 
 
