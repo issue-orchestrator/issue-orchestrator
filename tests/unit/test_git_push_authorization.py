@@ -144,7 +144,9 @@ REDIRECTS = [
 
 
 @pytest.mark.parametrize("redirect", REDIRECTS)
-def test_an_unprotected_push_follows_the_redirect(repos: Repos, redirect: Redirect) -> None:
+def test_an_unprotected_push_follows_the_redirect(
+    repos: Repos, redirect: Redirect
+) -> None:
     """Control: each redirect really does move a fixture push to the decoy, so
     the protected test below cannot pass because the redirect was inert."""
     env = {
@@ -159,7 +161,9 @@ def test_an_unprotected_push_follows_the_redirect(repos: Repos, redirect: Redire
     assert _heads(repos.decoy) != {}
 
 
-def _inherited(monkeypatch: pytest.MonkeyPatch, redirect: dict[str, str]) -> dict[str, str]:
+def _inherited(
+    monkeypatch: pytest.MonkeyPatch, redirect: dict[str, str]
+) -> dict[str, str]:
     for name, value in {**redirect, KEPT_VAR: KEPT_VALUE}.items():
         monkeypatch.setenv(name, value)
     return authorized_local_fixture_git_env()
@@ -168,7 +172,9 @@ def _inherited(monkeypatch: pytest.MonkeyPatch, redirect: dict[str, str]) -> dic
 def _caller_supplied(
     _monkeypatch: pytest.MonkeyPatch, redirect: dict[str, str]
 ) -> dict[str, str]:
-    return authorized_local_fixture_git_env({**os.environ, **redirect, KEPT_VAR: KEPT_VALUE})
+    return authorized_local_fixture_git_env(
+        {**os.environ, **redirect, KEPT_VAR: KEPT_VALUE}
+    )
 
 
 @pytest.mark.parametrize(
