@@ -16,24 +16,28 @@ and agent it would act as (:func:`~..domain.external_pr_adoption.launch_refusal`
 * unreadable -> a RETRYABLE_FAILURE, on the queue's bounded budget.
 
 The work counts as governed when its queued authority OR the PR's current
-facts say so: no later mix of edits erases that custody. Work queued under an
-authority whose effort this engine no longer runs (integration mode turned
-off, or another branch) fails closed: it is withdrawn, never launched unowned.
+facts say so: no later mix of edits erases that custody. With no effort
+running here (integration mode off), work queued under an authority, or on a
+PR an effort adopted, fails closed: it is withdrawn, never launched unowned.
 
-Discovery asks the same question (:func:`pr_admission`) before it queues a
-review or a rework, and the authority it returns is the one the queued item
-carries (:func:`~..domain.external_pr_adoption.launch_authority` builds it).
+Every queued review and rework passes ONE boundary, :class:`QueuedWorkAdmission`
+(the queue handlers): an item its producer already admitted carries its
+authority - the scans, the reconciler's reworks, a governed rework's
+completion (the session's own authority) - and any other is admitted there,
+freshly, before it is queued: a publish retry's or staged finalization's
+review, whatever the producer.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Protocol
 
 from ..domain.external_pr_adoption import (
     LAUNCH_ADMITTED,
+    ORIGIN_EXTERNAL_LABEL,
     LaunchAdmission,
     LaunchRequest,
     LaunchVerdict,
@@ -43,7 +47,9 @@ from ..domain.external_pr_adoption import (
 )
 from ..infra.logging_config import issue_log
 from ..ports.repository_host import RepositoryHostError
-from .external_pr_adoption import ExternalPullRequestGate, linked_issue_facts, write_gate
+from ..domain.models import PendingReview, PendingRework
+from ..domain.session_kind import SessionKind
+from .external_pr_adoption import ExternalPullRequestGate, linked_issue_facts, routing_gate, write_gate
 from .session_launch_types import LaunchDisposition, LaunchResult
 
 if TYPE_CHECKING:
@@ -61,9 +67,7 @@ def pr_admission(gate: ExternalPullRequestGate, request: LaunchRequest) -> Launc
     the admission then carrying the authority such work is queued under."""
     authority = request.authority
     if not gate.config.integration.enabled:
-        if authority is None:
-            return LAUNCH_ADMITTED
-        return _withdrawn(f"queued under the `{authority.effort}` integration effort, which this engine no longer runs")
+        return _without_an_effort(gate, request)
     pr_number, issue_number = request.pr_number, request.issue_number
     try:
         pr = gate.host.get_pr(pr_number)
@@ -86,8 +90,76 @@ def pr_admission(gate: ExternalPullRequestGate, request: LaunchRequest) -> Launc
     return LaunchAdmission(LaunchVerdict.ADMITTED, authority=launch_authority(gate.branch, facts, issue_facts))
 
 
+def _without_an_effort(gate: ExternalPullRequestGate, request: LaunchRequest) -> LaunchAdmission:
+    """No integration effort runs here: work queued under one, or on a PR one
+    adopted, fails closed; any other work is no effort's business. One
+    (conditional) PR read: the origin label is the adoption."""
+    if request.authority is not None:
+        return _withdrawn(f"queued under the `{request.authority.effort}` integration effort,"
+                          " which this engine no longer runs")
+    try:
+        pr = gate.host.get_pr(request.pr_number)
+    except RepositoryHostError as error:
+        return LaunchAdmission(LaunchVerdict.UNREADABLE, f"PR #{request.pr_number} could not be re-read: {error}")
+    adopted = pr is not None and ORIGIN_EXTERNAL_LABEL in pr.labels
+    if adopted:
+        return _withdrawn(f"PR #{request.pr_number} was adopted by an integration effort this engine no longer runs")
+    return LAUNCH_ADMITTED
+
+
 def _withdrawn(reason: str) -> LaunchAdmission:
     return LaunchAdmission(LaunchVerdict.WITHDRAWN, reason)
+
+
+@dataclass(frozen=True)
+class QueuedWorkAdmission:
+    """THE queue boundary for review and rework of a PR (#9499).
+
+    An item that carries an authority was admitted under it by its producer
+    and is queued as it is (its launch re-judges it against that authority).
+    Any other is admitted here on fresh reads: refused, it is not queued (the
+    PR's labels bring it back to its lane's gated scan); admitted, it is
+    queued under the authority the admission returns - with that authority's
+    agent - or none when no effort governs it.
+    """
+
+    gate: Callable[[], ExternalPullRequestGate]
+
+    def review(self, review: PendingReview) -> PendingReview | None:
+        if review.authority is not None:
+            return review
+        admission = self._admit(LaunchRequest(
+            SessionKind.REVIEW, review.issue_number, review.pr_number, None, review.agent_label))
+        if admission is None:
+            return None
+        authority = admission.authority
+        return review if authority is None else replace(review, agent_label=authority.agent, authority=authority)
+
+    def rework(self, rework: PendingRework) -> PendingRework | None:
+        issue_number = rework.resolve_issue_number()
+        if rework.authority is not None or not rework.pr_number or issue_number is None:
+            return rework  # a PR-less rework is admitted at launch, on the PR it finds then
+        admission = self._admit(LaunchRequest(
+            SessionKind.REWORK, issue_number, rework.pr_number, None, rework.agent_type))
+        if admission is None:
+            return None
+        authority = admission.authority
+        return rework if authority is None else replace(rework, agent_type=authority.agent, authority=authority)
+
+    def _admit(self, request: LaunchRequest) -> LaunchAdmission | None:
+        admission = pr_admission(self.gate(), request)
+        if admission.verdict is LaunchVerdict.ADMITTED:
+            return admission
+        logger.info(issue_log(request.issue_number, "[queue] %s of PR #%d not queued (%s): %s"),
+                    request.kind.value, request.pr_number, admission.verdict.value, admission.reason)
+        return None
+
+
+def queued_work_admission(
+    config: "Config", host: "RepositoryHost", state: Callable[[], "OrchestratorState"],
+) -> QueuedWorkAdmission:
+    """The queue boundary's owner, on the routing's view of live state."""
+    return QueuedWorkAdmission(lambda: routing_gate(config, host, state()))
 
 
 class ExternalLaunchAdmission(Protocol):
@@ -139,6 +211,8 @@ __all__ = [
     "LaunchRequest",
     "NO_INTEGRATION_EFFORT",
     "NoIntegrationEffort",
+    "QueuedWorkAdmission",
     "launch_gate",
     "pr_admission",
+    "queued_work_admission",
 ]

@@ -61,6 +61,7 @@ from .session_history import (
     SessionHistoryOwner,
 )
 from .transition_log import log_transition
+from .external_pr_launch import QueuedWorkAdmission, queued_work_admission
 from ..domain.models import (
     BLOCKED_HISTORY_STATUSES,
     PendingRetrospectiveReview,
@@ -473,10 +474,16 @@ class OrchestratorSupport:
                 if not (c.issue_number == a.issue_number and c.scratch_worktree)
             ]
 
+    @property
+    def _queued_work(self) -> QueuedWorkAdmission:
+        """THE queue boundary for review and rework (#9499): every item carries its complete authority."""
+        return queued_work_admission(self.config, self.repository_host, lambda: self.state)
+
     def _handle_queue_review(self, action: "Action", result: "ActionResult") -> None:
         from .actions import QueueReviewAction
         a = cast(QueueReviewAction, action)
-        if not self.state.queue_pending_review(a.pending(self.repository_host.create_issue_key(a.issue_number))):
+        review = self._queued_work.review(a.pending(self.repository_host.create_issue_key(a.issue_number)))
+        if review is None or not self.state.queue_pending_review(review):
             return
         log_transition("review", a.pr_number, "CREATED", "QUEUED", f"from #{a.issue_number}")
         self.get_review_machine(a.pr_number, a.issue_number)
@@ -510,7 +517,8 @@ class OrchestratorSupport:
         from .actions import QueueReworkAction
         a = cast(QueueReworkAction, action)
         agent = next((r.agent_type for r in self.state.discovered_reworks if r.issue_number == a.issue_number), "agent:developer")
-        if not self.state.queue_pending_rework(a.pending(self.repository_host.create_issue_key(a.issue_number), agent)):
+        rework = self._queued_work.rework(a.pending(self.repository_host.create_issue_key(a.issue_number), agent))
+        if rework is None or not self.state.queue_pending_rework(rework):
             return
         log_transition("rework", a.issue_number, "CREATED", "QUEUED", f"cycle {a.rework_cycle}")
 

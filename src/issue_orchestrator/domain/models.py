@@ -1347,6 +1347,10 @@ class Session:
     # run's scope readable without re-reading GitHub, so the run coordinator can
     # tell an exclusive whole-board run from a focused investigation.
     tech_lead_scope: "TechLeadLaunchScope | None" = None
+    # The authority an integration effort admitted this session's rework under
+    # (#9499): its completion queues the PR's next review under the same one,
+    # unchanged. Restored from the session's durable claim across a restart.
+    launch_authority: "LaunchAuthority | None" = None
 
     def __post_init__(self) -> None:
         _require_session_run_assets(self.run_assets)

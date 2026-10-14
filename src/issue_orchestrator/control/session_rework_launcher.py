@@ -624,6 +624,7 @@ def launch_rework_session(
             pr_number=pr_number,
             rework_cycle=rework.rework_cycle,
             original_prompt=rendered_prompt,
+            launch_authority=rework.authority,
         )
 
         note_scoped_rework_started(deps.scoped_rework.store, run.identity)

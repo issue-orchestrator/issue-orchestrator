@@ -865,19 +865,22 @@ def test_without_its_queued_authority_the_same_edits_would_look_ungoverned() -> 
     assert gate.refuse(request) is not None
 
 
-def test_queued_work_whose_effort_this_engine_no_longer_runs_fails_closed() -> None:
-    """Review r5 F9: a restart with integration mode off never launches work
-    queued under an effort's authority unowned."""
+def test_work_on_an_adopted_pr_never_runs_unowned_once_its_effort_is_off() -> None:
+    """Review r5/r6 F9: a restart with integration mode off never launches work
+    queued under an effort's authority, nor work on a PR an effort adopted -
+    even if a scan re-queued it without one."""
     world = _World()
-    _adopted_and_approved(world)
+    pr = _adopted_and_approved(world)
     request = _queue(world, SessionKind.REWORK)
     world.config.integration = IntegrationConfig(enabled=False)
     gate = launch_gate(world.config, world.host, lambda: world.state)
 
-    refused = gate.refuse(request)
-
-    assert refused is not None and refused.disposition is LaunchDisposition.WITHDRAWN
-    assert gate.refuse(replace(request, authority=None)) is None  # unowned work runs as without the effort
+    for queued in (request, replace(request, authority=None)):
+        refused = gate.refuse(queued)
+        assert refused is not None and refused.disposition is LaunchDisposition.WITHDRAWN
+    # A PR no effort adopted is no effort's business: it runs as without one.
+    world.host.remove_label(pr.number, "origin:external")
+    assert gate.refuse(replace(request, authority=None)) is None
 
 
 def test_a_launch_whose_admission_cannot_be_read_is_retried_not_withdrawn() -> None:

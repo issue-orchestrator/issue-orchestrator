@@ -2841,15 +2841,15 @@ class TestExternalPullRequestLaunchEndToEnd:
     launch judges, before any effectful owner runs."""
 
     @pytest.fixture
-    def effort(self, sample_config, mock_events, mock_repo_host, mock_worktree_manager, mock_working_copy,
+    def effort(self, request, sample_config, mock_events, mock_repo_host, mock_worktree_manager, mock_working_copy,
                mock_command_runner):
-        sample_config.integration = IntegrationConfig(enabled=True)
+        sample_config.integration = IntegrationConfig(enabled=getattr(request, "param", "on") != "off")
         sample_config.code_review_label = "needs-code-review"
         sample_config.agents["agent:other"] = AgentConfig(prompt_path=sample_config.agents["agent:web"].prompt_path)
         self._issue(mock_repo_host, "agent:web")
         pr = self._adopted_pr(mock_repo_host, 456)
         state = OrchestratorState()
-        kwargs, owners = _effectful_owners(sample_config, mock_events, provider_ready=False)
+        kwargs, owners = _effectful_owners(sample_config, mock_events, provider_ready=getattr(request, "param", "") == "ready")
         bundle = _build_launcher_bundle(
             sample_config, mock_events, mock_repo_host, mock_worktree_manager, mock_working_copy,
             mock_command_runner, external_admission=launch_gate(sample_config, mock_repo_host, lambda: state),
@@ -2929,6 +2929,166 @@ class TestExternalPullRequestLaunchEndToEnd:
 
         assert (result.success, result.disposition) == (False, LaunchDisposition.WITHDRAWN)
         assert "PR #456 is gone" in result.reason
+        _nothing_ran(bundle, owners, mock_worktree_manager)
+
+    @staticmethod
+    def _queued_review(sample_config, host, state, found):
+        """Planner, then the queue handlers' owner: the review queued from *found*."""
+        from issue_orchestrator.control.actions import QueueReviewAction
+        from issue_orchestrator.control.external_pr_launch import queued_work_admission
+        from issue_orchestrator.control.planner import Planner
+        from issue_orchestrator.control.planner_types import OrchestratorSnapshot
+        from issue_orchestrator.control.scheduler import Scheduler
+
+        snapshot = OrchestratorSnapshot(
+            issues=(), active_sessions=(), pending_reviews=(), pending_reworks=(), pending_tech_lead=(), paused=False,
+            discovered_reviews=(found,),
+        )
+        plan = Planner(config=sample_config, scheduler=Scheduler(sample_config)).plan(snapshot)
+        [queue] = [action for action in plan.actions if isinstance(action, QueueReviewAction)]
+        return queued_work_admission(sample_config, host, lambda: state).review(
+            queue.pending(host.create_issue_key(queue.issue_number)))
+
+    def _lapse_and_launch(self, bundle, owners, host, pr, review, worktree_manager):
+        """The author drops the origin label and retargets, and the issue names
+        another configured agent, while the review waits; then it launches."""
+        for owner in owners:
+            owner.reset_mock()
+        bundle.action_applier.apply.reset_mock()
+        sessions, worktrees = len(bundle.create_session_calls), len(worktree_manager.create_calls)
+        pr.labels.remove("origin:external")
+        host.labels[pr.number].discard("origin:external")
+        pr.base_branch = "main"
+        self._issue(host, "agent:other")
+
+        result = bundle.launcher.launch_review_session(review, active_sessions=[])
+
+        assert (result.success, result.disposition) == (False, LaunchDisposition.WITHDRAWN), result.reason
+        prompt, rulings, readiness = owners
+        assert prompt.method_calls == [] and rulings.method_calls == []
+        readiness.check_launch_readiness.assert_not_called()
+        bundle.action_applier.apply.assert_not_called()
+        assert (len(bundle.create_session_calls), len(worktree_manager.create_calls)) == (sessions, worktrees)
+
+    @pytest.mark.parametrize("effort", ["ready"], indirect=True)
+    def test_a_governed_rework_s_next_review_is_queued_under_its_authority(
+        self, effort, sample_config, mock_repo_host, mock_worktree_manager,
+    ):
+        """Review r6 F10: rework -> completion -> planner -> queued review, the
+        authority intact; lapsing facts then withdraw it before any effect."""
+        from issue_orchestrator.control.completion_pr_lookup import ResolvedCompletionPr
+        from issue_orchestrator.domain.completion_processing import CompletionPublication
+
+        state, pr, bundle, owners = effort
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"), agent_type="agent:web", rework_cycle=1,
+            issue_number=123, pr_number=456, authority=_QUEUED,
+        )
+        launched = bundle.launcher.launch_rework_session(rework, active_sessions=[])
+        assert launched.success and launched.session is not None, launched.reason
+        assert launched.session.launch_authority == _QUEUED
+
+        # The rework published: its completion routes the PR's next review.
+        found = ResolvedCompletionPr(
+            url=pr.url, number=456, publication=CompletionPublication(url=pr.url, branch=pr.branch),
+        ).review_for(launched.session)
+        review = self._queued_review(sample_config, mock_repo_host, state, found)
+
+        assert review is not None and (review.agent_label, review.authority) == ("agent:web", _QUEUED)
+        self._lapse_and_launch(bundle, owners, mock_repo_host, pr, review, mock_worktree_manager)
+
+    def test_a_publish_retry_s_review_is_queued_under_the_authority_the_queue_admits(
+        self, effort, sample_config, mock_repo_host, mock_worktree_manager,
+    ):
+        """Review r6 F10: a producer that knows no authority (a publish retry)
+        has its review admitted at the queue boundary, which gives it one."""
+        from issue_orchestrator.control.retry_review_routing import RetryReviewPolicy
+        from issue_orchestrator.domain.retry_review_routing import RetryReviewRouting
+
+        state, pr, bundle, owners = effort
+        found = RetryReviewPolicy(code_review_agent_configured=True).candidate(
+            issue_number=123, pr_url=pr.url, pr_number=456, agent_label="agent:web",
+            routing=RetryReviewRouting(branch_name=pr.branch, skip_review=False, review_exchange_completed=False,
+                                       review_exchange_halted=False),
+        )
+        assert found is not None and found.authority is None
+        review = self._queued_review(sample_config, mock_repo_host, state, found)
+
+        assert review is not None and (review.agent_label, review.authority) == ("agent:web", _QUEUED)
+        self._lapse_and_launch(bundle, owners, mock_repo_host, pr, review, mock_worktree_manager)
+
+    @pytest.mark.parametrize("effort", ["off"], indirect=True)
+    @pytest.mark.asyncio
+    async def test_a_restart_with_integration_off_never_queues_or_launches_an_adopted_pr(
+        self, effort, sample_config, mock_repo_host, mock_worktree_manager,
+    ):
+        """Review r6 F9, end to end: startup recovery, the review scan, the
+        planner's queue boundary and the launch, with integration mode off."""
+        from issue_orchestrator.control.github_workflow import GitHubWorkflow
+        from issue_orchestrator.control.issue_fetch_resilience import IssueFetchResilience
+        from issue_orchestrator.control.label_manager import LabelManager
+        from issue_orchestrator.control.pr_scanner import PRScanner
+        from issue_orchestrator.control.startup_manager import StartupManager
+        from issue_orchestrator.control.worktree_reconciliation import WorktreeRecoverySummary
+        from issue_orchestrator.events import EventContext
+        from issue_orchestrator.ports import InMemoryEventSink
+        from issue_orchestrator.ports.standing_rulings import NO_STANDING_RULINGS
+
+        state, pr, bundle, owners = effort
+        pr.body = f"Closes #123\n\n*{ORCHESTRATOR_PR_MARKER}*"  # its author pasted io's marker
+        reconciler = MagicMock()
+        reconciler.recover.return_value = WorktreeRecoverySummary(0, 0, 0)
+        runner = MagicMock()
+        runner.cleanup_idle_sessions.return_value = 0
+        runner.discover_running_sessions.return_value = []
+        label_store = MagicMock()
+        label_store.load_all.return_value = {}
+        startup = StartupManager(
+            config=sample_config, events=MagicMock(), runner=runner, repository_host=mock_repo_host,
+            action_applier=MagicMock(), issue_branches_fn=lambda: {}, session_exists_fn=lambda name: False,
+            restore_sessions_fn=MagicMock(), launch_session_fn=lambda issue: None, update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("test/repo"), startup_worktree_reconciler=reconciler,
+            label_store=label_store, pending_work_claims=MagicMock(), standing_rulings=NO_STANDING_RULINGS,
+        )
+
+        await startup.run_startup(state)
+        assert ("needs-code-review", "open") in mock_repo_host.get_prs_with_label_calls  # recovery ran
+        assert state.pending_reviews == []
+        labels = LabelManager(sample_config)
+        GitHubWorkflow(
+            config=sample_config, events=InMemoryEventSink(), repository_host=mock_repo_host,
+            fact_gatherer=MagicMock(), label_sync=None, event_context=EventContext(), label_manager=labels,
+            pr_scanner=PRScanner(sample_config, mock_repo_host, InMemoryEventSink(), label_manager=labels),
+            standing_rulings=MagicMock(),
+        ).scan_needs_code_review_prs(state)
+        assert state.discovered_reviews == []
+        # Any producer that still emits its review fact meets the queue boundary.
+        found = DiscoveredReview(123, 456, pr.url, pr.branch, agent_label="agent:web")
+        assert self._queued_review(sample_config, mock_repo_host, state, found) is None
+        # And a review queued before the restart, without its authority, is withdrawn at launch.
+        queued = PendingReview(issue_key=mock_repo_host.create_issue_key(123), pr_number=456, pr_url=pr.url,
+                               branch_name=pr.branch, _issue_number=123, agent_label="agent:web")
+        result = bundle.launcher.launch_review_session(queued, active_sessions=[])
+
+        assert (result.success, result.disposition) == (False, LaunchDisposition.WITHDRAWN), result.reason
+        _nothing_ran(bundle, owners, mock_worktree_manager)
+
+    @pytest.mark.parametrize("effort", ["off"], indirect=True)
+    @pytest.mark.parametrize("authority", [_QUEUED, None])
+    def test_a_rework_whose_pr_disappeared_with_integration_off_never_falls_through(
+        self, effort, authority, mock_repo_host, mock_worktree_manager,
+    ):
+        _state, pr, bundle, owners = effort
+        mock_repo_host.prs[123].remove(pr)
+        self._adopted_pr(mock_repo_host, 457)
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"), agent_type="agent:web", rework_cycle=1,
+            issue_number=123, pr_number=456, authority=authority,
+        )
+
+        result = bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert (result.success, result.disposition) == (False, LaunchDisposition.WITHDRAWN), result.reason
         _nothing_ran(bundle, owners, mock_worktree_manager)
 
     def test_a_rework_queued_without_a_pr_never_falls_back_onto_an_adopted_one(
