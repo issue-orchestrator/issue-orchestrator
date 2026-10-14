@@ -29,7 +29,7 @@ from issue_orchestrator.control.integration_branch import (
     plan_integration_steps,
 )
 from issue_orchestrator.control.label_manager import LabelManager
-from issue_orchestrator.control.pr_scanner import PRScanner
+from issue_orchestrator.control.pr_scanner import PRScanner, ReworkScan
 from issue_orchestrator.domain.board_snapshot import BoardTechLeadWriteHealth
 from issue_orchestrator.domain.external_pr_adoption import (
     AdoptExternalPullRequest,
@@ -562,6 +562,38 @@ def test_an_adopted_pr_whose_issue_link_changes_is_never_reworked_updated_or_mer
     )):
         assert _skipped(world.apply(step))
     assert world.host.pr_merges == [] and world.host.pr_branch_updates == []
+
+
+@pytest.mark.parametrize(
+    ("link", "rework_issue", "reworked"),
+    [
+        ("kept", 231, True),
+        ("moved", 231, False),  # the scan's stale issue: the PR now references #232
+        ("moved", 232, False),  # the issue it now references is outside the effort
+        ("removed", 231, False),
+    ],
+)
+def test_a_review_s_rework_of_an_adopted_pr_needs_the_pr_still_admitted(
+    link: str, rework_issue: int, reworked: bool,
+) -> None:
+    """Review F2: the needs-rework lane re-asks THE admission rule too."""
+    world = _World()
+    world.issue(232, "agent:backend")  # in scope, not in the effort
+    world.config.filtering.label = None
+    pr = _adopted_and_approved(world)
+    if link == "moved":
+        pr.body, pr.branch = "Closes #232", "hand-made-321"
+    elif link == "removed":
+        pr.body, pr.branch = "No issue", "hand-made-321"
+    world.workflow.pr_scanner.scan_for_reworks.return_value = ReworkScan(  # type: ignore[attr-defined]
+        reworks=[PendingRework(issue_key=world.host.create_issue_key(rework_issue), agent_type="agent:backend",
+                               issue_number=rework_issue, pr_number=321)],
+        escalations=[], blocked=[],
+    )
+
+    world.workflow.scan_needs_rework_prs(world.state)
+
+    assert [r.pr_number for r in world.state.discovered_reworks] == ([321] if reworked else [])
 
 
 def test_an_adopted_pr_whose_issue_carries_a_ruling_is_handed_to_a_person() -> None:

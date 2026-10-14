@@ -38,6 +38,7 @@ from ..domain.models import (
     DependencyProblem,
 )
 from ..ports import EventSink, make_trace_event, RepositoryHost
+from ..ports.repository_host import RepositoryHostError
 from .awaiting_merge_reconciler import AwaitingMergeReconciler
 from .ci_failure_triage import CiFailureTriage
 from .external_pr_adoption import ExternalPullRequestAdoption, routing_gate
@@ -209,6 +210,8 @@ class GitHubWorkflow:
                     r.issue_key,
                 )
                 continue
+            if r.pr_number and not self._rework_admitted(state, issue_number, r.pr_number):
+                continue
             state.discovered_reworks.append(
                 DiscoveredRework(
                     issue_number,
@@ -219,6 +222,24 @@ class GitHubWorkflow:
                     feedback=r.feedback, scoped_request_keys=r.scoped_request_keys,
                 )
             )
+
+    def _rework_admitted(self, state: "OrchestratorState", issue_number: int, pr_number: int) -> bool:
+        """In an integration effort, an external PR is reworked only while THE
+        admission rule admits it for exactly *issue_number* (#9499)."""
+        if not self.config.integration.enabled:
+            return True
+        gate = routing_gate(self.config, self.repository_host, state)
+        try:
+            pr = self.repository_host.get_pr(pr_number)
+            issue = self.repository_host.get_issue(issue_number)
+            refused = "the PR or its issue is gone" if pr is None or issue is None else gate.refusal(
+                pr=pr, issue=issue, issue_labels=issue.labels, pr_labels=pr.labels,
+            )
+        except RepositoryHostError as error:
+            refused = f"unreadable: {error}"
+        if refused is not None:
+            logger.info("[SCANNER] Rework of PR #%d for issue #%d not admitted: %s", pr_number, issue_number, refused)
+        return refused is None
 
     def scan_pending_pr_work(
         self,
