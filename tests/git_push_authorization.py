@@ -14,8 +14,8 @@ spelling of the token.
 
 The local-only boundary lives here for the same reason. A fixture environment
 never carries the ambient Git state that could point a fixture command at a
-different repository or remote, so callers do not have to know which
-variables those are.
+different repository or remote, and reads no configuration but the fixture
+repository's own, so callers do not have to know where that state hides.
 
 Use :func:`authorized_local_fixture_git_env` for the positive path and
 :func:`unauthorized_git_env` for the negative control that proves the
@@ -42,6 +42,17 @@ GH_AUTH_TOKEN = "agent-done-authorized"
 # and GIT_INDEX_FILE to hooks, and ``git -c`` hands GIT_CONFIG_PARAMETERS to
 # every child git. Environment config outranks the fixture's own
 # ``.git/config``, so an inherited override beats the fixture's origin.
+#
+# Dropping is not enough for the global and system configuration levels: a
+# missing GIT_CONFIG_GLOBAL falls back to $XDG_CONFIG_HOME/git/config and
+# $HOME/.gitconfig, and any of those files can set remote.origin.pushurl,
+# which git pushes to instead of the fixture's remote.origin.url. Pointing
+# both levels at the null device switches them off and leaves the fixture
+# repository's local config the only configuration git reads.
+_SWITCHED_OFF_GIT_CONFIG_LEVELS = {
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_SYSTEM": os.devnull,
+}
 _REDIRECTING_GIT_VARS = frozenset(
     {
         # Repository selection.
@@ -69,11 +80,13 @@ def _redirects_fixture_git(name: str) -> bool:
 
 def _local_fixture_env(base: Mapping[str, str] | None) -> dict[str, str]:
     source = os.environ if base is None else base
-    return {
+    env = {
         name: value
         for name, value in source.items()
         if not _redirects_fixture_git(name)
     }
+    env.update(_SWITCHED_OFF_GIT_CONFIG_LEVELS)
+    return env
 
 
 def authorized_local_fixture_git_env(
@@ -84,9 +97,11 @@ def authorized_local_fixture_git_env(
     Args:
         base: Environment to build from. Defaults to a copy of ``os.environ``.
             Every Git repository-selection and environment-config variable in
-            it is dropped, so a fixture's ``git`` acts only on the repository
+            it is dropped and the global and system configuration levels are
+            switched off, so a fixture's ``git`` acts only on the repository
             its working directory names and the remotes that repository
-            configures. Everything else, such as ``PATH`` or a hook's
+            configures. A fixture that commits sets its own identity in that
+            repository. Everything else, such as ``PATH`` or a hook's
             ``ISSUE_ORCHESTRATOR_PYTHON``, is kept.
 
     The returned dict is a fresh copy, so it is safe to mutate further and
@@ -101,8 +116,8 @@ def unauthorized_git_env(base: Mapping[str, str] | None = None) -> dict[str, str
     """Return a local-fixture environment with the push authorization removed.
 
     This is the negative control: the wrappers must still block ``git push``
-    and mutating ``gh`` subcommands under this environment. It drops the same
-    redirecting Git state as :func:`authorized_local_fixture_git_env`, so a
+    and mutating ``gh`` subcommands under this environment. It shuts out the
+    same redirecting Git state as :func:`authorized_local_fixture_git_env`, so a
     wrapper regression cannot turn the control into a push to a real remote.
     """
     env = _local_fixture_env(base)
