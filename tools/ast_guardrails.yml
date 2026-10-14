@@ -145,6 +145,12 @@ deny_attr_calls:
       # Approve/Decline command and the one-time startup migration.
       - src/issue_orchestrator/control/tech_lead_approval_writes.py
       - src/issue_orchestrator/control/tech_lead_approval_migration.py
+      # External-PR adoption's writes (#9499): the origin/review labels an
+      # adoption puts on the PR and a refusal's comment. They run ONLY inside
+      # the ADVANCE_INTEGRATION applier handler, after the step was re-checked
+      # on fresh reads - the same applier IO boundary as action_applier.py's
+      # own. Discovery (external_pr_adoption.py) stays denied.
+      - src/issue_orchestrator/control/external_pr_adoption_writes.py
   - name: entrypoints_no_direct_label_mutations
     description: "Entrypoint handlers must apply label/comment mutations via ActionApplier"
     deny_in:

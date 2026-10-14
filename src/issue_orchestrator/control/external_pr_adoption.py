@@ -28,7 +28,7 @@ write is an :data:`~..domain.integration_branch.IntegrationStep` the planner
 turns into an :class:`~.actions.AdvanceIntegrationAction`, applied through
 :func:`~.integration_branch.apply_integration_step`, which asks
 :func:`adoption_step_refusal` to re-check on fresh reads and
-:func:`write_adoption_step` to write.
+:func:`~.external_pr_adoption_writes.write_adoption_step` to write.
 """
 
 from __future__ import annotations
@@ -44,13 +44,10 @@ from ..domain.external_pr_adoption import (
     AdoptionRefusal,
     ExternalStanding,
     ReportRefusedExternalPullRequest,
-    adoption_label_writes,
     adoption_obstacle,
     effort_gap,
     external_standing,
     in_effort,
-    refusal_marker,
-    render_refusal_comment,
 )
 from ..infra import gh_audit
 from ..infra.repo_scope import require_repo
@@ -222,7 +219,7 @@ def _io_work_elsewhere(
     return None
 
 
-# -- the writes ------------------------------------------------------------------
+# -- the write re-check ----------------------------------------------------------
 
 
 def adoption_step_refusal(
@@ -246,29 +243,8 @@ def _is_open(pr: "PRInfo | None") -> bool:
     return pr is not None and (pr.state or "").strip().lower() == "open"
 
 
-def write_adoption_step(
-    step: "AdoptExternalPullRequest | ReportRefusedExternalPullRequest",
-    host: "RepositoryHost",
-    labels: "LabelManager",
-) -> None:
-    """Adopt the PR (review lane first, origin last), or tell it why it was refused."""
-    if isinstance(step, ReportRefusedExternalPullRequest):
-        if not host.issue_comment_marker_present(step.pr_number, refusal_marker(step.refusal)):
-            host.add_comment(step.pr_number, render_refusal_comment(step))
-        return
-    writes = adoption_label_writes(
-        host.get_issue_labels_fresh(step.pr_number), review_label=step.review_label,
-        reviewed_label=labels.code_reviewed,
-    )
-    for name in writes.remove:
-        host.remove_label(step.pr_number, name)
-    for name in writes.add:
-        host.add_label(step.pr_number, name)
-
-
 __all__ = [
     "ExternalPullRequestAdoption",
     "OPEN_PR_LISTING_LIMIT",
     "adoption_step_refusal",
-    "write_adoption_step",
 ]

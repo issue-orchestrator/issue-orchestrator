@@ -78,7 +78,8 @@ from ..ports import make_trace_event
 from ..ports.repository_host import RepositoryHostError
 from ..ports.standing_rulings import StandingRulingsUnavailable
 from .awaiting_merge_post_publish_policy import PostApprovalAction, build_escalation
-from .external_pr_adoption import adoption_step_refusal, write_adoption_step
+from .external_pr_adoption import adoption_step_refusal
+from .external_pr_adoption_writes import write_adoption_step
 from .human_gates import holds_merge
 
 if TYPE_CHECKING:
