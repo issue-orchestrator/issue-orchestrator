@@ -259,11 +259,11 @@ class ExternalPullRequestGate:
         head = pr.head_sha
         if not head:
             return False
-        if self.ledger is not None and self.ledger.reviewed_heads.get(pr.number) == head:
+        if self.ledger is not None and self.ledger.reviewed_head_known(pr.number, head):
             return True
         found = self.host.find_issue_comment_receipt(pr.number, body=reviewed_head_receipt(pr.number, head)) is not None
         if found and self.ledger is not None:
-            self.ledger.reviewed_heads[pr.number] = head
+            self.ledger.remember_reviewed_head(pr.number, head)
         return found
 
     def _read_issue(self, number: int) -> LinkedIssueFacts:

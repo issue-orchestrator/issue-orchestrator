@@ -442,6 +442,13 @@ class ExternalPullRequestLedger:
     def attempts_at(self, issue_number: int) -> frozenset[int]:
         return self.attempts.get(issue_number, frozenset())
 
+    def reviewed_head_known(self, pr_number: int, head_sha: str) -> bool:
+        return self.reviewed_heads.get(pr_number) == head_sha
+
+    def remember_reviewed_head(self, pr_number: int, head_sha: str) -> None:
+        """A receipt for exactly this head was found on the PR."""
+        self.reviewed_heads[pr_number] = head_sha
+
     def record_scan(
         self,
         adopted: Iterable[AdoptedExternalPullRequest],

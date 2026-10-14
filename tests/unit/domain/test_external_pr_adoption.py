@@ -180,11 +180,13 @@ def test_the_ledger_tells_each_refusal_once_per_reason() -> None:
 
 def test_the_ledger_keeps_found_receipts_only_for_adopted_prs() -> None:
     ledger = ExternalPullRequestLedger()
-    ledger.reviewed_heads.update({70: "a" * 40, 71: "b" * 40})
+    ledger.remember_reviewed_head(70, "a" * 40)
+    ledger.remember_reviewed_head(71, "b" * 40)
 
     ledger.record_scan([AdoptedExternalPullRequest(pr_number=70, issue_number=7, pr_url="u")], [], {7: frozenset({70})})
 
-    assert ledger.reviewed_heads == {70: "a" * 40}
+    assert ledger.reviewed_head_known(70, "a" * 40) and not ledger.reviewed_head_known(70, "b" * 40)
+    assert not ledger.reviewed_head_known(71, "b" * 40)  # no longer adopted: forgotten
     assert ledger.attempts_at(7) == frozenset({70}) and ledger.attempts_at(8) == frozenset()
 
 
