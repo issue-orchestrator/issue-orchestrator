@@ -38,10 +38,11 @@ from ..domain.models import (
     DependencyProblem,
 )
 from ..ports import EventSink, make_trace_event, RepositoryHost
-from ..ports.repository_host import RepositoryHostError
 from .awaiting_merge_reconciler import AwaitingMergeReconciler
 from .ci_failure_triage import CiFailureTriage
+from ..domain.external_pr_adoption import LaunchVerdict
 from .external_pr_adoption import ExternalPullRequestAdoption, routing_gate
+from .external_pr_launch import pr_admission
 from .integration_branch import IntegrationBranchOwner
 from .merge_queue_coordinator import MergeQueueCoordinator
 from .retrospective_review import discover_retrospective_review_issues
@@ -177,6 +178,8 @@ class GitHubWorkflow:
             BlockedPRLane.REVIEW, scan.blocked, at=datetime.now(UTC)
         )
         for r in scan.reviews:
+            if not self._admitted(state, "Review", r.issue_number, r.pr_number):
+                continue
             state.discovered_reviews.append(
                 DiscoveredReview(r.issue_number, r.pr_number, r.pr_url, r.branch_name)
             )
@@ -210,7 +213,7 @@ class GitHubWorkflow:
                     r.issue_key,
                 )
                 continue
-            if r.pr_number and not self._rework_admitted(state, issue_number, r.pr_number):
+            if r.pr_number and not self._admitted(state, "Rework", issue_number, r.pr_number):
                 continue
             state.discovered_reworks.append(
                 DiscoveredRework(
@@ -223,23 +226,16 @@ class GitHubWorkflow:
                 )
             )
 
-    def _rework_admitted(self, state: "OrchestratorState", issue_number: int, pr_number: int) -> bool:
-        """In an integration effort, an external PR is reworked only while THE
-        admission rule admits it for exactly *issue_number* (#9499)."""
-        if not self.config.integration.enabled:
-            return True
+    def _admitted(self, state: "OrchestratorState", lane: str, issue_number: int, pr_number: int) -> bool:
+        """THE admission rule before a review or rework of a PR the integration
+        effort governs is queued (#9499); the launch asks again before its effects."""
         gate = routing_gate(self.config, self.repository_host, state)
-        try:
-            pr = self.repository_host.get_pr(pr_number)
-            issue = self.repository_host.get_issue(issue_number)
-            refused = "the PR or its issue is gone" if pr is None or issue is None else gate.refusal(
-                pr=pr, issue=issue, issue_labels=issue.labels, pr_labels=pr.labels,
-            )
-        except RepositoryHostError as error:
-            refused = f"unreadable: {error}"
-        if refused is not None:
-            logger.info("[SCANNER] Rework of PR #%d for issue #%d not admitted: %s", pr_number, issue_number, refused)
-        return refused is None
+        admission = pr_admission(gate, issue_number=issue_number, pr_number=pr_number)
+        admitted = admission.verdict is LaunchVerdict.ADMITTED
+        if not admitted:
+            logger.info("[SCANNER] %s of PR #%d for issue #%d not queued (%s): %s", lane, pr_number, issue_number,
+                        admission.verdict.value, admission.reason)
+        return admitted
 
     def scan_pending_pr_work(
         self,

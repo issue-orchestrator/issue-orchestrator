@@ -14,12 +14,16 @@ from issue_orchestrator.domain.external_pr_adoption import (
     ExternalPullRequestFacts,
     ExternalPullRequestLedger,
     IoCustody,
+    IssueLink,
     LabelWrite,
+    LaunchAdmission,
+    LaunchVerdict,
     LinkedIssueFacts,
     PullRequestFacts,
     PullRequestLabelWrites,
     ReportRefusedExternalPullRequest,
     adoption_label_writes,
+    effort_governs,
     effort_label,
     judge_external_pull_request,
     merge_refusal,
@@ -32,10 +36,11 @@ from issue_orchestrator.domain.external_pr_adoption import (
 IO_BODY = f"Closes #7\n\n*{ORCHESTRATOR_PR_MARKER}*"
 EFFORT = "integrate:integration"
 NOBODY = IoCustody(working_branch=None, pull_requests=frozenset())
+NO_LINK = IssueLink(frozenset())
 
 PR = PullRequestFacts(
     number=70, open=True, draft=False, body="Closes #7", branch="7-by-hand", base_branch="integration",
-    labels=frozenset(), linked_issue=7,
+    labels=frozenset(), link=IssueLink(frozenset({7})),
 )
 ISSUE = LinkedIssueFacts(
     number=7, scope_gap=None, labels=frozenset({EFFORT, "agent:backend"}), agent_type="agent:backend",
@@ -57,7 +62,7 @@ def test_facts_read_exactly_the_issue_the_pr_references() -> None:
     with pytest.raises(ValueError):
         ExternalPullRequestFacts(pr=PR, issue=replace(ISSUE, number=8), custody=NOBODY)
     with pytest.raises(ValueError):
-        ExternalPullRequestFacts(pr=replace(PR, linked_issue=None), issue=ISSUE, custody=NOBODY)
+        ExternalPullRequestFacts(pr=replace(PR, link=NO_LINK), issue=ISSUE, custody=NOBODY)
 
 
 @pytest.mark.parametrize(
@@ -80,7 +85,9 @@ def test_which_prs_are_external_work(pr: PullRequestFacts, expected: Admission) 
 @pytest.mark.parametrize(
     ("pr", "issue", "custody", "refusal", "detail"),
     [
-        (replace(PR, linked_issue=None), None, NOBODY, AdoptionRefusal.NO_ISSUE_REFERENCE, "references no issue"),
+        (replace(PR, link=NO_LINK), None, NOBODY, AdoptionRefusal.NO_ISSUE_REFERENCE, "references no issue"),
+        (replace(PR, link=IssueLink(frozenset({7, 8}))), None, NOBODY, AdoptionRefusal.AMBIGUOUS_ISSUE_REFERENCE,
+         "references issues #7 and #8; io adopts a PR for exactly one issue"),
         (PR, replace(ISSUE, scope_gap="issue is closed"), NOBODY, AdoptionRefusal.ISSUE_NOT_IN_EFFORT,
          "not open in this engine's scope (issue is closed)"),
         (PR, replace(ISSUE, labels=frozenset({"agent:backend"})), NOBODY, AdoptionRefusal.ISSUE_NOT_IN_EFFORT,
@@ -121,8 +128,11 @@ def test_a_pr_into_another_base_for_an_issue_outside_the_effort_is_not_io_s_busi
         (replace(PR, body=IO_BODY), ISSUE, None),  # io's own PR: its lanes own it
         (replace(PR, labels=frozenset({"origin:external"})), ISSUE, None),
         (PR, ISSUE, "not an adopted PR"),
-        (replace(PR, labels=frozenset({"origin:external"}), linked_issue=None), ISSUE, "references no issue, not issue #7"),
-        (replace(PR, labels=frozenset({"origin:external"}), linked_issue=8), ISSUE, "references issue #8, not issue #7"),
+        (replace(PR, labels=frozenset({"origin:external"}), link=NO_LINK), ISSUE, "references no issue, not issue #7"),
+        (replace(PR, labels=frozenset({"origin:external"}), link=IssueLink(frozenset({8}))), ISSUE,
+         "references issue #8, not issue #7"),
+        (replace(PR, labels=frozenset({"origin:external"}), link=IssueLink(frozenset({7, 8}))), ISSUE,
+         "references issues #7 and #8, not issue #7"),
         (replace(PR, labels=frozenset({"origin:external"})), replace(ISSUE, agent_type=None, agent_configured=False),
          "no agent label"),
         (replace(PR, labels=frozenset({"origin:external"})), replace(ISSUE, agent_configured=False),
@@ -135,6 +145,34 @@ def test_the_merge_side_re_asks_the_whole_rule_for_exactly_its_issue(
     found = merge_refusal("integration", pr, issue=issue, custody=NOBODY)
 
     assert found is None if refused is None else refused in (found or "")
+
+
+def test_an_issue_link_names_none_one_or_several_issues() -> None:
+    assert (NO_LINK.issue, NO_LINK.ambiguous, NO_LINK.describe()) == (None, False, "no issue")
+    one = IssueLink(frozenset({7}))
+    assert (one.issue, one.ambiguous, one.describe()) == (7, False, "issue #7")
+    several = IssueLink(frozenset({9, 7, 8}))
+    assert (several.issue, several.ambiguous, several.describe()) == (None, True, "issues #7, #8 and #9")
+
+
+@pytest.mark.parametrize(
+    ("pr", "governed"),
+    [
+        (PR, True),  # external, into the effort branch
+        (replace(PR, base_branch="main"), False),  # external, elsewhere: not the effort's business
+        (replace(PR, base_branch="main", labels=frozenset({"origin:external"})), True),  # adopted, then retargeted
+        (replace(PR, body=IO_BODY), False),  # io's own
+    ],
+)
+def test_which_prs_the_effort_governs(pr: PullRequestFacts, governed: bool) -> None:
+    assert effort_governs("integration", pr) is governed
+
+
+def test_a_refused_launch_says_why_and_an_admitted_one_does_not() -> None:
+    with pytest.raises(ValueError):
+        LaunchAdmission(LaunchVerdict.WITHDRAWN)
+    with pytest.raises(ValueError):
+        LaunchAdmission(LaunchVerdict.ADMITTED, "because")
 
 
 def test_the_reviewed_head_receipt_names_its_pr_and_exact_head() -> None:

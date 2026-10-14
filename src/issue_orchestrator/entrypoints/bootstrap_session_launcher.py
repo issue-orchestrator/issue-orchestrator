@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from ..domain.state_machines.session_machine import SessionStateMachine
     from ..infra.config import Config
     from ..ports.agent_callback_endpoint import AgentCallbackEndpoint
+    from ..control.external_pr_launch import ExternalLaunchAdmission
     from ..ports.blocked_item_triage import BlockedItemTriageAgenda
     from ..ports.board_snapshot_provider import BoardSnapshotProvider
     from ..ports.issue import Issue as IssueProtocol
@@ -82,6 +83,7 @@ def build_session_launcher_factory(
         get_review_machine: Callable[[int, int], Optional["ReviewStateMachine"]],
         refresh_issue_fn: Optional[Callable[[int], Optional["IssueProtocol"]]],
         dependency_evaluator: Optional["DependencyEvaluator"],
+        external_admission: "ExternalLaunchAdmission",
     ) -> SessionLauncher:
         return SessionLauncher(
             config, events, repository_host, action_applier, session_manager,
@@ -107,6 +109,7 @@ def build_session_launcher_factory(
             needs_human_block=needs_human_block,
             launch_prompt=launch_prompt,
             recovery_holds=recovery_holds,
+            external_admission=external_admission,
         )
 
     return _factory

@@ -54,6 +54,7 @@ from .worktree_context import WorktreeContext
 from .needs_human_block import NeedsHumanCause
 
 if TYPE_CHECKING:
+    from .external_pr_launch import ExternalLaunchAdmission
     from .label_manager import LabelManager
 
 logger = logging.getLogger(__name__)
@@ -174,6 +175,8 @@ class ReworkLaunchDependencies:
     scoped_rework: ScopedReworkLaunch
     #: The launch-boundary consent check every coding launch asks (#7763 r22).
     refuse_unapproved: Callable[[int], "LaunchResult | None"]
+    #: THE external-PR admission rule, re-asked just before the launch's effects (#9499).
+    external_admission: "ExternalLaunchAdmission"
 
 
 @dataclass(frozen=True)
@@ -299,6 +302,9 @@ def launch_rework_session(
     issue_key = rework.issue_key
     session_key = SessionKey(issue=issue_key, kind=SessionKind.REWORK)
     pr_number, branch_name = resolve_rework_pr(deps.repository_host, rework, issue_number)
+    if refused := deps.external_admission.refuse(kind=SessionKind.REWORK, issue_number=issue_number,
+                                                 pr_number=pr_number):
+        return refused  # a PR the effort no longer admits is not reworked
 
     scoped = deps.scoped_rework.admit(rework, pr_number, work_claim=work_claim)
     if isinstance(scoped, LaunchResult):

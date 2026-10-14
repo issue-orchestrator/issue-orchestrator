@@ -626,6 +626,7 @@ def _build_launcher_bundle(
     blocked_item_triage: Any = None,
     manifest_downloader: Any = None,
     validated_work_recovery_authority: Any = None,
+    external_admission: Any = None,
 ) -> LauncherTestBundle:
     """Create a SessionLauncher with mock dependencies and tracking.
 
@@ -702,6 +703,8 @@ def _build_launcher_bundle(
         launcher_kwargs["blocked_item_triage"] = blocked_item_triage
     if validated_work_recovery_authority is not None:
         launcher_kwargs["validated_work_recovery_authority"] = validated_work_recovery_authority
+    if external_admission is not None:
+        launcher_kwargs["external_admission"] = external_admission
     if issue_run_ledger is None:
         issue_run_ledger = SqliteIssueRunLedger(sample_config.repo_root / "state" / "runs.sqlite", repo_slug="test-owner/test-repo")
     launcher = make_session_launcher(
@@ -2706,6 +2709,63 @@ class TestLaunchRetrospectiveReviewSession:
 # =============================================================================
 # Rework Session Launch Tests
 # =============================================================================
+
+
+class _RefusingEffort:
+    """An integration effort that no longer admits the PR (#9499): records what it was asked."""
+
+    def __init__(self) -> None:
+        self.asked: list[tuple[SessionKind, int, int]] = []
+
+    def refuse(self, *, kind: SessionKind, issue_number: int, pr_number: int) -> LaunchResult | None:
+        self.asked.append((kind, issue_number, pr_number))
+        return LaunchResult(None, False, "Not admitted by the integration effort: issue #123 left the effort",
+                            disposition=LaunchDisposition.WITHDRAWN)
+
+
+class TestExternalPullRequestLaunchAdmission:
+    """A queued review or rework re-asks the effort's admission rule before any effect (#9499 r3 F5)."""
+
+    @pytest.fixture
+    def refusing(self, sample_config, mock_events, mock_repo_host, mock_worktree_manager, mock_working_copy,
+                 mock_command_runner):
+        effort = _RefusingEffort()
+        bundle = _build_launcher_bundle(
+            sample_config, mock_events, mock_repo_host, mock_worktree_manager, mock_working_copy,
+            mock_command_runner, external_admission=effort,
+        )
+        return bundle, effort
+
+    def test_a_queued_review_the_effort_no_longer_admits_is_withdrawn(self, refusing, mock_worktree_manager):
+        bundle, effort = refusing
+        review = PendingReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"), pr_number=456,
+            pr_url="https://github.com/test/repo/pull/456", branch_name="123-feature", _issue_number=123,
+        )
+
+        result = bundle.launcher.launch_review_session(review, active_sessions=[])
+
+        assert (result.success, result.disposition) == (False, LaunchDisposition.WITHDRAWN)
+        assert effort.asked == [(SessionKind.REVIEW, 123, 456)]
+        assert bundle.create_session_calls == [] and mock_worktree_manager.create_calls == []
+
+    def test_a_queued_rework_the_effort_no_longer_admits_is_withdrawn(
+        self, refusing, mock_repo_host, mock_worktree_manager,
+    ):
+        bundle, effort = refusing
+        mock_repo_host.prs[123] = [PRInfo(
+            number=456, title="Hand-made #123", url="https://github.com/test/repo/pull/456", branch="123-feature",
+            body="Closes #123", state="open", labels=["origin:external"],
+        )]
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"), agent_type="agent:web", rework_cycle=1,
+        )
+
+        result = bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert (result.success, result.disposition) == (False, LaunchDisposition.WITHDRAWN)
+        assert effort.asked == [(SessionKind.REWORK, 123, 456)]
+        assert bundle.create_session_calls == [] and mock_worktree_manager.create_calls == []
 
 
 class TestLaunchReworkSession:

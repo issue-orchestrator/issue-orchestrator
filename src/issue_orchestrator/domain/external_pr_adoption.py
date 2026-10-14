@@ -8,18 +8,21 @@ merge into the effort's branch, the delivery. The PR is the splice point.
   (#8144); an issue belongs to it when it carries :func:`effort_label`
   (``integrate:<branch>``).
 * **Provenance.** io's own PRs carry :data:`ORCHESTRATOR_PR_MARKER` in their
-  body. Any other PR is external, and io acts on it - reviews, reworks,
-  updates, merges it - only once it is ADOPTED (it carries
+  body. Any other PR is external. One the effort governs - adopted, or into
+  the effort branch (:func:`effort_governs`) - io reviews, reworks, updates
+  or merges only while it is ADOPTED (it carries
   :data:`ORIGIN_EXTERNAL_LABEL`, which also lets the tech lead, the improver
-  and an evaluation separate adopted work from io's own) and still ADMITTED.
-  Once adopted, the label decides: a body that later carries io's marker does
-  not make the PR io's own.
+  and an evaluation separate adopted work from io's own) and still ADMITTED;
+  an external PR into another base that was never adopted is not the
+  effort's business. Once adopted, the label decides: a body that later
+  carries io's marker does not make the PR io's own.
 * **THE admission rule.** :func:`judge_external_pull_request` is the one
   decision every boundary asks, on :class:`ExternalPullRequestFacts` it reads
   itself: discovery, the applier's re-check before each adoption, refusal,
   return-to-review, update or merge write, and the merge/update/rework routing
-  (through :func:`merge_refusal`). A PR is admitted while it is open, targets
-  the effort branch, references exactly one issue that is open, in the
+  (through :func:`merge_refusal`), and the review and rework launches
+  (:class:`LaunchAdmission`). A PR is admitted while it is open, targets
+  the effort branch, references exactly one issue (:class:`IssueLink`) that is open, in the
   engine's complete scope, labelled for the effort and reworkable (an agent
   label), and io holds no other attempt at that issue (:class:`IoCustody`).
 * **Fail closed.** A PR into the effort branch that is not admitted, and a PR
@@ -85,6 +88,34 @@ def in_effort(branch: str, issue_labels: Iterable[str]) -> bool:
 
 
 @dataclass(frozen=True)
+class IssueLink:
+    """The issues a PR's branch and body reference: none, exactly one, or several.
+
+    Only exactly one is a reference io can act on: a PR that names several is
+    ambiguous, whichever one a lane would pick first.
+    """
+
+    issues: frozenset[int]
+
+    @property
+    def issue(self) -> int | None:
+        """The one issue referenced; None for none or several."""
+        return next(iter(self.issues)) if len(self.issues) == 1 else None
+
+    @property
+    def ambiguous(self) -> bool:
+        return len(self.issues) > 1
+
+    def describe(self) -> str:
+        numbers = [f"#{number}" for number in sorted(self.issues)]
+        if not numbers:
+            return "no issue"
+        if len(numbers) == 1:
+            return f"issue {numbers[0]}"
+        return f"issues {', '.join(numbers[:-1])} and {numbers[-1]}"
+
+
+@dataclass(frozen=True)
 class PullRequestFacts:
     """One PR, as GitHub reports it now."""
 
@@ -95,9 +126,14 @@ class PullRequestFacts:
     branch: str
     base_branch: str | None
     labels: frozenset[str]
-    #: The issue the PR really references - the one every lane resolves it to,
-    #: when the PR's branch or body actually names it; None when it names none.
-    linked_issue: int | None
+    #: Every issue the PR's branch and body reference (with the one every lane
+    #: resolves it to, should that differ).
+    link: IssueLink
+
+    @property
+    def linked_issue(self) -> int | None:
+        """The one issue the PR references; None when it names none, or several."""
+        return self.link.issue
 
     @property
     def adopted(self) -> bool:
@@ -174,6 +210,8 @@ class AdoptionRefusal(StrEnum):
     WRONG_BASE = "wrong_base"
     #: Its issue is in the effort, but io already holds another attempt at it.
     IO_WORK_IN_FLIGHT = "io_work_in_flight"
+    #: It references several issues: io acts on a PR for exactly one.
+    AMBIGUOUS_ISSUE_REFERENCE = "ambiguous_issue_reference"
 
 
 class Admission(StrEnum):
@@ -225,11 +263,21 @@ def external_work(branch: str, pr: PullRequestFacts) -> bool:
     return pr.open and not pr.draft and not pr.io_owned and pr.branch != branch
 
 
+def effort_governs(branch: str, pr: PullRequestFacts) -> bool:
+    """Whether io may act on *pr* only as THE admission rule allows: it is not
+    io's own, and it is adopted or targets the effort branch. Any other PR is
+    not the effort's business, and its lanes run as without the effort."""
+    return not pr.io_owned and (pr.adopted or pr.base_branch == branch)
+
+
 def judge_external_pull_request(branch: str, facts: ExternalPullRequestFacts) -> ExternalAdmission:
     """THE admission rule for one PR and the effort integrating on *branch*."""
     pr, issue = facts.pr, facts.issue
     if not external_work(branch, pr):
         return ExternalAdmission(Admission.IGNORED, pr.linked_issue)
+    if pr.link.ambiguous:
+        return _refused(None, AdoptionRefusal.AMBIGUOUS_ISSUE_REFERENCE,
+                        f"it references {pr.link.describe()}; io adopts a PR for exactly one issue")
     if pr.base_branch != branch:
         if issue is not None and in_effort(branch, issue.labels) and issue.scope_gap is None:
             return _refused(issue.number, AdoptionRefusal.WRONG_BASE,
@@ -262,14 +310,38 @@ def merge_refusal(
     if pr.io_owned:
         return None
     if pr.linked_issue != issue.number:
-        named = "no issue" if pr.linked_issue is None else f"issue #{pr.linked_issue}"
-        return f"PR #{pr.number} references {named}, not issue #{issue.number}"
+        return f"PR #{pr.number} references {pr.link.describe()}, not issue #{issue.number}"
     verdict = judge_external_pull_request(branch, ExternalPullRequestFacts(pr=pr, issue=issue, custody=custody))
     if verdict.admission is Admission.ADMITTED:
         return None
     if verdict.admission is Admission.REFUSED:
         return verdict.detail
     return f"PR #{pr.number} is not an adopted PR io may act on ({verdict.admission.value})"
+
+
+class LaunchVerdict(StrEnum):
+    """Whether a queued review or rework of a PR may launch, as the effort sees it."""
+
+    ADMITTED = "admitted"
+    #: The PR is no longer admitted: the queued work is withdrawn, not retried.
+    WITHDRAWN = "withdrawn"
+    #: The facts could not be read: the launch fails and is retried.
+    UNREADABLE = "unreadable"
+
+
+@dataclass(frozen=True)
+class LaunchAdmission:
+    """THE admission rule's answer at a review or rework launch."""
+
+    verdict: LaunchVerdict
+    reason: str = ""
+
+    def __post_init__(self) -> None:
+        if (self.verdict is LaunchVerdict.ADMITTED) is bool(self.reason):
+            raise ValueError("a refused launch says why, and an admitted one does not")
+
+
+LAUNCH_ADMITTED = LaunchAdmission(LaunchVerdict.ADMITTED)
 
 
 # -- reviewed-head custody -----------------------------------------------------------
@@ -315,6 +387,10 @@ class ReturnExternalPullRequestToReview:
 
 
 _REMEDIES: dict[AdoptionRefusal, str] = {
+    AdoptionRefusal.AMBIGUOUS_ISSUE_REFERENCE: (
+        "Reference exactly one issue: one `Closes #N` (or `Refs #N`) in the body, and a branch name that"
+        " names no other issue; the issue must carry `{label}`."
+    ),
     AdoptionRefusal.NO_ISSUE_REFERENCE: (
         "Reference the issue it delivers (`Closes #N` in the body, or an `N-` branch name);"
         " the issue must carry `{label}`."
@@ -528,7 +604,11 @@ __all__ = [
     "ExternalPullRequestFacts",
     "ExternalPullRequestLedger",
     "IoCustody",
+    "IssueLink",
+    "LAUNCH_ADMITTED",
     "LabelWrite",
+    "LaunchAdmission",
+    "LaunchVerdict",
     "LinkedIssueFacts",
     "ORCHESTRATOR_PR_MARKER",
     "ORIGIN_EXTERNAL_LABEL",
@@ -537,6 +617,7 @@ __all__ = [
     "ReportRefusedExternalPullRequest",
     "ReturnExternalPullRequestToReview",
     "adoption_label_writes",
+    "effort_governs",
     "effort_label",
     "external_work",
     "in_effort",

@@ -52,6 +52,7 @@ from ..domain.external_pr_adoption import (
     ExternalAdmission,
     ExternalPullRequestFacts,
     IoCustody,
+    IssueLink,
     LinkedIssueFacts,
     PullRequestFacts,
     ReportRefusedExternalPullRequest,
@@ -87,16 +88,21 @@ _Verdict: TypeAlias = "AdoptExternalPullRequest | ReportRefusedExternalPullReque
 # -- the facts -------------------------------------------------------------------
 
 
-def linked_issue(pr: "PRInfo", *, repo_slug: str) -> int | None:
-    """The issue every PR lane resolves for *pr*, when the PR really references one.
+def issue_link(pr: "PRInfo", *, repo_slug: str) -> IssueLink:
+    """Every issue *pr*'s branch and body reference.
 
     Review discovery and the awaiting-merge lanes resolve a PR's issue by
-    :func:`extract_issue_number_from_pr`, which falls back to the PR's own
-    number; only a reference the PR actually makes counts here.
+    :func:`extract_issue_number_from_pr` (its branch first, then its body,
+    then the PR's own number); a PR that references something is linked to
+    exactly one issue only when that is all it references and the issue the
+    lanes resolve. A branch naming one issue and a body another, or a body
+    closing two, is ambiguous - never reduced to the lanes' first pick.
     """
     linked = issues_linked(branch=pr.branch, body=pr.body, repo_slug=repo_slug)
+    if not linked:
+        return IssueLink(frozenset())
     primary = extract_issue_number_from_pr(pr, repo_slug=repo_slug)
-    return primary if primary in linked else None
+    return IssueLink(linked | {primary})
 
 
 def pull_request_facts(pr: "PRInfo", *, repo_slug: str, labels: Iterable[str]) -> PullRequestFacts:
@@ -104,7 +110,7 @@ def pull_request_facts(pr: "PRInfo", *, repo_slug: str, labels: Iterable[str]) -
     return PullRequestFacts(
         number=pr.number, open=(pr.state or "").strip().lower() == "open", draft=bool(pr.draft),
         body=pr.body or "", branch=pr.branch, base_branch=pr.base_branch, labels=frozenset(labels),
-        linked_issue=linked_issue(pr, repo_slug=repo_slug),
+        link=issue_link(pr, repo_slug=repo_slug),
     )
 
 
@@ -132,8 +138,9 @@ def io_attempts(prs: Iterable["PRInfo"], *, repo_slug: str) -> dict[int, frozens
     attempts: dict[int, set[int]] = {}
     for pr in prs:
         facts = pull_request_facts(pr, repo_slug=repo_slug, labels=pr.labels)
-        if facts.open and facts.linked_issue is not None and (facts.io_owned or facts.adopted):
-            attempts.setdefault(facts.linked_issue, set()).add(pr.number)
+        if facts.open and (facts.io_owned or facts.adopted):
+            for issue_number in facts.link.issues:  # an ambiguous attempt holds every issue it names
+                attempts.setdefault(issue_number, set()).add(pr.number)
     return {number: frozenset(numbers) for number, numbers in attempts.items()}
 
 
@@ -355,8 +362,8 @@ class ExternalPullRequestAdoption:
         adoptions = [verdict for verdict in verdicts if isinstance(verdict, AdoptExternalPullRequest)]
         ledger = state.external_pull_requests
         unacknowledged = ledger.record_scan(
-            (AdoptedExternalPullRequest(pr_number=pr.number, issue_number=linked_issue(pr, repo_slug=repo), pr_url=pr.url)
-             for pr in prs if gate.facts(pr, pr_labels=pr.labels).adopted),
+            (AdoptedExternalPullRequest(pr_number=pr.number, issue_number=facts.linked_issue, pr_url=pr.url)
+             for pr in prs if (facts := gate.facts(pr, pr_labels=pr.labels)).adopted),
             (verdict for verdict in verdicts if isinstance(verdict, ReportRefusedExternalPullRequest)),
             attempts,
         )
@@ -382,7 +389,7 @@ class ExternalPullRequestAdoption:
         facts = gate.facts(pr, pr_labels=pr.labels)
         if not external_work(self.branch, facts):
             return None  # io's own, a draft, the delivery PR: no issue read
-        if facts.base_branch != self.branch and facts.linked_issue not in effort_issues:
+        if facts.base_branch != self.branch and not facts.link.issues & effort_issues:
             return None  # another base, for an issue io does not hold in the effort: not io's business
         admission = gate.judge(pr, pr_labels=pr.labels)
         return external_step(pr, admission, branch=self.branch, review_label=self._lane())
@@ -477,7 +484,7 @@ __all__ = [
     "external_step",
     "external_step_refusal",
     "io_attempts",
-    "linked_issue",
+    "issue_link",
     "linked_issue_facts",
     "pull_request_facts",
     "refusal_report",

@@ -109,7 +109,7 @@ from .completion_result_artifacts import (
 from .completion_review_exchange import CompletionReviewExchange
 from .completion_ports import GitAdapter, LabelAdapter, PRAdapter
 from .completion_pr_labels import apply_pr_labels, route_reserved_pr_labels
-from .completion_reviewed_head import record_reviewed_head
+from .completion_reviewed_head import approve_pull_request
 from .completion_types import (
     ERROR_PREFIX_CREATE_PR,
     ERROR_PREFIX_PUBLISH_BLOCKED,
@@ -1815,15 +1815,14 @@ class CompletionProcessor:
             )
         elif action == RequestedAction.POST_COMMENT:
             return self._execute_post_comment_action(
-                record=record,
-                issue_number=issue_number,
-                label_target=label_target,
-                actions_taken=actions_taken,
-            )
+                record=record, issue_number=issue_number, label_target=label_target, actions_taken=actions_taken)
         else:
-            if not record_reviewed_head(action, worktree, issue_number=issue_number, pr_number=label_target,  # #9499
-                                        pr_adapter=self.pr_adapter, git_adapter=self.git_adapter, actions_taken=actions_taken, errors=errors):
-                return self._ActionResult(halt=True)
+            # A PR's approval is one convergent transition (#9499): receipt, label, or halt.
+            if (approved := approve_pull_request(
+                    action, worktree, issue_number=issue_number, pr_number=label_target, pr_adapter=self.pr_adapter,
+                    git_adapter=self.git_adapter, labels=self.label_adapter, approval_label=self._get_label("code_reviewed"),
+                    actions_taken=actions_taken, errors=errors)) is not None:
+                return self._ActionResult(halt=not approved)
             label_result = self._execute_label_mutation_action(
                 action=action, issue_number=issue_number, label_target=label_target, actions_taken=actions_taken)
             if label_result is not None:

@@ -20,7 +20,7 @@ import pytest
 from issue_orchestrator.control.action_results import ActionResultType
 from issue_orchestrator.control.awaiting_merge_reconciler import AwaitingMergeReconciler
 from issue_orchestrator.control.board_snapshot_builder import BoardSnapshotBuilder
-from issue_orchestrator.control.completion_reviewed_head import record_reviewed_head
+from issue_orchestrator.control.completion_reviewed_head import approve_pull_request
 from issue_orchestrator.control.external_pr_adoption import routing_gate, write_gate
 from issue_orchestrator.control.github_workflow import GitHubWorkflow
 from issue_orchestrator.control.integration_branch import (
@@ -29,7 +29,10 @@ from issue_orchestrator.control.integration_branch import (
     plan_integration_steps,
 )
 from issue_orchestrator.control.label_manager import LabelManager
-from issue_orchestrator.control.pr_scanner import PRScanner, ReworkScan
+from issue_orchestrator.control.external_pr_launch import launch_gate
+from issue_orchestrator.control.pr_scanner import PRScanner, ReviewScan, ReworkScan
+from issue_orchestrator.control.session_launch_types import LaunchDisposition
+from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.domain.board_snapshot import BoardTechLeadWriteHealth
 from issue_orchestrator.domain.external_pr_adoption import (
     AdoptExternalPullRequest,
@@ -160,20 +163,23 @@ class _World:
 
     def approve(self, pr: PRInfo, issue_number: int, *, reviewed: str = HEAD) -> None:
         """io's reviewer approves, its worktree at *reviewed*: what the review's
-        completion leaves - the receipt (the real approval boundary), the
-        approval label, and the issue's awaiting-merge history."""
+        completion leaves - the receipt and the approval label (the real
+        approval boundary), the review lane retired, and the issue's
+        awaiting-merge history."""
         errors: list[str] = []
-        assert record_reviewed_head(
-            RequestedAction.ADD_CODE_REVIEWED_LABEL, Path(f"/review-{pr.number}"), issue_number=issue_number,
-            pr_number=pr.number, pr_adapter=self.host,
-            git_adapter=SimpleNamespace(get_head_sha=lambda _worktree: reviewed), actions_taken=[], errors=errors,
-        ), errors
+        assert self.approval(pr, issue_number, reviewed=reviewed, errors=errors) is True, errors
         self.host.remove_label(pr.number, self.config.code_review_label or "")
-        self.host.add_label(pr.number, self.labels.code_reviewed)
         self.state.session_history.append(SessionHistoryEntry(
             issue_number=issue_number, title=f"Issue {issue_number}", agent_type="agent:backend",
             status="completed", runtime_minutes=0, pr_url=pr.url,
         ))
+
+    def approval(self, pr: PRInfo, issue_number: int, *, reviewed: str = HEAD, errors: list[str]) -> bool | None:
+        return approve_pull_request(
+            RequestedAction.ADD_CODE_REVIEWED_LABEL, Path(f"/review-{pr.number}"), issue_number=issue_number,
+            pr_number=pr.number, pr_adapter=self.host, git_adapter=SimpleNamespace(get_head_sha=lambda _worktree: reviewed),
+            labels=self.host, approval_label=self.labels.code_reviewed, actions_taken=[], errors=errors,
+        )
 
     def current(self, head: str) -> None:
         """*head* already contains the integration tip."""
@@ -298,6 +304,9 @@ def _refusal(world: _World) -> ReportRefusedExternalPullRequest:
         ("no_agent", AdoptionRefusal.ISSUE_NOT_IN_EFFORT, "no agent label"),
         ("unknown_agent", AdoptionRefusal.ISSUE_NOT_IN_EFFORT, "`agent:unknown` names no agent this engine runs"),
         ("wrong_base", AdoptionRefusal.WRONG_BASE, "targets `main`, but issue #231 integrates on `integration`"),
+        # Review r3 F6: a PR for several issues, however the lanes would pick one.
+        ("branch_and_body_disagree", AdoptionRefusal.AMBIGUOUS_ISSUE_REFERENCE, "references issues #231 and #232"),
+        ("two_closing_references", AdoptionRefusal.AMBIGUOUS_ISSUE_REFERENCE, "references issues #231 and #232"),
     ],
 )
 def test_a_pr_outside_the_effort_is_refused_told_once_and_never_adopted(
@@ -325,6 +334,14 @@ def test_a_pr_outside_the_effort_is_refused_told_once_and_never_adopted(
         # An agent label io has no agent for: io could never rework the PR (review r2 F1).
         world.issue(231, "agent:unknown", EFFORT)
         world.pr(321, issue=231)
+    elif setup == "branch_and_body_disagree":
+        world.effort_issue(231)
+        world.effort_issue(232)
+        world.pr(321, issue=231, branch="231-feature", body="Closes #232")
+    elif setup == "two_closing_references":
+        world.effort_issue(231)
+        world.effort_issue(232)
+        world.pr(321, issue=None, branch="hand-made", body="Closes #231\nCloses #232")
     else:
         world.effort_issue(231)
         world.pr(321, issue=231, base="main")
@@ -551,14 +568,18 @@ def test_io_never_merges_reworks_or_updates_an_unadmitted_external_pr(state: str
     assert world.host.pr_merges == []
 
 
-@pytest.mark.parametrize("link", ["removed", "moved"])
+@pytest.mark.parametrize("link", ["removed", "moved", "ambiguous"])
 @pytest.mark.parametrize("lane", ["rework", "update", "merge"])
 def test_an_adopted_pr_whose_issue_link_changes_is_never_reworked_updated_or_merged(link: str, lane: str) -> None:
     """Review F2: the merge side re-asks the exact PR-issue link, not the old history's issue."""
     world = _World()
     world.effort_issue(232)
     pr = _adopted_and_approved(world)
-    pr.body, pr.branch = ("No issue", "hand-made-321") if link == "removed" else ("Closes #232", "hand-made-321")
+    pr.body, pr.branch = {
+        "removed": ("No issue", "hand-made-321"),
+        "moved": ("Closes #232", "hand-made-321"),
+        "ambiguous": ("Closes #231\nCloses #232", "hand-made-321"),
+    }[link]
     if lane == "rework":
         pr.mergeable_state = "dirty"
     elif lane == "update":
@@ -714,31 +735,134 @@ def test_a_return_to_review_is_not_written_once_io_reviewed_that_head() -> None:
 def test_an_unwritable_receipt_halts_the_approval() -> None:
     world = _World()
     world.effort_issue(231)
-    world.pr(321, issue=231, labels=("origin:external", "needs-code-review"))
+    pr = world.pr(321, issue=231, labels=("origin:external", "needs-code-review"))
     world.host.add_comment = MagicMock(side_effect=RepositoryHostError("502"))  # type: ignore[method-assign]
     errors: list[str] = []
 
-    proceed = record_reviewed_head(
-        RequestedAction.ADD_CODE_REVIEWED_LABEL, Path("/review-321"), issue_number=231, pr_number=321,
-        pr_adapter=world.host, git_adapter=SimpleNamespace(get_head_sha=lambda _worktree: HEAD),
-        actions_taken=[], errors=errors,
-    )
-
-    assert proceed is False
-    assert "receipt for PR #321 not written" in errors[0]
+    assert world.approval(pr, 231, errors=errors) is False
+    assert "PR #321's approval not written" in errors[0]
+    assert set(pr.labels) == {"origin:external", "needs-code-review"}  # still in io's review lane
 
 
 def test_io_s_own_pr_approval_leaves_no_receipt() -> None:
     world = _World()
     world.effort_issue(231)
-    world.io_pr(321, issue=231)
+    pr = world.io_pr(321, issue=231)
 
-    assert record_reviewed_head(
-        RequestedAction.ADD_CODE_REVIEWED_LABEL, Path("/review-321"), issue_number=231, pr_number=321,
-        pr_adapter=world.host, git_adapter=SimpleNamespace(get_head_sha=lambda _worktree: HEAD),
-        actions_taken=[], errors=[],
-    )
+    assert world.approval(pr, 231, errors=[]) is True
     assert world.comments_on(321) == []
+    assert world.labels.code_reviewed in pr.labels
+
+
+# -- the launch boundary re-asks THE admission rule (review r3 F5) ----------------------
+
+
+def _queue(world: _World, kind: SessionKind) -> None:
+    """Discovery queues the review or rework of PR #321: admitted when queued."""
+    if kind is SessionKind.REVIEW:
+        world.workflow.pr_scanner.scan_for_reviews.return_value = ReviewScan(  # type: ignore[attr-defined]
+            reviews=[PendingReview(issue_key=world.host.create_issue_key(231), pr_number=321, pr_url="u321",
+                                   branch_name="231-hand-made", _issue_number=231)],
+            blocked=[],
+        )
+        world.workflow.scan_needs_code_review_prs(world.state)
+        assert [review.pr_number for review in world.state.discovered_reviews] == [321]
+    else:
+        world.workflow.pr_scanner.scan_for_reworks.return_value = ReworkScan(  # type: ignore[attr-defined]
+            reworks=[PendingRework(issue_key=world.host.create_issue_key(231), agent_type="agent:backend",
+                                   issue_number=231, pr_number=321)],
+            escalations=[], blocked=[],
+        )
+        world.workflow.scan_needs_rework_prs(world.state)
+        assert [rework.pr_number for rework in world.state.discovered_reworks] == [321]
+
+
+def _no_longer_admitted(world: _World, pr: PRInfo, change: str) -> None:
+    """One admission fact changes while the work waits for a slot."""
+    if change == "unknown_agent":
+        world.relabel(231, "agent:unknown", EFFORT)
+    elif change == "left_effort":
+        world.relabel(231, "agent:backend")
+    elif change == "issue_closed":
+        world.host.get_issue(231).state = "closed"  # type: ignore[union-attr]
+    elif change == "link_moved":
+        pr.body, pr.branch = "Closes #232", "hand-made-321"
+    elif change == "ambiguous":
+        pr.body, pr.branch = "Closes #231\nCloses #232", "hand-made-321"
+    elif change == "retargeted":
+        pr.base_branch = "main"
+    elif change == "origin_lost":
+        world.host.remove_label(321, "origin:external")
+    else:
+        world.state.active_sessions.append(SimpleNamespace(  # type: ignore[arg-type]
+            issue=SimpleNamespace(number=231), branch_name="231-io-attempt",
+        ))
+
+
+@pytest.mark.parametrize("kind", [SessionKind.REVIEW, SessionKind.REWORK])
+@pytest.mark.parametrize(
+    "change",
+    ["unknown_agent", "left_effort", "issue_closed", "link_moved", "ambiguous", "retargeted", "origin_lost",
+     "io_session_started"],
+)
+def test_queued_work_on_an_adopted_pr_is_withdrawn_at_launch_once_the_pr_is_no_longer_admitted(
+    kind: SessionKind, change: str,
+) -> None:
+    world = _World()
+    world.effort_issue(232)
+    pr = _adopted_and_approved(world)
+    _queue(world, kind)
+    gate = launch_gate(world.config, world.host, lambda: world.state)
+    assert gate.refuse(kind=kind, issue_number=231, pr_number=321) is None
+
+    _no_longer_admitted(world, pr, change)
+    refused = gate.refuse(kind=kind, issue_number=231, pr_number=321)
+
+    assert refused is not None and not refused.success
+    assert refused.disposition is LaunchDisposition.WITHDRAWN, refused.reason
+
+
+def test_a_launch_whose_admission_cannot_be_read_is_retried_not_withdrawn() -> None:
+    world = _World()
+    _adopted_and_approved(world)
+    world.host.get_issue_labels_fresh = MagicMock(  # type: ignore[method-assign]
+        side_effect=RepositoryHostError("502 labels"),
+    )
+
+    refused = launch_gate(world.config, world.host, lambda: world.state).refuse(
+        kind=SessionKind.REWORK, issue_number=231, pr_number=321,
+    )
+
+    assert refused is not None and refused.disposition is LaunchDisposition.RETRYABLE_FAILURE
+
+
+@pytest.mark.parametrize("pr_kind", ["io_own", "external_elsewhere"])
+def test_work_on_a_pr_the_effort_does_not_govern_launches_as_without_it(pr_kind: str) -> None:
+    world = _World()
+    world.effort_issue(231)
+    if pr_kind == "io_own":
+        world.io_pr(321, issue=231)
+    else:
+        world.pr(321, issue=231, base="main")  # a person's PR into main: not the effort's business
+
+    assert launch_gate(world.config, world.host, lambda: world.state).refuse(
+        kind=SessionKind.REVIEW, issue_number=231, pr_number=321,
+    ) is None
+
+
+def test_a_review_of_an_adopted_pr_no_longer_admitted_is_not_queued() -> None:
+    world = _World()
+    _adopted_and_approved(world)
+    world.relabel(231, "agent:backend")  # left the effort
+    world.workflow.pr_scanner.scan_for_reviews.return_value = ReviewScan(  # type: ignore[attr-defined]
+        reviews=[PendingReview(issue_key=world.host.create_issue_key(231), pr_number=321, pr_url="u321",
+                               branch_name="231-hand-made", _issue_number=231)],
+        blocked=[],
+    )
+
+    world.workflow.scan_needs_code_review_prs(world.state)
+
+    assert world.state.discovered_reviews == []
 
 
 # -- writes that fail part-way converge (review r2 F2, F3) -----------------------------
