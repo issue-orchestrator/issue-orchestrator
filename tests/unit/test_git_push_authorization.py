@@ -4,10 +4,10 @@
 ``git`` wrapper. An orchestrator session can also carry Git state that points
 every child ``git`` somewhere else: validated-work publication runs the
 publish gate with environment config setting ``remote.origin.url`` and
-``pushurl`` to the real GitHub repository. These tests hand each redirect to
-the shared environment, inherited or caller-supplied, and push for real: the
-push must land on the fixture's bare remote and never on the decoy the
-redirect names.
+``pushurl`` to the real GitHub repository, and a global or system config file
+can set a push URL just as well. These tests hand each redirect to the shared
+environment, inherited or caller-supplied, and push for real: the push must
+land on the fixture's bare remote and never on the decoy the redirect names.
 """
 
 from __future__ import annotations
@@ -44,16 +44,25 @@ class Repos:
     session_checkout: Path
 
 
-def _isolated_env(home: Path) -> dict[str, str]:
-    """Setup and inspection env that inherits nothing from the session but PATH."""
+def _bare_session_env(home: Path) -> dict[str, str]:
+    """An env that inherits nothing from the session but PATH, with a HOME that
+    holds no git config: the base a redirect is laid over for the control."""
     return {
         "PATH": os.environ["PATH"],
         "HOME": str(home),
-        "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_AUTHOR_NAME": "T",
         "GIT_AUTHOR_EMAIL": "t@example.com",
         "GIT_COMMITTER_NAME": "T",
         "GIT_COMMITTER_EMAIL": "t@example.com",
+    }
+
+
+def _isolated_env(home: Path) -> dict[str, str]:
+    """Setup and inspection env: no session state and no global or system config."""
+    return {
+        **_bare_session_env(home),
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
     }
 
 
@@ -134,12 +143,48 @@ def _repository_selection(repos: Repos) -> dict[str, str]:
     }
 
 
+def _push_url_config_file(path: Path, repos: Repos) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f'[remote "origin"]\n\tpushurl = {repos.decoy}\n')
+    return path
+
+
+def _global_config(repos: Repos) -> dict[str, str]:
+    """GIT_CONFIG_GLOBAL names a config file that sets a push URL."""
+    hostile = _push_url_config_file(repos.root / "hostile-global.gitconfig", repos)
+    return {"GIT_CONFIG_GLOBAL": str(hostile)}
+
+
+def _system_config(repos: Repos) -> dict[str, str]:
+    """GIT_CONFIG_SYSTEM names a config file that sets a push URL."""
+    hostile = _push_url_config_file(repos.root / "hostile-system.gitconfig", repos)
+    return {"GIT_CONFIG_SYSTEM": str(hostile)}
+
+
+def _home_config(repos: Repos) -> dict[str, str]:
+    """Without GIT_CONFIG_GLOBAL, git reads the global level from $HOME."""
+    home = repos.root / "hostile-home"
+    _push_url_config_file(home / ".gitconfig", repos)
+    return {"HOME": str(home)}
+
+
+def _xdg_config(repos: Repos) -> dict[str, str]:
+    """... and from $XDG_CONFIG_HOME/git/config."""
+    xdg = repos.root / "hostile-xdg"
+    _push_url_config_file(xdg / "git" / "config", repos)
+    return {"XDG_CONFIG_HOME": str(xdg)}
+
+
 Redirect = Callable[[Repos], dict[str, str]]
 
 REDIRECTS = [
     pytest.param(_environment_config, id="environment-config"),
     pytest.param(_command_line_config, id="command-line-config"),
     pytest.param(_repository_selection, id="repository-selection"),
+    pytest.param(_global_config, id="global-config-file"),
+    pytest.param(_system_config, id="system-config-file"),
+    pytest.param(_home_config, id="home-gitconfig"),
+    pytest.param(_xdg_config, id="xdg-gitconfig"),
 ]
 
 
@@ -150,7 +195,7 @@ def test_an_unprotected_push_follows_the_redirect(
     """Control: each redirect really does move a fixture push to the decoy, so
     the protected test below cannot pass because the redirect was inert."""
     env = {
-        **_isolated_env(repos.root),
+        **_bare_session_env(repos.root),
         **redirect(repos),
         GH_AUTH_ENV_VAR: GH_AUTH_TOKEN,
     }
@@ -216,12 +261,19 @@ def test_a_fixture_push_lands_only_on_the_fixture_remote(
         "GIT_CONFIG_KEY_11",
         "GIT_CONFIG_VALUE_11",
         "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
     ],
 )
-def test_every_redirecting_git_variable_is_dropped(name: str) -> None:
+def test_every_redirecting_git_variable_is_shut_out(name: str) -> None:
     env = authorized_local_fixture_git_env({name: "/elsewhere", KEPT_VAR: KEPT_VALUE})
 
-    assert env == {KEPT_VAR: KEPT_VALUE, GH_AUTH_ENV_VAR: GH_AUTH_TOKEN}
+    assert env == {
+        KEPT_VAR: KEPT_VALUE,
+        GH_AUTH_ENV_VAR: GH_AUTH_TOKEN,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+    }
 
 
 def test_the_negative_control_drops_the_same_redirects(repos: Repos) -> None:
@@ -230,6 +282,10 @@ def test_the_negative_control_drops_the_same_redirects(repos: Repos) -> None:
         **_environment_config(repos),
         **_command_line_config(repos),
         **_repository_selection(repos),
+        **_global_config(repos),
+        **_system_config(repos),
+        **_home_config(repos),
+        **_xdg_config(repos),
         KEPT_VAR: KEPT_VALUE,
         GH_AUTH_ENV_VAR: GH_AUTH_TOKEN,
     }
