@@ -5,8 +5,10 @@ suite, a delayed dependency or a stuck process can outlive any fixed age. So
 the live suite only ever closes the PRs and issues it recorded creating,
 reports the rest, and deletes no label. An operator who knows no run is live
 against the test repository says so here, naming it, and only then are every
-PR carrying the e2e artifact label (with its branch), every open issue
-carrying an e2e marker, and every per-test and per-run e2e label removed:
+PR and open issue carrying an e2e marker (each PR with its branch), and every
+per-test and per-run e2e label removed. A label goes only once nothing open
+carries it: it is how the next run of this command finds what still does, so
+an unfinished run exits non-zero and keeps the labels for the retry:
 
     IO_E2E=1 E2E_TEST_REPO=owner/test-repo \\
         python -m tests.e2e.reconcile --no-live-run-against owner/test-repo
@@ -22,40 +24,23 @@ import argparse
 import logging
 import sys
 from collections.abc import Sequence
-from dataclasses import dataclass
 
 from tests.e2e.fixtures.artifact_cleanup import (
-    E2E_ARTIFACT_LABEL,
     CleanupGitHub,
     E2EArtifactCleanup,
+    IdleReconciliation,
     IdleRepositoryScope,
 )
 
 
-@dataclass(frozen=True)
-class Reconciled:
-    prs_closed: int
-    issues_closed: int
-    labels_deleted: int
-
-
-def reconcile(confirmed_idle_repo: str, *, github: CleanupGitHub | None = None) -> Reconciled:
-    """Remove every e2e artifact from ``confirmed_idle_repo``: PRs and their
-    branches first, then issues, then the labels nothing needs any more."""
+def reconcile(confirmed_idle_repo: str, *, github: CleanupGitHub | None = None) -> IdleReconciliation:
+    """Remove every e2e artifact from ``confirmed_idle_repo`` (the cleanup
+    owner's :meth:`~E2EArtifactCleanup.reconcile_idle`, which keeps each label
+    until nothing open depends on it)."""
     cleanup = E2EArtifactCleanup.for_test_repo(confirmed_idle_repo, github=github)
-    idle = IdleRepositoryScope(repo=cleanup.repo)
-    prs_closed = cleanup.sweep(idle)
-    # Issues the engine filed may carry only a per-run label, not the static one.
-    issue_labels = [E2E_ARTIFACT_LABEL] + [
-        name for name in cleanup.label_names() if idle.admits_label(name, cleanup.repo)
-    ]
-    issues_closed = cleanup.sweep_issues(
-        idle, comment="Closed by e2e reconciliation (no run live).", labels=issue_labels
-    )
-    return Reconciled(
-        prs_closed=prs_closed,
-        issues_closed=issues_closed,
-        labels_deleted=cleanup.sweep_labels(idle),
+    return cleanup.reconcile_idle(
+        IdleRepositoryScope(repo=cleanup.repo),
+        comment="Closed by e2e reconciliation (no run live).",
     )
 
 
@@ -75,10 +60,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     done = reconcile(args.no_live_run_against)
     print(
         f"{args.no_live_run_against}: closed {done.prs_closed} PR(s) and "
-        f"{done.issues_closed} issue(s), deleted {done.labels_deleted} label(s)",
+        f"{done.issues_closed} issue(s), deleted {len(done.labels_deleted)} label(s)",
         file=sys.stderr,
     )
-    return 0
+    if done.complete:
+        return 0
+    for failure in done.failures:
+        print(f"  not finished: {failure.what}: {failure.reason}", file=sys.stderr)
+    print(
+        f"  kept {len(done.labels_retained)} label(s) so the next run of this command "
+        "can still find what carries them. Fix the cause and run it again.",
+        file=sys.stderr,
+    )
+    return 1
 
 
 if __name__ == "__main__":

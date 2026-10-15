@@ -196,9 +196,9 @@ def test_run_teardown_refuses_any_other_issue(owner, github, issue_number):
     assert github.closed_issues == [] and github.comments == []
 
 
-def test_a_run_never_deletes_a_label(owner, github):
-    assert owner.sweep_labels(RUN) == 0
-    assert github.deleted_labels == []
+def test_a_run_scope_admits_no_label(github):
+    """Labels go only through the operator's idle reconciliation."""
+    assert not any(RUN.admits_label(label, TEST_REPO) for label in github.labels)
 
 
 # -- Deleting a branch closes the PRs it heads and bases: read completely ---
@@ -355,13 +355,15 @@ def test_a_run_label_scope_needs_a_label_carrying_a_random_run_id(label, run_id)
 def test_the_operator_reconciliation_removes_every_e2e_artifact(github):
     done = reconcile.reconcile(TEST_REPO, github=github)
 
-    assert (done.prs_closed, done.issues_closed, done.labels_deleted) == (3, 3, 2)
+    assert done.complete, done.failures
+    assert (done.prs_closed, done.issues_closed) == (3, 3)
     assert sorted(github.closed) == [7, 10, 11]
     assert sorted(github.deleted_branches) == [
         "123-e2e-artifact", "456-e2e-artifact", "5-leftover", "6-leftover",
     ]
     assert sorted(github.closed_issues) == [123, 456, 457]
-    assert sorted(github.deleted_labels) == sorted([RUN_A_LABEL, "io:e2e:test_issue_to_completion"])
+    assert sorted(done.labels_deleted) == sorted([RUN_A_LABEL, "io:e2e:test_issue_to_completion"])
+    assert sorted(github.deleted_labels) == sorted(done.labels_deleted)
 
 
 def test_the_operator_must_name_the_test_repository(github):
@@ -390,10 +392,94 @@ def test_an_idle_repository_confirmation_never_admits_real_work(owner, github):
 
 
 def test_an_idle_confirmation_for_another_repository_admits_nothing(owner, github):
-    idle = IdleRepositoryScope(repo="owner/other-repo")
+    done = owner.reconcile_idle(IdleRepositoryScope(repo="owner/other-repo"), comment="x")
 
-    assert (owner.sweep(idle), owner.sweep_issues(idle), owner.sweep_labels(idle)) == (0, 0, 0)
+    assert (done.prs_closed, done.issues_closed, done.labels_deleted) == (0, 0, ())
     assert all(writes == [] for writes in github.all_writes.values())
+
+
+# -- A label is provenance: reconciliation never strands what carries it --
+#
+# #9523 review F5: issue #457 was filed by the engine and carries only run A's
+# label. If the label went while #457 stayed open, no later reconciliation
+# could find it again.
+
+
+def _reconcile_via_command(monkeypatch, github, capsys) -> tuple[int, str]:
+    monkeypatch.setattr(artifact_cleanup, "_github_adapter", lambda _repo: github)
+    code = reconcile.main(["--no-live-run-against", TEST_REPO])
+    return code, capsys.readouterr().err
+
+
+def _still_findable(github: FakeE2EGitHub, issue_number: int) -> bool:
+    """Open, and still carrying a label the repository still has."""
+    found = github.get_issue(issue_number)
+    return (
+        RUN_A_LABEL in github.labels
+        and found is not None
+        and found.state == "open"
+        and RUN_A_LABEL in found.labels
+    )
+
+
+def test_a_failed_close_of_a_run_label_only_issue_keeps_its_label(monkeypatch, github, capsys):
+    github.failing_issue_closes.add(457)
+
+    code, err = _reconcile_via_command(monkeypatch, github, capsys)
+
+    assert code == 1
+    assert "issue #457" in err and "GitHub rejected closing issue #457" in err
+    assert github.deleted_labels == []
+    assert _still_findable(github, 457)
+
+    # The retry, once GitHub accepts the close, finishes the job.
+    github.failing_issue_closes.clear()
+    code, _ = _reconcile_via_command(monkeypatch, github, capsys)
+    assert code == 0
+    assert 457 in github.closed_issues and RUN_A_LABEL in github.deleted_labels
+
+
+def test_an_incomplete_issue_listing_keeps_every_label(monkeypatch, github, capsys):
+    """Two open issues carry run A's label; the scan proves only one."""
+    github.issue_scan_cap = 1
+
+    code, err = _reconcile_via_command(monkeypatch, github, capsys)
+
+    assert code == 1
+    assert f"the open issues labelled {RUN_A_LABEL}" in err
+    assert github.deleted_labels == []
+    assert _still_findable(github, 457)
+
+
+def test_a_capped_pr_listing_keeps_every_label(live_e2e_run, capsys):
+    """100 open PRs carry the label: the listing cannot show a 101st."""
+    live_e2e_run(TEST_REPO)
+    github = FakeE2EGitHub(
+        [pull_request(n, f"{n}-run-a", [RUN_A_LABEL], body=f"Closes #{n}") for n in range(1000, 1101)],
+        labels=[RUN_A_LABEL],
+    )
+    owner = E2EArtifactCleanup.for_test_repo(TEST_REPO, github=github)
+
+    done = owner.reconcile_idle(IdleRepositoryScope(repo=TEST_REPO), comment="x")
+
+    assert not done.complete
+    assert any("may be capped" in failure.reason for failure in done.failures)
+    assert done.labels_retained == (RUN_A_LABEL,) and github.deleted_labels == []
+
+
+def test_a_label_an_open_issue_still_carries_is_kept(owner, github):
+    """GitHub accepted closing #457 but never applied it: the complete re-read
+    before deleting the label still finds it open."""
+    github.ignored_issue_closes.add(457)
+
+    done = owner.reconcile_idle(IdleRepositoryScope(repo=TEST_REPO), comment="x")
+
+    assert not done.complete
+    assert done.failures == (
+        artifact_cleanup.CleanupFailure(f"label {RUN_A_LABEL}", "still carried by open issue #457"),
+    )
+    assert RUN_A_LABEL in done.labels_retained and RUN_A_LABEL not in github.deleted_labels
+    assert _still_findable(github, 457)
 
 
 # -- ExamRunScope: an exam run's strict teardown ----------------------------

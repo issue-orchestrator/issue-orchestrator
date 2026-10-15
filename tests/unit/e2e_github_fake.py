@@ -93,6 +93,13 @@ class FakeE2EGitHub:
         self.deleted_labels: list[str] = []
         self.cached_for_branch: dict[str, list[PRInfo]] = {}
         self.incomplete_reads = False
+        #: An exhaustive issue listing longer than this raises, as GitHub's
+        #: page cap makes the real one do.
+        self.issue_scan_cap: int | None = None
+        #: Issues whose state update GitHub rejects.
+        self.failing_issue_closes: set[int] = set()
+        #: Issues whose state update GitHub accepts but never applies.
+        self.ignored_issue_closes: set[int] = set()
         #: False: a branch deletion GitHub accepts but that leaves the branch.
         self.delete_works = True
 
@@ -122,10 +129,12 @@ class FakeE2EGitHub:
         return [pr for number in self._prs if (pr := self.get_pr(number)) is not None]
 
     def get_prs_with_label(self, label: str, state: str = "open") -> list[PRInfo]:
+        """Like the adapter: at most 100, silently."""
+        states = {"all": ("open", "closed", "merged"), "closed": ("closed", "merged")}
         return [
             pr for pr in self._current()
-            if label in pr.labels and state in ("all", pr.state)
-        ]
+            if label in pr.labels and pr.state in states.get(state, (state,))
+        ][:100]
 
     def get_prs_for_branch(self, branch: str, state: str = "open") -> list[PRInfo]:
         return self.cached_for_branch.get(branch, [])
@@ -165,14 +174,18 @@ class FakeE2EGitHub:
 
     def list_issues(
         self, labels: list[str] | None = None, milestone: str | None = None,
-        state: str = "open", limit: int = 100,
+        state: str = "open", limit: int = 100, *, exhaustive: bool = False,
     ) -> list[FakeIssue]:
         current = [found for number in self._issues if (found := self.get_issue(number))]
-        return [
+        matching = [
             found for found in current
             if all(label in found.labels for label in labels or [])
             and state in ("all", found.state)
-        ][:limit]
+        ]
+        cap = min(limit, self.issue_scan_cap) if self.issue_scan_cap is not None else limit
+        if exhaustive and (self.incomplete_reads or len(matching) > cap):
+            raise IncompleteReadError(f"issue scan for {labels} exceeded its cap")
+        return matching[:cap]
 
     def add_comment(self, issue_or_pr_number: int, body: str) -> str:
         self.comments.append((issue_or_pr_number, body))
@@ -180,6 +193,10 @@ class FakeE2EGitHub:
 
     def update_issue_state(self, issue_number: int, state: str) -> None:
         assert state == "closed"
+        if issue_number in self.failing_issue_closes:
+            raise RuntimeError(f"GitHub rejected closing issue #{issue_number}")
+        if issue_number in self.ignored_issue_closes:
+            return
         self.closed_issues.append(issue_number)
 
     # -- Labels

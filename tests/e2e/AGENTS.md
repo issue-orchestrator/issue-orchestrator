@@ -90,6 +90,12 @@ IO_E2E=1 E2E_TEST_REPO=owner/test-repo \
     python -m tests.e2e.reconcile --no-live-run-against owner/test-repo
 ```
 
+It removes PRs (with their branches) and issues before labels, and deletes a
+label only once complete reads prove nothing open still carries it: an issue
+the engine filed may carry nothing but its run's label. If anything fails or
+a listing cannot be proven complete, it keeps every label, lists what is
+unfinished and exits non-zero; run it again once the cause is fixed.
+
 ## Key Files
 
 - `conftest.py` - E2E fixtures (e2e_config, ipc_client, orchestrator_process)

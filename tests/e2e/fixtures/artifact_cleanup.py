@@ -16,9 +16,13 @@ through :class:`E2EArtifactCleanup`:
 - :class:`ExamRunScope` -- an exam run: the issues it owns, PRs whose body
   links one of them, and branches it holds a :class:`RemoteBranchReceipt` for.
 - :class:`IdleRepositoryScope` -- an operator's explicit statement that no
-  run is live against the test repository (``python -m tests.e2e.reconcile``).
-  No run can prove another has ended, so the suite never touches an unknown
-  run's PRs, issues or labels on its own, and deletes no label automatically.
+  run is live against the test repository (``python -m tests.e2e.reconcile``,
+  through :meth:`E2EArtifactCleanup.reconcile_idle`). No run can prove another
+  has ended, so the suite never touches an unknown run's PRs, issues or
+  labels on its own, and deletes no label automatically. A label is the only
+  provenance of what carries it, so even reconciliation deletes one only after
+  every artifact it removes is gone and a complete re-read proves nothing open
+  still carries the label.
 
 A branch is never deleted because of its name: only as an admitted PR's head,
 or with a receipt proving this run created it and still owns its head.
@@ -103,7 +107,7 @@ class CleanupGitHub(Protocol):
 
     def list_issues(
         self, labels: list[str] | None = None, milestone: str | None = None,
-        state: str = "open", limit: int = 100,
+        state: str = "open", limit: int = 100, *, exhaustive: bool = False,
     ) -> Sequence[CleanupIssue]: ...
 
     def add_comment(self, issue_or_pr_number: int, body: str) -> str: ...
@@ -287,28 +291,20 @@ class ExamRunScope:
 class IdleRepositoryScope:
     """An operator's statement that no e2e run is live against ``repo``.
 
-    Only then is every e2e artifact a leftover: PRs carrying the static e2e
-    label, open issues carrying any e2e marker, and the per-test and per-run
-    e2e labels. Nothing a run could observe proves another run has ended
-    (#9523), so only ``python -m tests.e2e.reconcile`` builds this, from an
-    explicit confirmation naming the repository.
+    Only then is every e2e artifact a leftover: PRs and open issues carrying
+    any e2e marker, and the per-test and per-run e2e labels. Nothing a run
+    could observe proves another run has ended (#9523), so only ``python -m
+    tests.e2e.reconcile`` builds this, from an explicit confirmation naming
+    the repository, for :meth:`E2EArtifactCleanup.reconcile_idle`.
     """
 
     repo: str
-
-    @property
-    def listing_labels(self) -> tuple[str, ...]:
-        return (E2E_ARTIFACT_LABEL,)
-
-    @property
-    def listing_state(self) -> str:
-        return "all"
 
     def _is_target(self, repo: str) -> bool:
         return repo.casefold() == self.repo.casefold()
 
     def admits_pr(self, pr: PRInfo, repo: str) -> bool:
-        return self._is_target(repo) and E2E_ARTIFACT_LABEL in pr.labels
+        return self._is_target(repo) and any(is_e2e_marker(label) for label in pr.labels)
 
     def admits_branch(self, branch: str, head_sha: str, repo: str) -> bool:
         return False
@@ -318,6 +314,42 @@ class IdleRepositoryScope:
 
     def admits_label(self, label: str, repo: str) -> bool:
         return self._is_target(repo) and label.startswith((E2E_TEST_LABEL_PREFIX, E2E_RUN_LABEL_PREFIX))
+
+
+#: ``get_prs_with_label`` returns at most this many PRs and says nothing of
+#: what it left out: a listing this long cannot prove it is complete.
+PR_LABEL_LISTING_CAP = 100
+#: An issue listing walks every page up to this many issues and raises past
+#: it (``list_issues(exhaustive=True)``), so what it returns is complete.
+ISSUE_SCAN_LIMIT = 1000
+
+
+class IncompleteListingError(RuntimeError):
+    """A listing that cannot prove it saw everything it was asked for."""
+
+
+@dataclass(frozen=True)
+class CleanupFailure:
+    """One artifact or read a cleanup could not finish."""
+
+    what: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class IdleReconciliation:
+    """What :meth:`E2EArtifactCleanup.reconcile_idle` did, and failed to do."""
+
+    prs_closed: int
+    issues_closed: int
+    labels_deleted: tuple[str, ...]
+    labels_retained: tuple[str, ...]
+    failures: tuple[CleanupFailure, ...]
+
+    @property
+    def complete(self) -> bool:
+        """Everything removed; anything less must be retried, not trusted."""
+        return not self.failures
 
 
 #: Proof that :meth:`E2EArtifactCleanup.for_test_repo` validated the target.
@@ -401,26 +433,13 @@ class E2EArtifactCleanup:
     def sweep(self, scope: SweptScope) -> int:
         """Remove every admitted PR the scope's listing finds; the number closed.
 
-        Best effort per PR, so one failure does not strand the rest; a PR the
-        scope does not admit, or whose branch deletion would close one it does
-        not admit, is never written to.
+        Best effort per PR, so one failure does not strand the rest (each is
+        logged); a PR the scope does not admit, or whose branch deletion would
+        close one it does not admit, is never written to.
         """
-        seen: set[int] = set()
-        closed = 0
-        for label in scope.listing_labels:
-            try:
-                prs = self._github.get_prs_with_label(label, state=scope.listing_state)
-            except Exception:
-                logger.warning("[E2E CLEANUP] Failed listing PRs for label '%s'", label)
-                continue
-            for pr in prs:
-                if pr.number in seen or not scope.admits_pr(pr, self.repo):
-                    continue
-                seen.add(pr.number)
-                try:
-                    closed += self._remove(scope, pr)
-                except Exception as exc:
-                    logger.warning("[E2E CLEANUP] Retained PR #%d: %s", pr.number, exc)
+        failures: list[CleanupFailure] = []
+        closed = self._sweep_prs(scope, scope.listing_labels, scope.listing_state, failures)
+        _log(failures)
         return closed
 
     # -- Issues ------------------------------------------------------------
@@ -438,56 +457,65 @@ class E2EArtifactCleanup:
             )
         self._close_issue(scope, issue, comment)
 
-    def sweep_issues(
-        self,
-        scope: SweptScope,
-        comment: str | None = None,
-        *,
-        labels: Iterable[str] | None = None,
-    ) -> int:
-        """Close every admitted open issue listed under ``labels`` (the scope's
-        listing labels by default); the number closed."""
-        seen: set[int] = set()
-        closed = 0
-        for label in scope.listing_labels if labels is None else labels:
-            try:
-                issues = self._github.list_issues(labels=[label], state="open", limit=100)
-            except Exception:
-                logger.warning("[E2E CLEANUP] Failed listing issues for label '%s'", label)
-                continue
-            for issue in issues:
-                if issue.number in seen or not scope.admits_issue(issue, self.repo):
-                    continue
-                seen.add(issue.number)
-                try:
-                    closed += self._close_issue(scope, issue, comment)
-                except Exception as exc:
-                    logger.warning("[E2E CLEANUP] Retained issue #%d: %s", issue.number, exc)
+    def sweep_issues(self, scope: SweptScope, comment: str | None = None) -> int:
+        """Close every admitted open issue the scope's listing finds; the
+        number closed. Best effort per issue; each failure is logged."""
+        failures: list[CleanupFailure] = []
+        closed = self._sweep_issues(scope, scope.listing_labels, comment, failures)
+        _log(failures)
         return closed
 
-    # -- Labels ------------------------------------------------------------
+    # -- Idle reconciliation -----------------------------------------------
 
-    def sweep_labels(self, scope: CleanupScope) -> int:
-        """Delete every label the scope admits; the number deleted."""
-        deleted = 0
-        for entry in self._github.list_all_labels():
-            name = entry.get("name")
-            if not isinstance(name, str) or not scope.admits_label(name, self.repo):
-                continue
+    def reconcile_idle(self, scope: IdleRepositoryScope, comment: str) -> IdleReconciliation:
+        """Remove every e2e artifact, keeping provenance until it is not needed.
+
+        Open PRs (with their branches), the branches closed PRs left, then
+        open issues, all listed under every e2e label: an engine-filed issue
+        may carry only its run's label. A label is the only way the next
+        reconciliation finds what carries it, so labels go last, and only if
+        everything before succeeded from complete reads, and only one that a
+        complete re-read shows no open issue or PR still carries. Anything
+        less is a failure in the result, never a partial success.
+        """
+        failures: list[CleanupFailure] = []
+        try:
+            labels = [name for name in self.label_names() if scope.admits_label(name, self.repo)]
+        except Exception as exc:
+            failure = CleanupFailure("the label listing", str(exc))
+            return IdleReconciliation(0, 0, (), (), (failure,))
+        listing = (E2E_ARTIFACT_LABEL, *labels)
+        prs_closed = self._sweep_prs(scope, listing, "open", failures, complete=True)
+        self._sweep_prs(scope, listing, "closed", failures)
+        issues_closed = self._sweep_issues(scope, listing, comment, failures)
+        if failures:
+            # Something may still be open whose only provenance is a label.
+            return IdleReconciliation(prs_closed, issues_closed, (), tuple(labels), tuple(failures))
+        deleted: list[str] = []
+        retained: list[str] = []
+        for label in labels:
             try:
-                self._github.delete_label(name)
-                deleted += 1
+                dependents = self._open_dependents(label)
+                if dependents:
+                    raise IncompleteListingError(f"still carried by open {', '.join(dependents)}")
+                self._github.delete_label(label)
             except Exception as exc:
-                logger.warning("[E2E CLEANUP] Failed deleting label %s: %s", name, exc)
-        return deleted
+                failures.append(CleanupFailure(f"label {label}", str(exc)))
+                retained.append(label)
+            else:
+                deleted.append(label)
+        return IdleReconciliation(
+            prs_closed, issues_closed, tuple(deleted), tuple(retained), tuple(failures)
+        )
 
+    # -- Read-only reports -------------------------------------------------
     # -- Read-only reports -------------------------------------------------
 
     def open_prs_with_label(self, label: str) -> list[PRInfo]:
         return self._github.get_prs_with_label(label, state="open")
 
     def open_issues_with_label(self, label: str) -> list[CleanupIssue]:
-        return list(self._github.list_issues(labels=[label], state="open", limit=100))
+        return list(self._open_issues(label))
 
     def label_names(self) -> list[str]:
         return [
@@ -496,6 +524,86 @@ class E2EArtifactCleanup:
         ]
 
     # -- Internals ---------------------------------------------------------
+
+    def _open_issues(self, label: str) -> Sequence[CleanupIssue]:
+        """Every open issue carrying ``label``; raises rather than truncate."""
+        return self._github.list_issues(
+            labels=[label], state="open", limit=ISSUE_SCAN_LIMIT, exhaustive=True
+        )
+
+    def _open_dependents(self, label: str) -> list[str]:
+        """Every open issue and PR still carrying ``label``, from complete reads."""
+        issues = self._open_issues(label)
+        prs = self._github.get_prs_with_label(label, state="open")
+        if len(prs) >= PR_LABEL_LISTING_CAP:
+            raise IncompleteListingError(
+                f"{len(prs)} open PRs carry {label}: the listing may be capped"
+            )
+        return [f"issue #{issue.number}" for issue in issues] + [f"PR #{pr.number}" for pr in prs]
+
+    def _sweep_prs(
+        self,
+        scope: CleanupScope,
+        labels: Iterable[str],
+        state: str,
+        failures: list[CleanupFailure],
+        *,
+        complete: bool = False,
+    ) -> int:
+        """Remove the admitted PRs listed under ``labels``; the number closed.
+
+        Every listing or removal that fails is added to ``failures``; with
+        ``complete``, so is a listing that may have been capped.
+        """
+        seen: set[int] = set()
+        closed = 0
+        for label in labels:
+            try:
+                prs = self._github.get_prs_with_label(label, state=state)
+            except Exception as exc:
+                failures.append(CleanupFailure(f"the {state} PRs labelled {label}", str(exc)))
+                continue
+            if complete and len(prs) >= PR_LABEL_LISTING_CAP:
+                failures.append(CleanupFailure(
+                    f"the {state} PRs labelled {label}",
+                    f"{len(prs)} listed: the listing may be capped",
+                ))
+            for pr in prs:
+                if pr.number in seen or not scope.admits_pr(pr, self.repo):
+                    continue
+                seen.add(pr.number)
+                try:
+                    closed += self._remove(scope, pr)
+                except Exception as exc:
+                    failures.append(CleanupFailure(f"PR #{pr.number}", str(exc)))
+        return closed
+
+    def _sweep_issues(
+        self,
+        scope: CleanupScope,
+        labels: Iterable[str],
+        comment: str | None,
+        failures: list[CleanupFailure],
+    ) -> int:
+        """Close the admitted open issues listed under ``labels``, from
+        complete listings; every failure is added to ``failures``."""
+        seen: set[int] = set()
+        closed = 0
+        for label in labels:
+            try:
+                issues = self._open_issues(label)
+            except Exception as exc:
+                failures.append(CleanupFailure(f"the open issues labelled {label}", str(exc)))
+                continue
+            for issue in issues:
+                if issue.number in seen or not scope.admits_issue(issue, self.repo):
+                    continue
+                seen.add(issue.number)
+                try:
+                    closed += self._close_issue(scope, issue, comment)
+                except Exception as exc:
+                    failures.append(CleanupFailure(f"issue #{issue.number}", str(exc)))
+        return closed
 
     def _admit(self, scope: CleanupScope, pr: PRInfo) -> None:
         if not scope.admits_pr(pr, self.repo):
@@ -557,3 +665,8 @@ class E2EArtifactCleanup:
             self._github.delete_branch(branch)
         logger.info("[E2E CLEANUP] Removed PR #%d and branch %s", pr.number, pr.branch)
         return int(was_open)
+
+
+def _log(failures: Iterable[CleanupFailure]) -> None:
+    for failure in failures:
+        logger.warning("[E2E CLEANUP] Retained %s: %s", failure.what, failure.reason)
