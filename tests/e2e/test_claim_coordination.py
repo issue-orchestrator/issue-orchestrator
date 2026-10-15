@@ -14,7 +14,6 @@ human-facing workflow for running two local orchestrators on one repo.
 """
 
 import asyncio
-import os
 import shutil
 import subprocess
 import time
@@ -38,7 +37,6 @@ from .fixtures import (
     control_api_headers,
     env_token_name,
     get_issue_labels,
-    get_test_repo,
     keep_artifacts,
 )
 
@@ -194,12 +192,6 @@ def e2e_project_root() -> Path:
             return current
         current = current.parent
     raise RuntimeError("Could not find project root")
-
-
-@pytest.fixture
-def repo_name() -> str:
-    """Repository name for E2E tests."""
-    return os.environ.get("E2E_REPO", get_test_repo())
 
 
 @pytest.fixture

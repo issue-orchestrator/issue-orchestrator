@@ -17,8 +17,7 @@ import time
 
 import pytest
 
-from tests.e2e.flows import E2EFlow, cleanup_test_prs, check_issue_comment
-from issue_orchestrator.testing.support.test_data import cleanup_test_issues
+from tests.e2e.flows import E2EFlow, check_issue_comment
 
 logger = logging.getLogger(__name__)
 
@@ -158,23 +157,3 @@ class TestLabelDetection:
         # Wait for orchestrator to see the blocked label
         await flow.issue_has_label(issue, "blocked", timeout_s=60)
         logger.info("✓ Blocked label detected")
-
-
-@pytest.mark.e2e
-class TestCleanup:
-    """Tests for cleanup functionality."""
-
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=300, system_gh_activity_limit=50)
-    def test_cleanup_test_issues(self, repo_name: str):
-        """Verify test issue cleanup works."""
-        # This just verifies the cleanup function runs without error
-        count = cleanup_test_issues(repo_name)
-        assert count >= 0
-        logger.info("✓ Cleaned up %d test issues", count)
-
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=300, system_gh_activity_limit=50)
-    def test_cleanup_test_prs(self, repo_name: str):
-        """Clean up any test PRs left behind including review-labeled PRs."""
-        labels_to_cleanup = ["io-e2e-test-data", "needs-code-review", "code-reviewed"]
-        cleaned = cleanup_test_prs(repo_name, labels_to_cleanup)
-        logger.info("✓ Cleaned up %d test PRs", cleaned)

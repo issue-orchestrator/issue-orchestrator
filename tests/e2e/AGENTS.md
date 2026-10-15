@@ -1,26 +1,47 @@
 # E2E Tests
 
-Live tests that create real GitHub issues and run the full orchestrator.
+Live tests that create, edit and close real GitHub issues and PRs and run the
+full orchestrator.
+
+## Never From An Agent Session
+
+On 2026-10-14 (#9523) an agent's bare `pytest` fell back to `testpaths`, ran
+this suite against the production repository, and its cleanup closed 17 real
+PRs. Three safeguards now fail closed independently:
+
+1. **Opt-in only** (`tests/live_e2e_gate.py`): collected only with `IO_E2E=1`.
+   Implicit runs skip it; naming it without the opt-in is a usage error. Inside
+   an agent session (`ISSUE_ORCHESTRATOR_SESSION_ID` set) the opt-in never
+   applies. Agents: do not run this suite, and do not try to opt in.
+2. **Never production** (`fixtures/github_utils.get_test_repo`):
+   `E2E_TEST_REPO` is required and must not be this checkout's `origin`.
+3. **Run-scoped cleanup** (`flows.cleanup_test_prs_for_issues`): a PR is
+   closed only if it carries an e2e label and references an issue the run
+   created. Never clean up by a workflow label (`needs-code-review`,
+   `code-reviewed`, ...): real work carries those.
 
 ## Prerequisites
 
-- GitHub token configured with write access
+- `IO_E2E=1` (the `make` targets set it) and `E2E_TEST_REPO=<owner>/<test-repo>`
+- GitHub token configured with write access to the test repository
 - `claude` CLI available
 - Network access to GitHub
 
 ## Running
 
 ```bash
-pytest tests/e2e/ -v                    # Run all e2e tests
-pytest tests/e2e/ -k "test_name" -v     # Specific test
-pytest tests/ --ignore=tests/e2e/       # Skip e2e tests
+make test-e2e                                        # Run all e2e tests
+make test-e2e-one TEST=test_name                     # Specific test
+IO_E2E=1 pytest tests/e2e/test_live_orchestrator.py -v   # One file directly
 
 # Run terminal adapter e2e with subprocess backend
-E2E_TERMINAL_ADAPTER=subprocess pytest tests/e2e/test_terminal_adapter_subprocess.py -v
+IO_E2E=1 E2E_TERMINAL_ADAPTER=subprocess pytest tests/e2e/test_terminal_adapter_subprocess.py -v
 
 # Run VS Code extension e2e (requires VS Code deps installed)
-pytest tests/e2e/test_vscode_integration.py -v
+IO_E2E=1 pytest tests/e2e/test_vscode_integration.py -v
 ```
+
+All of these also need `E2E_TEST_REPO` set.
 
 ## Test Isolation
 
@@ -52,11 +73,11 @@ This ensures deterministic test runs regardless of previous state.
 - Prefer event-stream waits and targeted refreshes over full refreshes.
   Only trigger a full refresh when there is no inflight ID to target.
 
-## For Contributors (no write access)
+## Test Repository
 
-1. Fork repo or create test repo
+1. Create a dedicated test repository (or a fork you do not develop in)
 2. Set `E2E_TEST_REPO=youruser/yourrepo`
-3. Run e2e tests against your repo
+3. Run e2e tests against it
 
 ## What E2E Tests Verify
 

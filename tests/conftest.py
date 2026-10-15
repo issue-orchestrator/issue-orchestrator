@@ -71,9 +71,34 @@ from issue_orchestrator.domain.session_key import SessionKey
 from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from tests.label_application_helpers import standing_while_present
+from tests.live_e2e_gate import LiveE2EGate
 
 TEST_ADMIN_TOKEN = "test-admin-token"
 TEST_AGENT_CALLBACK_TOKEN = "test-agent-callback-token"
+
+
+# =============================================================================
+# Live E2E Gate (#9523)
+# =============================================================================
+# tests/e2e closes real GitHub PRs; it is collected only on IO_E2E=1 and never
+# in an agent session. See tests/live_e2e_gate.py.
+
+_LIVE_E2E_GATE = pytest.StashKey[LiveE2EGate]()
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config: pytest.Config) -> None:
+    gate = LiveE2EGate.from_environ(os.environ)
+    config.stash[_LIVE_E2E_GATE] = gate
+    refusal = gate.refusal(config.args, config.invocation_params.dir)
+    if refusal is not None:
+        raise pytest.UsageError(refusal)
+
+
+def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
+    if config.stash[_LIVE_E2E_GATE].ignores(collection_path):
+        return True
+    return None
 
 
 # =============================================================================

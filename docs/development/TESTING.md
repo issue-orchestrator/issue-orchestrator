@@ -119,28 +119,40 @@ def test_cmd_start(self):
 
 ## E2E Tests
 
-Live tests that create real GitHub issues:
+Live tests that create, edit and close real GitHub issues and PRs. Because of
+that, each of three safeguards fails closed on its own (#9523):
+
+- **Opt-in only.** `tests/e2e` is collected only with `IO_E2E=1`. A bare
+  `pytest`, an empty path list or `pytest tests/` skips it, and naming a path
+  inside it without the opt-in is a usage error. Inside an orchestrator agent
+  session (`ISSUE_ORCHESTRATOR_SESSION_ID` set) the opt-in never applies.
+- **Never the production repository.** `E2E_TEST_REPO` is required and must
+  not be this checkout's own `origin` repository. There is no git-remote
+  fallback.
+- **Cleanup touches only the run's own artifacts.** PRs are closed only when
+  they carry an e2e label *and* reference an issue the run created; workflow
+  labels such as `needs-code-review` never put a PR in scope.
 
 ```bash
-# Run e2e tests (requires gh auth + write access)
-pytest tests/e2e/ -v
+# Run e2e tests (make sets IO_E2E=1; requires gh auth + write access to the test repo)
+E2E_TEST_REPO=youruser/your-test-repo make test-e2e
+
+# Run one e2e file directly
+IO_E2E=1 E2E_TEST_REPO=youruser/your-test-repo pytest tests/e2e/test_live_orchestrator.py -v
 
 # Run e2e tests with subprocess terminal backend
-E2E_TERMINAL_ADAPTER=subprocess pytest tests/e2e/test_terminal_adapter_subprocess.py -v
-
-# Skip e2e tests
-pytest tests/ --ignore=tests/e2e/
+IO_E2E=1 E2E_TEST_REPO=youruser/your-test-repo E2E_TERMINAL_ADAPTER=subprocess pytest tests/e2e/test_terminal_adapter_subprocess.py -v
 ```
 
 **Prerequisites:**
-- `gh` CLI authenticated with write access
+- `gh` CLI authenticated with write access to the test repository
 - `claude` CLI available
 - Network access to GitHub
 
-**For contributors (no write access):**
-1. Fork the repo or create your own test repo
+**Test repository:**
+1. Create a dedicated test repository (or a fork you do not develop in)
 2. Set: `E2E_TEST_REPO=youruser/yourrepo`
-3. Run e2e tests against your repo
+3. Run e2e tests against it
 
 ## Native Stack CI Coverage
 

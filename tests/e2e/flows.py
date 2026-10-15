@@ -187,24 +187,6 @@ def cleanup_test_prs_for_issues(
     return len(closed_prs)
 
 
-def cleanup_test_prs(repo: str, labels: Iterable[str]) -> int:
-    """Close test PRs matching any of the provided labels."""
-    closed_prs: set[int] = set()
-    adapter = _github_adapter(repo)
-    for label in labels:
-        try:
-            prs = adapter.get_prs_with_label(label, state="open")
-        except Exception:
-            prs = []
-        for pr in prs:
-            # PRInfo has .number attribute
-            pr_num = pr.number
-            if pr_num and pr_num not in closed_prs:
-                close_pr(repo, pr_num)
-                closed_prs.add(pr_num)
-    return len(closed_prs)
-
-
 async def wait_for_any_pr_label(
     watcher: OrchestratorWatcher,
     issue_key: str,

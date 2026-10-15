@@ -320,6 +320,10 @@ PYTEST ?= .venv/bin/pytest
 PYTEST_DURATIONS ?= 10
 PYTEST_DURATIONS_MIN ?= 1.0
 PYTEST_TIMINGS ?= --durations=$(PYTEST_DURATIONS) --durations-min=$(PYTEST_DURATIONS_MIN)
+# The live e2e suite (tests/e2e) is collected only on this opt-in (#9523): it
+# creates, edits and closes real GitHub issues and PRs. Its targets also need
+# E2E_TEST_REPO naming a dedicated test repository, never this one.
+LIVE_E2E := IO_E2E=1
 
 # Per-lane verdict caching rides TIMED_RUN because it is the one
 # wrapper every gate lane — scheduler-backed and host-side alike —
@@ -726,13 +730,13 @@ endif
 #        make test-e2e NOFAST=1  (runs all tests even if some fail)
 test-e2e: sync-deps
 ifdef NOFAST
-	$(PYTEST) tests/e2e -v -s --tb=short $(PYTEST_TIMINGS)
+	$(LIVE_E2E) $(PYTEST) tests/e2e -v -s --tb=short $(PYTEST_TIMINGS)
 else
-	$(PYTEST) tests/e2e -v -s --tb=short -x $(PYTEST_TIMINGS)
+	$(LIVE_E2E) $(PYTEST) tests/e2e -v -s --tb=short -x $(PYTEST_TIMINGS)
 endif
 
 test-e2e-heavy: sync-deps
-	$(PYTEST) tests/integration tests/e2e -m heavy_e2e -v -s --tb=short -x $(PYTEST_TIMINGS)
+	$(LIVE_E2E) $(PYTEST) tests/integration tests/e2e -m heavy_e2e -v -s --tb=short -x $(PYTEST_TIMINGS)
 
 # Live tech-lead exam (#7304): real GitHub, real engine, real tech lead.
 # Writes JSON scorecards to EXAM_OUT (below; override with EXAM_OUT=<dir>).
@@ -745,7 +749,7 @@ EXAM_ENGINE_REF ?= HEAD
 # when the target does.
 EXAM_OUT ?= $(shell git rev-parse --path-format=absolute --git-common-dir)/io-tech-lead-exam
 test-tech-lead-exam: sync-deps
-	E2E_TECH_LEAD_EXAM=1 E2E_EXAM_OUT=$(EXAM_OUT) E2E_EXAM_ENGINE_REF=$(EXAM_ENGINE_REF) $(if $(EXAM_BASE_REF),E2E_EXAM_BASE_REF=$(EXAM_BASE_REF),) $(PYTEST) tests/e2e/test_tech_lead_exam.py -m tech_lead_exam -v -s --tb=short $(if $(EXAM_CASE),-k "case-$(EXAM_CASE)-",) $(PYTEST_TIMINGS)
+	E2E_TECH_LEAD_EXAM=1 E2E_EXAM_OUT=$(EXAM_OUT) E2E_EXAM_ENGINE_REF=$(EXAM_ENGINE_REF) $(if $(EXAM_BASE_REF),E2E_EXAM_BASE_REF=$(EXAM_BASE_REF),) $(LIVE_E2E) $(PYTEST) tests/e2e/test_tech_lead_exam.py -m tech_lead_exam -v -s --tb=short $(if $(EXAM_CASE),-k "case-$(EXAM_CASE)-",) $(PYTEST_TIMINGS)
 
 # Live improver exam (#7490 step 4): the real improver model on each planted
 # improver-data fixture (case IM1, blocked items the tech lead ignored; IM2,
@@ -798,7 +802,7 @@ tech-lead-improver: sync-deps
 		--agent-timeout-minutes $(IMPROVER_AGENT_TIMEOUT_MINUTES)
 
 test-e2e-onboarding-live: sync-deps
-	E2E_AGENT_GUIDED_ONBOARDING=1 $(PYTEST) tests/e2e/test_agent_guided_onboarding.py -v -s --tb=short -x $(PYTEST_TIMINGS)
+	E2E_AGENT_GUIDED_ONBOARDING=1 $(LIVE_E2E) $(PYTEST) tests/e2e/test_agent_guided_onboarding.py -v -s --tb=short -x $(PYTEST_TIMINGS)
 
 # Real Claude tests - layered for incremental debugging
 # test-real-claude-dev: dev agent only (faster, good for basic sanity)
@@ -808,18 +812,18 @@ test-real-claude-dev: sync-deps
 	@echo "Testing agent-done invocation from Claude..."
 	$(PYTEST) tests/integration/test_claude_execution.py::TestAgentDoneInvocation -v -s --tb=short -x $(PYTEST_TIMINGS)
 	@echo "Testing real Claude execution in tmux mode..."
-	E2E_DRY_RUN_PUSH=false $(PYTEST) tests/e2e/test_terminal_adapter.py::TestTerminalAdapterExecution -v -s --tb=short -x $(PYTEST_TIMINGS)
+	E2E_DRY_RUN_PUSH=false $(LIVE_E2E) $(PYTEST) tests/e2e/test_terminal_adapter.py::TestTerminalAdapterExecution -v -s --tb=short -x $(PYTEST_TIMINGS)
 	@echo "✓ Dev agent tests passed!"
 
 test-real-claude-review: sync-deps
 	@echo "Testing full pipeline: dev agent -> review agent..."
 	@echo "Note: This test creates REAL PRs (not dry-run)"
-	E2E_DRY_RUN_PUSH=false $(PYTEST) tests/e2e/test_review_agent.py::TestReviewAgentExecution -v -s --tb=short -x $(PYTEST_TIMINGS)
+	E2E_DRY_RUN_PUSH=false $(LIVE_E2E) $(PYTEST) tests/e2e/test_review_agent.py::TestReviewAgentExecution -v -s --tb=short -x $(PYTEST_TIMINGS)
 	@echo "✓ Review agent tests passed!"
 
 test-real-gh-labels: sync-deps
 	@echo "Testing label write verification against real GitHub..."
-	E2E_DRY_RUN_PUSH=false $(PYTEST) tests/e2e/test_label_write_verification.py::TestLabelWriteVerification -v -s --tb=short -x $(PYTEST_TIMINGS)
+	E2E_DRY_RUN_PUSH=false $(LIVE_E2E) $(PYTEST) tests/e2e/test_label_write_verification.py::TestLabelWriteVerification -v -s --tb=short -x $(PYTEST_TIMINGS)
 	@echo "✓ Label write verification passed!"
 
 test-real-gh: test-real-claude-dev test-real-claude-review test-real-gh-labels
@@ -838,9 +842,9 @@ test-real-gh-plus-e2e-subprocess:
 # E2E tests stop on first failure by default
 test-e2e-one: sync-deps
 ifdef NOFAST
-	$(PYTEST) tests/e2e -v -s --tb=short -k "$(TEST)" $(PYTEST_TIMINGS)
+	$(LIVE_E2E) $(PYTEST) tests/e2e -v -s --tb=short -k "$(TEST)" $(PYTEST_TIMINGS)
 else
-	$(PYTEST) tests/e2e -v -s --tb=short -x -k "$(TEST)" $(PYTEST_TIMINGS)
+	$(LIVE_E2E) $(PYTEST) tests/e2e -v -s --tb=short -x -k "$(TEST)" $(PYTEST_TIMINGS)
 endif
 
 # Run e2e tests with REAL PR creation on GitHub (no dry run)
@@ -851,9 +855,9 @@ test-e2e-live: sync-deps
 	@echo "   This will create actual PRs and branches on GitHub."
 	@echo ""
 ifdef TEST
-	E2E_DRY_RUN_PUSH= $(PYTEST) tests/e2e -v -s --tb=short -x -k "$(TEST)" $(PYTEST_TIMINGS)
+	E2E_DRY_RUN_PUSH= $(LIVE_E2E) $(PYTEST) tests/e2e -v -s --tb=short -x -k "$(TEST)" $(PYTEST_TIMINGS)
 else
-	E2E_DRY_RUN_PUSH= $(PYTEST) tests/e2e -v -s --tb=short -x $(PYTEST_TIMINGS)
+	E2E_DRY_RUN_PUSH= $(LIVE_E2E) $(PYTEST) tests/e2e -v -s --tb=short -x $(PYTEST_TIMINGS)
 endif
 
 test: sync-deps

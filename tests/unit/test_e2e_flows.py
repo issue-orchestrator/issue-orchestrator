@@ -82,6 +82,91 @@ def test_cleanup_test_prs_for_issues_closes_only_matching_e2e_prs(monkeypatch):
     adapter.delete_branch.assert_called_once_with("123-test-artifact")
 
 
+class _OpenPullRequests:
+    """An in-memory repository of open PRs: lists them by label, records writes."""
+
+    def __init__(self, prs: list[PRInfo]):
+        self._prs = {pr.number: pr for pr in prs}
+        self.closed: list[int] = []
+        self.deleted_branches: list[str] = []
+
+    def get_prs_with_label(self, label: str, state: str = "open") -> list[PRInfo]:
+        assert state == "open"
+        return [
+            pr for pr in self._prs.values()
+            if label in pr.labels and pr.number not in self.closed
+        ]
+
+    def get_pr(self, pr_number: int) -> PRInfo | None:
+        return self._prs.get(pr_number)
+
+    def close_pr(self, pr_number: int) -> None:
+        self.closed.append(pr_number)
+
+    def delete_branch(self, branch: str) -> None:
+        self.deleted_branches.append(branch)
+
+
+def _open_pr(number: int, branch: str, labels: list[str], body: str) -> PRInfo:
+    return PRInfo(
+        number=number,
+        title=f"PR #{number}",
+        url=f"https://example.test/pull/{number}",
+        branch=branch,
+        body=body,
+        state="open",
+        labels=labels,
+    )
+
+
+#: The labels the deleted ``TestCleanup`` swept every open PR by (#9523): one
+#: e2e marker and two production workflow labels.
+_SWEPT_LABELS = ["io-e2e-test-data", "needs-code-review", "code-reviewed"]
+
+
+def _repo_with_real_reviewed_work() -> _OpenPullRequests:
+    """The run created issue #123; everything else is real work under review."""
+    return _OpenPullRequests([
+        _open_pr(10, "123-e2e-artifact", ["io-e2e-test-data", "needs-code-review"], "Closes #123"),
+        _open_pr(9483, "9483-tech-lead-work", ["needs-code-review"], "Closes #9483"),
+        _open_pr(9501, "9501-tech-lead-work", ["code-reviewed"], "Closes #9501"),
+        # Real work that even names the run's issue number: only an e2e label
+        # may put a PR in scope, never a workflow label.
+        _open_pr(9296, "123-unrelated-work", ["code-reviewed"], "Refs #123"),
+    ])
+
+
+def test_e2e_pr_cleanup_never_closes_real_prs_carrying_review_labels(monkeypatch):
+    """#9523: cleanup by workflow label closed 17 real PRs and deleted their branches."""
+    github = _repo_with_real_reviewed_work()
+    monkeypatch.setattr(flows, "_github_adapter", lambda repo: github)
+
+    closed = flows.cleanup_test_prs_for_issues("owner/repo", [123], _SWEPT_LABELS)
+
+    assert github.closed == [10]
+    assert github.deleted_branches == ["123-e2e-artifact"]
+    assert closed == 1
+
+
+def test_flow_cleanup_never_closes_real_prs_carrying_review_labels(monkeypatch):
+    github = _repo_with_real_reviewed_work()
+    monkeypatch.setattr(flows, "_github_adapter", lambda repo: github)
+
+    def fake_create(repo, title, labels, body=None, on_created=None, ensure_labels=True):
+        return Mock(stable_id=lambda: "123", scope=lambda: repo), 123
+
+    monkeypatch.setattr(flows, "inflight_create", fake_create)
+    import issue_orchestrator.testing.support.test_data as test_data
+    monkeypatch.setattr(test_data, "close_issue", lambda repo, issue_number: None)
+
+    flow = flows.E2EFlow(repo="owner/repo", watcher=None, filter_label="io-e2e-test-data")
+    flow.create_issue("Test issue", ["agent:e2e-test", "needs-code-review", "code-reviewed"])
+    flow.cleanup_created_issues()
+
+    assert github.closed == [10]
+    assert github.deleted_branches == ["123-e2e-artifact"]
+
+
 def test_flow_cleanup_closes_prs_before_issues(monkeypatch):
     calls: list[tuple[str, object]] = []
 

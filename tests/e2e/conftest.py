@@ -56,10 +56,8 @@ from .fixtures import (
     write_progress,
     snapshot_logs,
     # GitHub utils
-    is_gh_authenticated,
     is_github_connection_error,
-    is_claude_available,
-    is_github_reachable,
+    E2ETargetRepoError,
     get_test_repo,
     env_token_name,
     # Cleanup
@@ -110,7 +108,13 @@ def e2e_label(logical: str) -> str:
 # ---------------------------------------------------------------------------
 
 def pytest_configure(config):
-    """Configure pytest for e2e tests - fail fast by default."""
+    """Refuse an unsafe target repository, then fail fast by default."""
+    # Before any fixture touches GitHub: no E2E_TEST_REPO, or the production
+    # repository, ends the run here rather than erroring test by test (#9523).
+    try:
+        get_test_repo()
+    except E2ETargetRepoError as exc:
+        raise pytest.UsageError(str(exc)) from exc
     if any("e2e" in str(arg) for arg in config.args):
         # Only set maxfail if not explicitly passed on the command line
         explicit_maxfail = any(
@@ -173,28 +177,6 @@ def pytest_runtest_makereport(item, call):
 # ---------------------------------------------------------------------------
 
 _timing_stats: E2ETimingStats | None = None
-
-
-# ---------------------------------------------------------------------------
-# Skip Markers
-# ---------------------------------------------------------------------------
-
-pytestmark = [
-    pytest.mark.e2e,
-    pytest.mark.live,
-    pytest.mark.skipif(
-        not is_gh_authenticated(),
-        reason="GitHub CLI not authenticated"
-    ),
-    pytest.mark.skipif(
-        not is_github_reachable(get_test_repo()),
-        reason="GitHub API not reachable"
-    ),
-    pytest.mark.skipif(
-        not is_claude_available(),
-        reason="Claude CLI not available"
-    ),
-]
 
 
 # ---------------------------------------------------------------------------
