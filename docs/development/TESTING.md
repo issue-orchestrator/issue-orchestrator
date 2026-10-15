@@ -145,8 +145,9 @@ that, each of three safeguards fails closed on its own (#9523):
   `IO_E2E=1 E2E_TEST_REPO=<repo> python -m tests.e2e.reconcile
   --no-live-run-against <repo>`. A label is how the next reconciliation finds
   what carries it, so labels go last and only once complete reads prove
-  nothing open carries them; an unfinished reconciliation keeps them and
-  exits non-zero for a retry. Workflow labels such as `needs-code-review`
+  nothing still depends on them (no open issue or PR, no closed PR whose
+  branch survives); an unfinished reconciliation keeps them and exits
+  non-zero for a retry. Workflow labels such as `needs-code-review`
   never put anything in scope.
 
 ```bash
