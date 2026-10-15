@@ -19,15 +19,17 @@ PRs. Three safeguards now fail closed independently:
    `E2E_TEST_REPO` is required and must not be this checkout's `origin`.
 3. **One cleanup owner** (`fixtures/artifact_cleanup.E2EArtifactCleanup`):
    every PR close and branch delete goes through it, and it admits only what
-   a typed scope proves. `RunOwnedScope` (a run's teardown, `E2EFlow`): an
-   e2e label on the PR and an issue the run created. `StaleArtifactScope`
-   (session reconciliation): `io-e2e-test-data` and a creation time older
-   than any live run, so a concurrent run's PRs are never touched.
-   `ExamRunScope` (the exam): the run's own issues and pushed branches. A
-   branch goes only with an admitted PR, never by name. Never call the
-   adapter's `close_pr`/`delete_branch` from a test, and never clean up by a
-   workflow label (`needs-code-review`, `code-reviewed`, ...): real work
-   carries those.
+   a typed scope proves. `RunOwnedScope` (`E2EFlow`, and the session's
+   teardown over `RUN_ISSUES`): an e2e label on the PR and an issue the run
+   recorded creating. `ExamRunScope` (the exam): a branch the run recorded
+   creating (harness pushes, branches its engine clone created), or a body
+   link to an issue it owns. `IdleRepositoryScope`: only an operator's
+   explicit `python -m tests.e2e.reconcile`. A branch is never deleted by
+   name, and never while an open PR it heads or bases (read completely,
+   uncached) is outside the scope. Create issues with `create_run_issue` (or
+   an `E2EFlow`), never call the adapter's `close_pr`/`delete_branch` from a
+   test, and never clean up by a workflow label (`needs-code-review`,
+   `code-reviewed`, ...): real work carries those.
 
 ## Prerequisites
 
@@ -66,12 +68,22 @@ Before running tests, the `e2e_reconciliation_at_session_start` fixture cleans u
 
 1. Local worktrees in `/tmp/e2e-worktrees/`
 2. Stale tmux sessions
-3. PRs carrying `io-e2e-test-data` older than any live run
-   (`MAX_LIVE_RUN_AGE`), and their branches; younger ones belong to a run
-   that may still be going, whose own teardown removes them
+3. Open PRs carrying `io-e2e-test-data` are only *reported*: nothing a run
+   can observe proves the run that made them has ended (a long suite, a
+   delayed dependency or a stuck process outlives any fixed age), so they
+   are never closed automatically
 4. Issues with `io-e2e-test-data` label
 
-This ensures deterministic test runs regardless of previous state.
+After the session, the PRs of every issue this run recorded creating
+(`RUN_ISSUES`) are closed and their branches deleted.
+
+To remove other runs' leftover PRs, first make sure no run is live against
+the test repository, then say so explicitly:
+
+```bash
+IO_E2E=1 E2E_TEST_REPO=owner/test-repo \
+    python -m tests.e2e.reconcile --no-live-run-against owner/test-repo
+```
 
 ## Key Files
 

@@ -133,12 +133,15 @@ that, each of three safeguards fails closed on its own (#9523):
   fallback.
 - **Cleanup removes only what a scope proves is an e2e artifact.** Every PR
   close and branch delete goes through one owner
-  (`tests/e2e/fixtures/artifact_cleanup.py`). A run's teardown closes a PR
-  only when it carries an e2e label *and* belongs to an issue the run
-  created; session reconciliation closes only PRs carrying
-  `io-e2e-test-data` that are older than any live run, so a concurrent run's
-  PRs are left alone. Branches go only with an admitted PR, never by name, and
-  workflow labels such as `needs-code-review` never put a PR in scope.
+  (`tests/e2e/fixtures/artifact_cleanup.py`). A run closes a PR only when it
+  carries an e2e label *and* belongs to an issue the run recorded creating.
+  No run can prove another has ended, so other runs' open e2e PRs are only
+  reported; an operator who knows no run is live removes them explicitly:
+  `IO_E2E=1 E2E_TEST_REPO=<repo> python -m tests.e2e.reconcile
+  --no-live-run-against <repo>`. A branch is deleted only as an admitted PR's
+  head or as one the run recorded creating, never by name, and only when every
+  open PR it heads or is the base of (read completely, uncached) is admitted
+  too. Workflow labels such as `needs-code-review` never put a PR in scope.
 
 ```bash
 # Run e2e tests (make sets IO_E2E=1; requires gh auth + write access to the test repo)
