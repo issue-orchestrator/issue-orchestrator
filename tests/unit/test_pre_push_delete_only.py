@@ -118,8 +118,8 @@ def test_anything_but_delete_only_runs_the_gate(tmp_path: Path, ref_lines: str) 
 
 
 def _git(cwd: Path, *args: str, env: dict[str, str] | None = None) -> str:
-    # Every remote here is a throwaway bare repo under tmp_path, so pushes
-    # carry the fixture authorization the agent-session git wrapper requires.
+    # Pushes go to a bare remote under tmp_path; inside an orchestrator session
+    # the agent's PATH git wrapper refuses them without the fixture authorization.
     result = subprocess.run(
         ["git", *args],
         cwd=cwd,

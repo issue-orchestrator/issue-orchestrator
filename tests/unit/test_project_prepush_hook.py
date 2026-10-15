@@ -234,8 +234,8 @@ def test_embeds_the_shared_pre_push_ref_functions_verbatim() -> None:
 
 
 def _git(cwd: Path, *args: str) -> str:
-    # The remote is a throwaway bare repo under tmp_path, so pushes carry the
-    # fixture authorization the agent-session git wrapper requires.
+    # Pushes go to a bare remote under tmp_path; inside an orchestrator session
+    # the agent's PATH git wrapper refuses them without the fixture authorization.
     result = subprocess.run(
         ["git", *args],
         cwd=cwd,
