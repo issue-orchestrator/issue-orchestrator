@@ -10,7 +10,6 @@ from issue_orchestrator.domain.issue_key import IssueKey, GitHubIssueKey, parse_
 from issue_orchestrator.testing.support.test_data import (
     create_issue,
     update_issue,
-    close_issue,
 )
 from .artifact_cleanup import RUN_ISSUES
 from .inflight_tracker import trigger_refresh
@@ -110,31 +109,4 @@ def inflight_update(
                 "Pass issue_number explicitly for issues with non-numeric stable_ids."
             )
     update_issue(issue.scope(), issue_number, add_labels, remove_labels)
-    trigger_refresh(port)
-
-
-def inflight_close(
-    issue: IssueKey,
-    comment: str | None = None,
-    port: int | None = None,
-    issue_number: int | None = None,
-) -> None:
-    """Close an issue while orchestrator is running.
-
-    Args:
-        issue: The issue to close
-        comment: Optional comment when closing
-        port: Control API port for refresh (defaults to Config.control_api_port)
-        issue_number: GitHub issue number (required if stable_id is not numeric)
-    """
-    if issue_number is None:
-        # Try parsing stable_id - works for test_issue_factory keys where stable_id is the issue number
-        try:
-            issue_number = int(issue.stable_id())
-        except ValueError:
-            raise ValueError(
-                f"Cannot derive issue_number from stable_id '{issue.stable_id()}'. "
-                "Pass issue_number explicitly for issues with non-numeric stable_ids."
-            )
-    close_issue(issue.scope(), issue_number, comment)
     trigger_refresh(port)

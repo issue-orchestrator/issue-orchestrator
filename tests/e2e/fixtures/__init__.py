@@ -30,7 +30,6 @@ from .assertions import (
 from .data_factory import (
     inflight_create,
     inflight_update,
-    inflight_close,
 )
 from .timing import (
     Phase,
@@ -66,12 +65,12 @@ from .cleanup import (
     cleanup_local_worktrees,
     run_cleanup_step,
     verify_cleanup_items,
-    report_leftover_prs,
+    report_leftovers,
     cleanup_run_prs,
+    close_run_issues,
+    close_run_issue,
     ensure_pr_label,
     ensure_required_pr_labels,
-    cleanup_e2e_labels,
-    cleanup_issues,
 )
 from .gh_audit import (
     fetch_gh_audit_report,
@@ -119,7 +118,6 @@ __all__ = [
     # data_factory
     "inflight_create",
     "inflight_update",
-    "inflight_close",
     # timing
     "Phase",
     "TestTiming",
@@ -151,12 +149,12 @@ __all__ = [
     "cleanup_local_worktrees",
     "run_cleanup_step",
     "verify_cleanup_items",
-    "report_leftover_prs",
+    "report_leftovers",
     "cleanup_run_prs",
+    "close_run_issues",
+    "close_run_issue",
     "ensure_pr_label",
     "ensure_required_pr_labels",
-    "cleanup_e2e_labels",
-    "cleanup_issues",
     # gh_audit
     "fetch_gh_audit_report",
     "usage_units_from_report",

@@ -181,55 +181,33 @@ def test_cleanup_that_succeeds_raises_nothing() -> None:
     assert ran == ["a", "b"]
 
 
-def _exam_pr(number: int, *, branch: str, state: str, body: str = ""):
-    from issue_orchestrator.ports.pull_request_tracker import PRInfo
+def _exam_repository(*prs, heads=None):
+    """The run's test repository (``tests/unit/e2e_github_fake``), plus the
+    PR creation seeding uses."""
+    from tests.unit.e2e_github_fake import FakeE2EGitHub
 
-    return PRInfo(
-        number=number, title=f"PR {number}", url="", branch=branch, body=body,
-        state=state, labels=[],
-    )
+    class _Repository(FakeE2EGitHub):
+        fail_create = False
 
+        def create_pr(self, **_kwargs):
+            if self.fail_create:
+                raise RuntimeError("create_pr failed")
+            raise AssertionError("not reached in these tests")
 
-class _FakeAdapter:
-    """The slice of GitHubAdapter seeding and branch cleanup use."""
-
-    def __init__(self, *, fail_create: bool = False) -> None:
-        self.fail_create = fail_create
-        self.branches: set[str] = set()
-        self.closed: list[int] = []
-        self.deleted: list[str] = []
-        self.prs: dict[str, list] = {}
-
-    def create_pr(self, **_kwargs):
-        if self.fail_create:
-            raise RuntimeError("create_pr failed")
-        raise AssertionError("not reached in these tests")
-
-    def get_open_prs_for_branch_complete(self, branch: str):
-        return [pr for pr in self.prs.get(branch, []) if pr.state == "open"]
-
-    def list_open_prs_complete(self):
-        return [pr for prs in self.prs.values() for pr in prs if pr.state == "open"]
-
-    def close_pr(self, number: int) -> None:
-        self.closed.append(number)
-
-    def branch_exists(self, branch: str) -> bool:
-        return branch in self.branches
-
-    def delete_branch(self, branch: str) -> None:
-        self.deleted.append(branch)
-        self.branches.discard(branch)
+    return _Repository(prs, heads=heads or {})
 
 
-def test_a_seed_branch_is_registered_before_its_pr_can_fail(monkeypatch, tmp_path, live_e2e_run) -> None:
-    """Round 1 F6: push lands, create_pr fails — cleanup must still own the branch."""
+def _ledger(github):
+    """The run's branch ledger, reading ``github``'s heads; built now, as the
+    run's is before anything is pushed."""
+    from tests.e2e.exam.run_branches import RunBranches
+
+    return RunBranches(lambda: dict(github.heads))
+
+
+def _seed(monkeypatch, tmp_path, github, *, push_fails: bool = False):
+    """Seed PR for #7 with git faked: a push that lands moves the remote head."""
     from tests.e2e.exam import seeding
-
-    live_e2e_run("o/r")
-
-    adapter = _FakeAdapter(fail_create=True)
-    pushed: list[str] = []
 
     remotes: list[str] = []
 
@@ -237,44 +215,82 @@ def test_a_seed_branch_is_registered_before_its_pr_can_fail(monkeypatch, tmp_pat
         if argv[0] in ("fetch", "push"):
             remotes.extend(arg for arg in argv if arg.startswith(("https://", "origin")))
         if argv[0] == "push":
-            branch = argv[-1].split("refs/heads/")[1]
-            pushed.append(branch)
-            adapter.branches.add(branch)
-        return "0" * 40 if argv[0] != "var" else "Exam <e@x> 1 +0000"
+            if push_fails:
+                raise RuntimeError("git push failed: non-fast-forward")
+            commit, _, ref = argv[-1].partition(":")
+            github.heads[ref.removeprefix("refs/heads/")] = commit
+        return "c" * 40 if argv[0] != "var" else "Exam <e@x> 1 +0000"
 
     monkeypatch.setattr(seeding, "_git", fake_git)
-    monkeypatch.setattr(seeding, "_github_adapter", lambda _repo: adapter)
-    registered: list[str] = []
+    monkeypatch.setattr(seeding, "_github_adapter", lambda _repo: github)
+    ledger = _ledger(github)
+    return seeding, ledger, remotes
+
+
+def test_a_seed_branch_is_recorded_even_when_its_pr_fails(monkeypatch, tmp_path, live_e2e_run) -> None:
+    """Round 1 F6: push lands, create_pr fails — cleanup must still own the
+    branch; the ledger records it because the remote holds the run's commit."""
+    from tests.e2e.exam import cleanup
+    from tests.e2e.fixtures.artifact_cleanup import RemoteBranchReceipt
+
+    live_e2e_run("o/r")
+    github = _exam_repository()
+    github.fail_create = True
+    seeding, ledger, remotes = _seed(monkeypatch, tmp_path, github)
 
     with pytest.raises(RuntimeError, match="create_pr failed"):
         seeding.seed_pull_request(
             repo="o/r", repo_root=tmp_path, issue_number=7, slug="exam", labels=[], draft=True,
-            register_branch=registered.append,
+            record_branch=ledger.record,
         )
 
-    assert registered == pushed == ["7-exam"]
+    assert ledger.receipts() == {RemoteBranchReceipt("7-exam", "c" * 40)}
     # Round 9 F1: fetch and push address the RUN's repository, never an origin.
     assert remotes == ["https://github.com/o/r.git", "https://github.com/o/r.git"]
+    monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: github)
+    cleanup.delete_run_branches("o/r", ledger.receipts())
+    assert github.writes == ([], ["7-exam"])
+
+
+def test_a_failed_push_onto_an_existing_branch_is_never_recorded_or_deleted(
+    monkeypatch, tmp_path, live_e2e_run
+) -> None:
+    """#9523 review F2: ``7-exam`` was on the remote before the run; the run's
+    push of the same name fails. Nothing is recorded, nothing is written."""
     from tests.e2e.exam import cleanup
 
-    monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: adapter)
-    cleanup.delete_registered_branches("o/r", registered)
-    assert adapter.deleted == ["7-exam"] and adapter.closed == []
+    live_e2e_run("o/r")
+    github = _exam_repository(heads={"7-exam": "f" * 40})
+    seeding, ledger, _ = _seed(monkeypatch, tmp_path, github, push_fails=True)
+
+    with pytest.raises(RuntimeError, match="non-fast-forward"):
+        seeding.seed_pull_request(
+            repo="o/r", repo_root=tmp_path, issue_number=7, slug="exam", labels=[], draft=True,
+            record_branch=ledger.record,
+        )
+
+    assert ledger.receipts() == frozenset()
+    monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: github)
+    cleanup.delete_run_branches("o/r", ledger.receipts())
+    assert github.all_writes["deleted_branches"] == [] and github.closed == []
+    assert github.heads == {"7-exam": "f" * 40}
 
 
 def test_branch_cleanup_closes_the_open_pr_then_deletes_the_branch(monkeypatch, live_e2e_run) -> None:
     from tests.e2e.exam import cleanup
+    from tests.e2e.fixtures.artifact_cleanup import RemoteBranchReceipt
+    from tests.unit.e2e_github_fake import pull_request, sha_of
 
     live_e2e_run("o/r")
-    adapter = _FakeAdapter()
-    adapter.branches = {"8-exam"}
-    adapter.prs = {"8-exam": [_exam_pr(80, branch="8-exam", state="open")]}
-    monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: adapter)
+    github = _exam_repository(pull_request(80, "8-exam", [], body="seeded"))
+    monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: github)
 
-    cleanup.delete_registered_branches("o/r", ["8-exam", "9-gone"])
+    cleanup.delete_run_branches(
+        "o/r",
+        [RemoteBranchReceipt("8-exam", sha_of("8-exam")), RemoteBranchReceipt("9-gone", "9" * 40)],
+    )
 
-    assert adapter.closed == [80]
-    assert adapter.deleted == ["8-exam"]
+    assert github.writes == ([80], ["8-exam"])
 
 
 @pytest.mark.parametrize("failing_step", ["clone", "fetch"])
@@ -322,10 +338,10 @@ def test_a_built_checkout_removes_cleanly_without_touching_the_harness_venv(monk
     checkout = engine_checkout.EngineCheckout.create(harness_root=harness, ref="HEAD", identity=RunIdentity.new("B"), repo="o/r", parent=parent)
 
     assert (checkout.root / ".venv").is_symlink()
-    registered: list[str] = []
-    checkout.remove(register_branch=registered.append)
+    offered: list[dict[str, str]] = []
+    checkout.remove(record_branches=offered.append)
     assert list(parent.iterdir()) == []
-    assert registered == []
+    assert offered == [{}]
     assert (harness / ".venv" / "bin").is_dir()
 
 
@@ -396,39 +412,13 @@ def test_two_runs_of_one_case_in_the_same_second_never_share_an_identity(monkeyp
     assert first.label.startswith("io:e2e:exam-a-")  # the prefix real engines exclude
 
 
-class _StrictFake(_FakeAdapter):
-    """Branch deletion that can silently fail, and a PR the exam can close."""
+def _recovery_pr_repository(*, state: str = "open", delete_works: bool):
+    """Recovery PR #70 on ``7-exam``: no e2e labels, its body links the run's #7."""
+    from tests.unit.e2e_github_fake import pull_request
 
-    def __init__(self, *, delete_works: bool) -> None:
-        super().__init__()
-        self.delete_works = delete_works
-        self.pr_state = {70: "open"}
-        self.issues: list = []
-
-    def delete_branch(self, branch: str) -> None:
-        self.deleted.append(branch)
-        if self.delete_works:
-            self.branches.discard(branch)
-
-    def get_pr(self, number: int):
-        # A recovery PR: no e2e labels, its body links the run's issue #7.
-        return _exam_pr(number, branch="7-exam", state=self.pr_state[number], body="Closes #7")
-
-    def get_open_prs_for_branch_complete(self, branch: str):
-        return [
-            self.get_pr(number) for number, state in self.pr_state.items()
-            if branch == "7-exam" and state == "open"
-        ]
-
-    def list_open_prs_complete(self):
-        return [self.get_pr(number) for number, state in self.pr_state.items() if state == "open"]
-
-    def close_pr(self, number: int) -> None:
-        self.closed.append(number)
-        self.pr_state[number] = "closed"
-
-    def list_issues(self, labels, state):
-        return self.issues
+    github = _exam_repository(pull_request(70, "7-exam", [], body="Closes #7", state=state))
+    github.delete_works = delete_works
+    return github
 
 
 def test_a_pr_whose_branch_survives_deletion_fails_cleanup(monkeypatch, live_e2e_run) -> None:
@@ -437,13 +427,12 @@ def test_a_pr_whose_branch_survives_deletion_fails_cleanup(monkeypatch, live_e2e
     from tests.e2e.fixtures.artifact_cleanup import ExamRunScope
 
     live_e2e_run("o/r")
-    adapter = _StrictFake(delete_works=False)
-    adapter.branches = {"7-exam"}
-    monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: adapter)
+    github = _recovery_pr_repository(delete_works=False)
+    monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: github)
 
     with pytest.raises(cleanup.ExamCleanupError, match="branch 7-exam still exists"):
         cleanup.remove_pr("o/r", ExamRunScope(issue_numbers=frozenset({7})), 70)
-    assert adapter.closed == [70] and adapter.deleted == ["7-exam"]
+    assert github.writes == ([70], ["7-exam"])
 
 
 def test_teardown_removes_a_recovery_pr_strictly_and_reports_the_failure(monkeypatch, live_e2e_run) -> None:
@@ -456,9 +445,8 @@ def test_teardown_removes_a_recovery_pr_strictly_and_reports_the_failure(monkeyp
     from tests.e2e.exam.cleanup_steps import run_all_steps
 
     live_e2e_run("o/r")
-    adapter = _StrictFake(delete_works=False)
-    adapter.branches = {"7-exam"}
-    monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: adapter)
+    github = _recovery_pr_repository(delete_works=False)
+    monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: github)
     def linked(_repo, number, state):
         assert state == "all", "teardown must see closed PRs too (their branches can survive)"
         return [SimpleNamespace(number=70)] if number == 7 else []
@@ -534,10 +522,8 @@ def test_a_closed_pr_whose_branch_survived_is_cleaned_up(monkeypatch, live_e2e_r
     from tests.e2e.exam import cleanup
 
     live_e2e_run("o/r")
-    adapter = _StrictFake(delete_works=True)
-    adapter.pr_state = {70: "closed"}
-    adapter.branches = {"7-exam"}
-    monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: adapter)
+    github = _recovery_pr_repository(state="closed", delete_works=True)
+    monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: github)
     monkeypatch.setattr(
         cleanup, "linked_pull_requests",
         lambda _repo, number, state: [SimpleNamespace(number=70)] if (number, state) == (7, "all") else [],
@@ -545,7 +531,7 @@ def test_a_closed_pr_whose_branch_survived_is_cleaned_up(monkeypatch, live_e2e_r
 
     cleanup.teardown_run("o/r", "io:e2e:exam-a-x", [7], [])
 
-    assert adapter.closed == [] and adapter.deleted == ["7-exam"] and adapter.branches == set()
+    assert github.writes == ([], ["7-exam"]) and github.heads == {}
 
 
 
@@ -571,7 +557,7 @@ def test_the_engine_clone_pushes_to_the_runs_repository(monkeypatch, tmp_path) -
 
     assert ("remote", "set-url", "origin", "https://github.com/me/fork.git") in calls
     assert not any(argv[:2] == ("remote", "get-url") for argv in calls)
-    checkout.remove(register_branch=lambda branch: None)
+    checkout.remove(record_branches=lambda branches: None)
 
 
 @pytest.mark.parametrize("bad", ["", "owner", "owner/", "/name", "a/b/c"])
@@ -602,40 +588,59 @@ def test_only_this_runs_log_tailers_are_selected(tmp_path) -> None:
 
 
 
-def test_an_engine_branch_with_no_pr_is_removed_as_the_clone_recorded_it(monkeypatch, live_e2e_run) -> None:
+def test_an_engine_branch_with_no_pr_is_removed_through_its_receipt(monkeypatch, live_e2e_run) -> None:
     """Round 14 F2: the engine pushed 7-exam-work and PR creation failed, so no
-    PR links it. The clone recorded creating it (#9523 review F2), so it goes."""
+    PR links it. The clone offered its tip, the remote holds exactly that, and
+    the branch was not there before the run: it goes (#9523 review F2)."""
     from tests.e2e.exam import cleanup
 
     live_e2e_run("o/r")
-    adapter = _StrictFake(delete_works=True)
-    adapter.branches = {"7-exam-work"}
-    monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: adapter)
+    github = _exam_repository()
+    ledger = _ledger(github)
+    github.heads["7-exam-work"] = "e" * 40  # the engine's push landed
 
-    cleanup.delete_registered_branches("o/r", ["7-exam-work"])
+    assert ledger.record_all({"7-exam-work": "e" * 40}) == ["7-exam-work"]
+    monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: github)
+    cleanup.delete_run_branches("o/r", ledger.receipts())
 
-    assert adapter.deleted == ["7-exam-work"] and adapter.branches == set()
+    assert github.writes == ([], ["7-exam-work"])
+
+
+def test_a_received_branch_whose_head_was_replaced_is_retained(monkeypatch, live_e2e_run) -> None:
+    """#9523 review F2: recorded at the run's commit, then someone replaced the
+    remote head; it is no longer provably the run's, so nothing is written."""
+    from tests.e2e.exam import cleanup
+
+    live_e2e_run("o/r")
+    github = _exam_repository()
+    ledger = _ledger(github)
+    github.heads["7-exam-work"] = "e" * 40
+    ledger.record_all({"7-exam-work": "e" * 40})
+    github.heads["7-exam-work"] = "d" * 40
+    monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: github)
+
+    cleanup.delete_run_branches("o/r", ledger.receipts())
+
+    assert github.writes == ([], [])
+    assert github.heads == {"7-exam-work": "d" * 40}
 
 
 def test_teardown_never_touches_a_branch_only_named_after_an_owned_issue(monkeypatch, live_e2e_run) -> None:
     """#9523 review F2: owned issue #7, and an unregistered ``7-unrelated``
     branch with a PR that only its name links to #7: nothing is closed or deleted."""
     from tests.e2e.exam import cleanup
-    from tests.unit.e2e_github_fake import FakeE2EGitHub, pull_request
-
-    class _Repository(FakeE2EGitHub):
-        def list_issues(self, labels, state):
-            return []
+    from tests.e2e.fixtures.artifact_cleanup import RemoteBranchReceipt
+    from tests.unit.e2e_github_fake import pull_request
 
     live_e2e_run("o/r")
-    github = _Repository([pull_request(72, "7-unrelated", [], body="human work")])
+    github = _exam_repository(pull_request(72, "7-unrelated", [], body="human work"))
     monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: github)
     monkeypatch.setattr(
         cleanup, "linked_pull_requests",
         lambda _repo, number, state: [github.get_pr(72)] if number == 7 else [],
     )
 
-    cleanup.teardown_run("o/r", "io:e2e:exam-a-x", [7], ["7-exam-work"])
+    cleanup.teardown_run("o/r", "io:e2e:exam-a-x", [7], [RemoteBranchReceipt("7-exam-work", "e" * 40)])
     with pytest.raises(cleanup.CleanupRefusedError):
         cleanup.remove_branch("o/r", cleanup.ExamRunScope(frozenset({7})), "7-unrelated")
 
@@ -643,9 +648,9 @@ def test_teardown_never_touches_a_branch_only_named_after_an_owned_issue(monkeyp
     assert github.branch_exists("7-unrelated")
 
 
-def test_the_engine_clone_registers_the_branches_its_engine_created(tmp_path) -> None:
-    """Recorded at creation, in the run's own clone, and read before it is
-    removed: the only branches teardown deletes without a PR (#9523 review F2)."""
+def test_the_engine_clone_offers_the_branches_its_engine_created_with_their_tips(tmp_path) -> None:
+    """Read from the run's own clone before it is removed; the ledger then
+    keeps only what the remote proves (#9523 review F2)."""
     from tests.e2e.exam.engine_checkout import EngineCheckout
 
     root = tmp_path / "clone"
@@ -664,26 +669,28 @@ def test_the_engine_clone_registers_the_branches_its_engine_created(tmp_path) ->
     checkout = EngineCheckout(
         root=root, commit=commit, baseline_branches=frozenset({"main", "9523-harness-branch"})
     )
-    git("branch", "7-engine-work")
-    registered: list[str] = []
+    git("checkout", "--quiet", "-b", "7-engine-work")
+    git("commit", "--quiet", "--allow-empty", "-m", "engine work")
+    tip = git("rev-parse", "HEAD")
+    offered: list[dict[str, str]] = []
 
-    checkout.remove(register_branch=registered.append)
+    checkout.remove(record_branches=offered.append)
 
-    assert registered == ["7-engine-work"]
+    assert offered == [{"7-engine-work": tip}]
     assert not root.exists()
 
 
-def test_a_checkout_without_a_baseline_registers_no_branch(tmp_path) -> None:
+def test_a_checkout_without_a_baseline_offers_no_branch(tmp_path) -> None:
     from tests.e2e.exam.engine_checkout import EngineCheckout
 
     root = tmp_path / "clone"
     root.mkdir()
     subprocess.run(["git", "init", "--quiet"], cwd=root, check=True)
-    registered: list[str] = []
+    offered: list[dict[str, str]] = []
 
-    EngineCheckout(root=root, commit="0" * 40).remove(register_branch=registered.append)
+    EngineCheckout(root=root, commit="0" * 40).remove(record_branches=offered.append)
 
-    assert registered == []
+    assert offered == [{}]
 
 
 # ---------------------------------------------------------------------------
@@ -799,13 +806,13 @@ def test_removing_the_engine_checkout_removes_the_worktrees_it_created(tmp_path:
         check=True,
     )
     (agent_worktree / "uncommitted.txt").write_text("agent work in progress", encoding="utf-8")
-    registered: list[str] = []
+    offered: list[dict[str, str]] = []
 
     EngineCheckout(root=engine_root, commit=base, baseline_branches=baseline).remove(
-        register_branch=registered.append
+        record_branches=offered.append
     )
 
-    assert registered == ["911-exam"]  # the agent's branch, recorded before the clone went
+    assert offered == [{"911-exam": base}]  # the agent's branch, offered before the clone went
     assert not engine_root.exists()
     assert not agent_worktree.exists()
     assert (harness / ".git").is_dir()  # the harness repository is untouched

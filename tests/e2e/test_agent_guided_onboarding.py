@@ -21,7 +21,7 @@ from issue_orchestrator.infra.api_token import (
     read_existing_admin_token,
     read_existing_agent_callback_token,
 )
-from issue_orchestrator.testing.support.test_data import _ensure_label, close_issue
+from issue_orchestrator.testing.support.test_data import _ensure_label
 from tests.e2e.conftest import e2e_label, env_token_name, find_free_port
 from tests.e2e.fixtures.orchestrator_process import OrchestratorProcess
 from tests.e2e.flows import E2EFlow, start_orchestrator_runtime
@@ -603,7 +603,5 @@ async def test_live_agent_guided_existing_repo_onboarding_launches_first_issue(
     finally:
         if flow is not None:
             flow.cleanup_created_issues()
-        elif issue_number is not None:
-            close_issue(repo_name, issue_number, "Live onboarding acceptance cleanup")
         if runtime is not None:
             await runtime.close()

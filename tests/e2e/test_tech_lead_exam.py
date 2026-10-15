@@ -46,11 +46,11 @@ from issue_orchestrator.testing.exam.cases import (
     STALE_CLAIM_PAUSED_FOR_RECONCILE,
     UPGRADE_WITH_WORK_IN_FLIGHT,
 )
-from issue_orchestrator.testing.support.test_data import cleanup_issues_by_label
 
 from tests.e2e.exam.cleanup_steps import run_all_steps
 from tests.e2e.exam.recording import run_recorded
-from tests.e2e.exam.cleanup import delete_registered_branches, teardown_run
+from tests.e2e.exam.cleanup import close_run_issues, delete_run_branches, teardown_run
+from tests.e2e.exam.run_branches import RunBranches, remote_heads
 from tests.e2e.exam.run_identity import RunIdentity
 from tests.e2e.exam.scenarios import (
     ExamResult,
@@ -103,20 +103,21 @@ def _write(result: ExamResult) -> Path:
     return json_path
 
 
-def _cleanup(repo: str, run_label: str, flows: list[E2EFlow], branches: list[str]) -> None:
+def _cleanup(repo: str, identity: RunIdentity, flows: list[E2EFlow], branches: RunBranches) -> None:
     """Close everything the run touched; see :func:`run_all_steps`."""
     created = [number for flow in flows for number in flow.created_issue_numbers]
+    receipts = branches.receipts()
     steps: list[tuple[str, Callable[[], object]]] = [
-        ("close the run's PRs", lambda: teardown_run(repo, run_label, created, branches)),
-        ("delete the run's branches", lambda: delete_registered_branches(repo, branches)),
+        ("close the run's PRs", lambda: teardown_run(repo, identity.label, created, receipts)),
+        ("delete the run's branches", lambda: delete_run_branches(repo, receipts)),
         *(
             (f"close flow issues {flow.created_issue_numbers}", flow.cleanup_created_issues)
             for flow in flows
         ),
         # Anchors and follow-ups the engine filed carry the run label.
-        ("close run-labelled issues", lambda: cleanup_issues_by_label(repo, run_label)),
+        ("close run-labelled issues", lambda: close_run_issues(repo, identity)),
     ]
-    run_all_steps(f"exam cleanup left artifacts for {run_label}", steps)
+    run_all_steps(f"exam cleanup left artifacts for {identity.label}", steps)
 
 
 @pytest.mark.e2e
@@ -165,6 +166,8 @@ async def test_tech_lead_exam(
         engine_ref=os.environ.get("E2E_EXAM_ENGINE_REF", "HEAD"),
         base_config=e2e_session_config,
         identity=identity,
+        # Read before anything is pushed: a branch already there is never the run's.
+        branches=RunBranches(lambda: remote_heads(repo_name)),
     )
     flows: list[E2EFlow] = []
 
@@ -203,7 +206,7 @@ async def test_tech_lead_exam(
     result, path = await run_recorded(
         run_case,
         record=_write,
-        cleanup=lambda: _cleanup(repo_name, run_label, flows, run.branches),
+        cleanup=lambda: _cleanup(repo_name, identity, flows, run.branches),
     )
     card = result.scorecard
     summary = render_summary(card)

@@ -21,7 +21,7 @@ from issue_orchestrator.testing.asyncdsl import (
     HTTPReplayProvider,
     WatcherConfig,
 )
-from issue_orchestrator.testing.support.test_data import close_issue, _ensure_label
+from issue_orchestrator.testing.support.test_data import _ensure_label
 from tests.e2e.conftest import (
     inflight_create,
     inflight_update,
@@ -365,16 +365,15 @@ class E2EFlow:
 
     def cleanup_created_issues(self) -> None:
         """Close PRs and issues created by this flow."""
-        from issue_orchestrator.testing.support.test_data import close_issue
         self.cleanup_created_prs()
+        if not self._created_issues:
+            return
+        cleanup = E2EArtifactCleanup.for_test_repo(self.repo)
         for issue_number in self._created_issues:
             try:
-                close_issue(self.repo, issue_number)
+                cleanup.close_issue(self.cleanup_scope, issue_number)
             except Exception as e:
-                import logging
-                logging.getLogger(__name__).warning(
-                    "Failed to close issue #%d: %s", issue_number, e
-                )
+                logger.warning("Failed to close issue #%d: %s", issue_number, e)
 
     def update_issue(
         self,
@@ -508,8 +507,10 @@ class E2EFlow:
         E2EArtifactCleanup.for_test_repo(self.repo).close_pr(self.cleanup_scope, pr_number)
 
     def close_issue(self, issue_number: int, comment: str) -> None:
-        """Close an issue by its GitHub issue number."""
-        close_issue(self.repo, issue_number, comment)
+        """Close an issue this flow created (refused for any other)."""
+        E2EArtifactCleanup.for_test_repo(self.repo).close_issue(
+            self.cleanup_scope, issue_number, comment
+        )
 
     def ensure_labels(self, labels: Iterable[str]) -> None:
         for label in labels:

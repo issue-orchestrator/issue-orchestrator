@@ -17,7 +17,6 @@ import os
 import pytest
 
 from tests.e2e.conftest import e2e_label
-from issue_orchestrator.testing.support.test_data import close_issue
 from issue_orchestrator.domain.issue_key import IssueKey
 from tests.e2e.flows import E2EFlow
 
@@ -115,7 +114,7 @@ class TestCodeReviewRuns:
                 if pr_number:
                     flow.close_pr(pr_number)
                 if issue and issue_number is not None:
-                    close_issue(repo_name, issue_number, "E2E code review test completed")
+                    flow.close_issue(issue_number, "E2E code review test completed")
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(420)
@@ -174,7 +173,7 @@ class TestCodeReviewRuns:
                 if pr_number:
                     flow.close_pr(pr_number)
                 if issue and issue_number is not None:
-                    close_issue(repo_name, issue_number, "E2E code review test completed")
+                    flow.close_issue(issue_number, "E2E code review test completed")
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +241,7 @@ class TestReworkCyclesAndEscalation:
             if pr_number:
                 flow.close_pr(pr_number)
             if issue_number:
-                close_issue(repo_name, issue_number, "E2E rework cycle label test completed")
+                flow.close_issue(issue_number, "E2E rework cycle label test completed")
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(900)
@@ -297,7 +296,7 @@ class TestReworkCyclesAndEscalation:
             if pr_number:
                 flow.close_pr(pr_number)
             if issue_number:
-                close_issue(repo_name, issue_number, "E2E rework escalation test completed")
+                flow.close_issue(issue_number, "E2E rework escalation test completed")
 
 
 if __name__ == "__main__":

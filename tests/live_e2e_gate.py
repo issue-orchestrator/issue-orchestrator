@@ -25,8 +25,8 @@ environment says: every session inherits the engine's environment, so an
 
 This gate is one of three independent layers. The suite also refuses the
 production repository (``tests/e2e/fixtures/github_utils.get_test_repo``), and
-every PR it closes or branch it deletes goes through one owner that admits
-only what a typed scope proves is an e2e artifact it may remove
+every PR, branch, issue or label it closes or deletes goes through one owner
+that admits only what a typed scope proves is the run's own
 (``tests/e2e/fixtures/artifact_cleanup.py``).
 """
 

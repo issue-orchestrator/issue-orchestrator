@@ -91,6 +91,7 @@ from tests.e2e.exam.agents import (
     INTEGRATION_CODER_LABEL,
 )
 from tests.e2e.exam.driving import drive, settle
+from tests.e2e.exam.run_branches import RunBranches
 from tests.e2e.exam.run_identity import RunIdentity
 from tests.e2e.exam.case_engines import (
     case_a_engine,
@@ -189,12 +190,12 @@ class ExamRun:
     engine_ref: str
     base_config: Config
     identity: RunIdentity
+    branches: RunBranches
+    """The remote branches the run provably created, as receipts: the ones
+    the harness pushed, the engine's (offered when its clone is removed), and
+    the run-unique ones io creates server-side. Cleanup deletes no other
+    branch (#9523)."""
     notes: list[str] = field(default_factory=list)
-    branches: list[str] = field(default_factory=list)
-    """Branches the run created, registered so cleanup can delete them even if
-    no PR was ever created: the ones the harness pushed, the moment they
-    exist, and the ones the engine created in its clone, when the clone is
-    removed. Cleanup deletes no other branch (#9523)."""
 
     @property
     def run_label(self) -> str:
@@ -340,7 +341,7 @@ async def run_case_a(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
         finally:
             await engine.close()
     finally:
-        checkout.remove(register_branch=run.branches.append)
+        checkout.remove(record_branches=run.branches.record_all)
 
 
 # ---------------------------------------------------------------------------
@@ -382,7 +383,7 @@ async def run_case_b(
             slug="exam-b-green-pr-awaiting-review",
             labels=[labels.code_review, run.run_label, E2E_DATA_LABEL],
             draft=True,
-            register_branch=run.branches.append,
+            record_branch=run.branches.record,
         )
         checks = wait_for_checks(run.repo, seeded.number, timeout_s=15 * 60)
         if checks != "SUCCESS":
@@ -444,7 +445,7 @@ async def run_case_b(
         finally:
             await engine.close()
     finally:
-        checkout.remove(register_branch=run.branches.append)
+        checkout.remove(record_branches=run.branches.record_all)
 
 
 #: How long a released review may take to launch: the next review scan.
@@ -542,7 +543,7 @@ async def run_case_c(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
         finally:
             await engine.close()
     finally:
-        checkout.remove(register_branch=run.branches.append)
+        checkout.remove(record_branches=run.branches.record_all)
 
 
 # ---------------------------------------------------------------------------
@@ -673,7 +674,7 @@ async def run_case_h(run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_mod
         finally:
             await engine.close()
     finally:
-        checkout.remove(register_branch=run.branches.append)
+        checkout.remove(record_branches=run.branches.record_all)
 
 
 # ---------------------------------------------------------------------------
@@ -735,7 +736,7 @@ async def run_case_d(
         finally:
             await engine.close()
     finally:
-        checkout.remove(register_branch=run.branches.append)
+        checkout.remove(record_branches=run.branches.record_all)
 
 
 # ---------------------------------------------------------------------------
@@ -791,7 +792,7 @@ async def run_case_e(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
         finally:
             await engine.close()
     finally:
-        checkout.remove(register_branch=run.branches.append)
+        checkout.remove(record_branches=run.branches.record_all)
 
 
 # ---------------------------------------------------------------------------
@@ -911,7 +912,7 @@ async def run_case_resolution(
         finally:
             await engine.close()
     finally:
-        checkout.remove(register_branch=run.branches.append)
+        checkout.remove(record_branches=run.branches.record_all)
 
 
 # ---------------------------------------------------------------------------
@@ -1003,7 +1004,7 @@ async def run_case_i(run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_mod
             slug="exam-i-ruled-pr",
             labels=[labels.code_review, run.run_label, E2E_DATA_LABEL],
             draft=True,
-            register_branch=run.branches.append,
+            record_branch=run.branches.record,
         )
         engine = spec.engine(config, checkout)
         runtime = await engine.start()
@@ -1038,7 +1039,7 @@ async def run_case_i(run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_mod
         finally:
             await engine.close()
     finally:
-        checkout.remove(register_branch=run.branches.append)
+        checkout.remove(record_branches=run.branches.record_all)
         shutil.rmtree(hold_dir, ignore_errors=True)
 
 
@@ -1169,7 +1170,7 @@ async def run_case_j(run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_mod
         finally:
             await engine.close()
     finally:
-        checkout.remove(register_branch=run.branches.append)
+        checkout.remove(record_branches=run.branches.record_all)
 
 
 # ---------------------------------------------------------------------------
@@ -1316,7 +1317,7 @@ async def run_case_u(
         finally:
             await candidate.close()
     finally:
-        checkout.remove(register_branch=run.branches.append)
+        checkout.remove(record_branches=run.branches.record_all)
         shutil.rmtree(hold_dir, ignore_errors=True)
 
 
@@ -1458,7 +1459,9 @@ async def run_case_k(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
     behind the first merge: it must be updated mechanically, never reworked.
     """
     branch = integration_branch_name(run.identity.run_id)
-    run.branches.append(branch)  # deleting it also closes the delivery PR
+    # io creates it server-side; its name carries the run id, so the ledger
+    # takes it as the run's once it exists (deleting it closes the delivery PR).
+    run.branches.expect_unique(branch, run.identity.run_id)
     checkout = EngineCheckout.create(
         harness_root=run.harness_root, ref=run.engine_ref, identity=run.identity, repo=run.repo
     )
@@ -1518,4 +1521,4 @@ async def run_case_k(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
         finally:
             await engine.close()
     finally:
-        checkout.remove(register_branch=run.branches.append)
+        checkout.remove(record_branches=run.branches.record_all)

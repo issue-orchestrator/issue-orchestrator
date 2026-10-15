@@ -266,21 +266,32 @@ RECONCILE_COMMAND = (
 )
 
 
-def report_leftover_prs(repo: str) -> int:
-    """Report open e2e PRs this run did not create; never close them.
+def report_leftovers(repo: str, run_issues: RunIssues = RUN_ISSUES) -> int:
+    """Report the open e2e PRs and issues this run did not create; never touch them.
 
     Nothing this run can observe proves the run that made them has ended, so
     they are left to that run, or to the operator's explicit reconciliation
     (#9523). Returns how many there are.
     """
-    leftovers = E2EArtifactCleanup.for_test_repo(repo).open_prs_with_label(E2E_ARTIFACT_LABEL)
+    cleanup = E2EArtifactCleanup.for_test_repo(repo)
+    own = run_issues.scope()
+    prs = [
+        f"PR #{pr.number}" for pr in cleanup.open_prs_with_label(E2E_ARTIFACT_LABEL)
+        if not own.admits_pr(pr, cleanup.repo)
+    ]
+    issues = [
+        f"issue #{item.number}" for item in cleanup.open_issues_with_label(E2E_ARTIFACT_LABEL)
+        if not own.admits_issue(item, cleanup.repo)
+    ]
+    leftovers = prs + issues
     if leftovers:
         logger.warning(
-            "[E2E RECONCILIATION] %d open e2e PR(s) left by other runs: %s. One may "
-            "belong to a run still going, so this run leaves them. Once no run is "
+            "[E2E RECONCILIATION] %d open e2e artifact(s) left by other runs: %s. One "
+            "may belong to a run still going, so this run leaves them (an open e2e "
+            "issue is also work this run's orchestrator may pick up). Once no run is "
             "live against %s, remove them with: %s",
             len(leftovers),
-            ", ".join(f"#{pr.number}" for pr in leftovers),
+            ", ".join(leftovers),
             repo,
             RECONCILE_COMMAND.format(repo=repo),
         )
@@ -290,6 +301,18 @@ def report_leftover_prs(repo: str) -> int:
 def cleanup_run_prs(repo: str, run_issues: RunIssues = RUN_ISSUES) -> int:
     """Close the open e2e PRs of every issue this run recorded creating."""
     return E2EArtifactCleanup.for_test_repo(repo).sweep(run_issues.scope())
+
+
+def close_run_issues(repo: str, run_issues: RunIssues = RUN_ISSUES) -> int:
+    """Close every open issue this run recorded creating, and no other."""
+    return E2EArtifactCleanup.for_test_repo(repo).sweep_issues(
+        run_issues.scope(), comment="Closed by e2e cleanup of the run that created it."
+    )
+
+
+def close_run_issue(repo: str, issue_number: int, comment: str | None = None) -> None:
+    """Close one issue this run recorded creating (refused for any other)."""
+    E2EArtifactCleanup.for_test_repo(repo).close_issue(RUN_ISSUES.scope(), issue_number, comment)
 
 
 def ensure_pr_label(repo: str, label: str) -> None:
@@ -318,69 +341,17 @@ def ensure_required_pr_labels(repo: str) -> None:
         ensure_pr_label(repo, label)
 
 
-def cleanup_e2e_labels(repo: str, prefixes: tuple[str, ...]) -> int:
-    """Delete e2e test labels that accumulate over time."""
-    adapter = _github_adapter(repo)
-    deleted = 0
-    try:
-        all_labels = adapter.list_all_labels()
-        for label_data in all_labels:
-            name = label_data.get("name", "")
-            if any(name.startswith(prefix) for prefix in prefixes):
-                try:
-                    # noqa: SLF001 - E2E test infrastructure needs direct label cleanup
-                    adapter._client.delete_label(name)  # noqa: SLF001
-                    deleted += 1
-                    logger.debug("[E2E CLEANUP] Deleted label: %s", name)
-                except Exception:
-                    pass
-    except Exception as e:
-        logger.warning("[E2E CLEANUP] Failed listing labels: %s", e)
-    if deleted > 0:
-        logger.info("[E2E CLEANUP] Deleted %d e2e test labels", deleted)
-    return deleted
-
-
-def cleanup_issues(repo: str) -> int:
-    """Close test issues with io-e2e-test-data label."""
-    adapter = _github_adapter(repo)
-    try:
-        issues = adapter.list_issues(labels=[DEFAULT_E2E_FILTER_LABEL], state="open", limit=100)
-    except Exception:
-        return 0
-    closed_issues: list[int] = []
-    for issue in issues:
-        logger.info("[E2E CLEANUP] Closing issue #%d: %s", issue.number, issue.title)
-        try:
-            adapter.update_issue_state(issue.number, "closed")
-            closed_issues.append(issue.number)
-        except Exception:
-            logger.warning("[E2E CLEANUP] Timeout closing issue #%d", issue.number)
-
-    def _issue_closed(issue_number: int) -> bool:
-        try:
-            issue = adapter.get_issue(issue_number)
-            if not issue:
-                return True
-            return issue.state.upper() == "CLOSED"
-        except Exception:
-            return True
-
-    verify_cleanup_items("Issue cleanup", closed_issues, _issue_closed, retries=1, retry_delay_s=3.0)
-    return len(issues)
-
-
 __all__ = [
     "DEFAULT_E2E_FILTER_LABEL",
     "cleanup_local_worktrees",
     "run_cleanup_step",
     "verify_cleanup_items",
-    "report_leftover_prs",
+    "report_leftovers",
     "cleanup_run_prs",
+    "close_run_issues",
+    "close_run_issue",
     "ensure_pr_label",
     "ensure_required_pr_labels",
-    "cleanup_e2e_labels",
-    "cleanup_issues",
     "keep_artifacts",
     "keep_remote_artifacts",
 ]

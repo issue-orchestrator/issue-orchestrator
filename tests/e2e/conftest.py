@@ -21,15 +21,10 @@ from issue_orchestrator.testing.asyncdsl import (
     HTTPReplayProvider,
     WatcherConfig,
 )
-from issue_orchestrator.testing.support.test_data import (
-    create_test_issues,
-    cleanup_test_issues,
-    cleanup_issues_by_label,
-)
 from tests.live_e2e_gate import LiveE2EGate
 
 from ._stale_orchestrator_cleanup import kill_stale_e2e_orchestrators
-from .fixtures.artifact_cleanup import E2E_RUN_LABEL_PREFIX, E2E_TEST_LABEL_PREFIX
+from .fixtures.artifact_cleanup import E2E_TEST_LABEL_PREFIX
 from .fixtures.data_factory import create_run_issue
 
 # Import all helpers from fixture modules
@@ -51,7 +46,6 @@ from .fixtures import (
     FATAL_ERROR_PATTERNS,
     inflight_create,
     inflight_update,
-    inflight_close,
     # Timing
     E2ETimingStats,
     # Logging utils
@@ -68,11 +62,10 @@ from .fixtures import (
     cleanup_local_worktrees,
     run_cleanup_step,
     verify_cleanup_items,
-    report_leftover_prs,
+    report_leftovers,
     cleanup_run_prs,
+    close_run_issues,
     ensure_required_pr_labels,
-    cleanup_e2e_labels,
-    cleanup_issues,
     # GH Audit
     fetch_gh_audit_report,
     usage_units_from_report,
@@ -95,7 +88,6 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-E2E_LABEL_CLEANUP_PREFIXES = (E2E_RUN_LABEL_PREFIX, E2E_TEST_LABEL_PREFIX)
 
 def e2e_label(logical: str) -> str:
     """Apply the e2e label prefix to a logical test label."""
@@ -222,9 +214,9 @@ def e2e_reconciliation_at_session_start(
     Cleans up:
     - Default /tmp/e2e-worktrees directory
     - Current e2e test session's worktree directory
-    - This run's own e2e PRs/branches after the session; other runs' open e2e
-      PRs are only reported (no run can prove another has ended)
-    - E2E issues and labels before and after the session
+    - This run's own e2e PRs/branches and issues after the session; other
+      runs' open e2e PRs and issues are only reported (no run can prove
+      another has ended), and no label is deleted
     """
     repo = get_test_repo()
     logger.info("=" * 60)
@@ -240,20 +232,18 @@ def e2e_reconciliation_at_session_start(
         # Clean up this session's isolated resources
         cleanup_local_worktrees(e2e_worktree_base, repo_root=e2e_project_root)
 
+    # Other runs' PRs, issues and labels are never touched: nothing this run
+    # can observe proves their run has ended (#9523). They are reported, for
+    # the operator's explicit reconciliation (tests/e2e/reconcile.py).
     if keep_remote_artifacts():
-        logger.info("[E2E RECONCILIATION] Skipping remote cleanup (E2E_KEEP_REMOTE_ARTIFACTS=1)")
-        prs_closed = issues_closed = labels_deleted = 0
-        ensure_required_pr_labels(repo)
+        logger.info("[E2E RECONCILIATION] Skipping remote report (E2E_KEEP_REMOTE_ARTIFACTS=1)")
+        leftovers = 0
     else:
-        prs_closed = 0
-        run_cleanup_step("Leftover PR report", lambda: report_leftover_prs(repo), timeout_s=60)
-        issues_closed = run_cleanup_step("Issue cleanup", lambda: cleanup_issues(repo), timeout_s=120)
-        labels_deleted = run_cleanup_step("Label cleanup", lambda: cleanup_e2e_labels(repo, E2E_LABEL_CLEANUP_PREFIXES), timeout_s=60)
-        ensure_required_pr_labels(repo)
+        leftovers = run_cleanup_step("Leftover report", lambda: report_leftovers(repo), timeout_s=60)
+    ensure_required_pr_labels(repo)
 
     logger.info("=" * 60)
-    logger.info("[E2E RECONCILIATION] Summary: PRs=%d, Issues=%d, Labels=%d",
-                prs_closed, issues_closed, labels_deleted)
+    logger.info("[E2E RECONCILIATION] Summary: other runs' open e2e artifacts=%d", leftovers)
     logger.info("=" * 60)
     yield
 
@@ -268,24 +258,22 @@ def e2e_reconciliation_at_session_start(
 
     if keep_remote_artifacts():
         logger.info("[E2E RECONCILIATION] Skipping post-run remote cleanup (E2E_KEEP_REMOTE_ARTIFACTS=1)")
-        prs_closed = issues_closed = labels_deleted = 0
+        prs_closed = issues_closed = 0
     else:
+        # Only what this run recorded creating (RUN_ISSUES); no label is
+        # deleted automatically.
         prs_closed = run_cleanup_step(
             "Post-run PR cleanup", lambda: cleanup_run_prs(repo), timeout_s=120
         )
-        issues_closed = run_cleanup_step("Post-run issue cleanup", lambda: cleanup_issues(repo), timeout_s=120)
-        labels_deleted = run_cleanup_step(
-            "Post-run label cleanup",
-            lambda: cleanup_e2e_labels(repo, E2E_LABEL_CLEANUP_PREFIXES),
-            timeout_s=60,
+        issues_closed = run_cleanup_step(
+            "Post-run issue cleanup", lambda: close_run_issues(repo), timeout_s=120
         )
 
     logger.info("=" * 60)
     logger.info(
-        "[E2E RECONCILIATION] Post-run summary: PRs=%d, Issues=%d, Labels=%d",
+        "[E2E RECONCILIATION] Post-run summary: this run's PRs=%d, issues=%d",
         prs_closed,
         issues_closed,
-        labels_deleted,
     )
     logger.info("=" * 60)
 
@@ -469,31 +457,6 @@ def e2e_session_config(
     return config
 
 
-@pytest.fixture(scope="session")
-def e2e_issues(repo_name: str) -> Generator[dict[str, int], None, None]:
-    """Create all e2e test issues once at session start."""
-    cleanup_test_issues(repo_name)
-
-    issues = {
-        "simple_task": create_run_issue(
-            repo_name,
-            "[E2E] Simple task",
-            ["agent:e2e-test", "io-e2e-test-data"],
-            body="A simple task for basic e2e testing.",
-        ),
-        "will_block": create_run_issue(
-            repo_name,
-            "[E2E] Task that blocks",
-            ["agent:e2e-test", "io-e2e-test-data"],
-            body="This task should end up blocked.",
-        ),
-    }
-
-    print(f"\n[E2E SETUP] Created {len(issues)} test issues: {issues}")
-    yield issues
-    print(f"\n[E2E TEARDOWN] Cleaning up test issues...")
-    cleanup_test_issues(repo_name)
-
 
 @pytest.fixture(scope="session")
 def e2e_orchestrator(
@@ -665,7 +628,6 @@ def test_label(request) -> str:
 @pytest.fixture
 def test_issue_factory(repo_name: str, test_label: str, filter_label: str):
     """Factory for creating test-scoped issues."""
-    cleanup_issues_by_label(repo_name, e2e_label(test_label))
 
     def create(title: str, extra_labels: list[str] | None = None) -> IssueKey:
         labels = [filter_label, "agent:e2e-test", e2e_label(test_label)]
@@ -740,77 +702,7 @@ def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str, e2e_ui_mo
     return config
 
 
-@pytest.fixture
-def test_issues(repo_name: str) -> Generator[list[int], None, None]:
-    """Create test issues, yield issue numbers, then cleanup."""
-    cleanup_test_issues(repo_name)
-    issue_numbers = create_test_issues(repo_name, ["agent:e2e-test"])
-    yield issue_numbers
-    cleanup_test_issues(repo_name)
 
-
-@pytest.fixture
-def single_test_issue(repo_name: str) -> Generator[dict, None, None]:
-    """Create a single test issue and return its details."""
-    cleanup_test_issues(repo_name)
-    title = "[E2E-TEST] Automated test issue 0"
-    issue_number = create_run_issue(
-        repo=repo_name,
-        title=title,
-        labels=["agent:e2e-test", "io-e2e-test-data"],
-        body="This is automated test issue 0 for e2e testing.\n\nExpected: Agent completes quickly.",
-    )
-    issue_data = {
-        "number": issue_number,
-        "url": f"https://github.com/{repo_name}/issues/{issue_number}",
-        "title": title,
-    }
-    yield issue_data
-    try:
-        _github_adapter(repo_name).add_comment(issue_number, "Closed by e2e test cleanup.")
-        _github_adapter(repo_name).update_issue_state(issue_number, "closed")
-    except Exception:
-        pass
-
-
-@pytest.fixture
-def concurrent_test_run(repo_name: str, request) -> Generator[dict, None, None]:
-    """Create multiple issues with a unique label for concurrent processing."""
-    import uuid
-    count = getattr(request, "param", 3)
-
-    run_id = str(uuid.uuid4())[:8]
-    run_label = f"{E2E_RUN_LABEL_PREFIX}{run_id}"
-
-    issues = []
-    for i in range(count):
-        title = f"[E2E-TEST] Concurrent test issue {i}"
-        issue_number = create_run_issue(
-            repo=repo_name,
-            title=title,
-            labels=["agent:e2e-test", run_label],
-            body=f"Test issue {i} for concurrent e2e run {run_id}.\n\nExpected: Agent completes quickly.",
-        )
-        issues.append({
-            "number": issue_number,
-            "url": f"https://github.com/{repo_name}/issues/{issue_number}",
-            "title": title,
-        })
-        print(f"Created test issue #{issue_number} with label {run_label}")
-
-    yield {"label": run_label, "issues": issues, "run_id": run_id}
-
-    for issue in issues:
-        try:
-            _github_adapter(repo_name).add_comment(issue["number"], "Closed by e2e test cleanup.")
-            _github_adapter(repo_name).update_issue_state(issue["number"], "closed")
-        except Exception:
-            pass
-
-    try:
-        _github_adapter(repo_name).delete_label(run_label)
-    except Exception:
-        pass
 
 
 @pytest.fixture

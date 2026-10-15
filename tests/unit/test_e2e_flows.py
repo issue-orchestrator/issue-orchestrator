@@ -8,7 +8,7 @@ from tests.e2e import flows
 from tests.e2e.fixtures import artifact_cleanup
 from tests.e2e.fixtures.artifact_cleanup import CleanupRefusedError
 
-from .e2e_github_fake import FakeE2EGitHub, pull_request
+from .e2e_github_fake import FakeE2EGitHub, issue, pull_request
 
 
 def test_flow_create_issue_includes_filter_label(monkeypatch):
@@ -56,16 +56,23 @@ TEST_REPO = "owner/e2e-test-repo"
 def _repo_with_real_reviewed_work() -> FakeE2EGitHub:
     """The run creates issue #123; everything else is real work under review,
     or a concurrent run's artifact."""
-    return FakeE2EGitHub([
-        pull_request(10, "123-e2e-artifact", ["io-e2e-test-data", "needs-code-review"], body="Closes #123"),
-        pull_request(9483, "9483-tech-lead-work", ["needs-code-review"], body="Closes #9483"),
-        pull_request(9501, "9501-tech-lead-work", ["code-reviewed"], body="Closes #9501"),
-        # Real work that even names the run's issue number: only an e2e label
-        # may put a PR in scope, never a workflow label.
-        pull_request(9296, "123-unrelated-work", ["code-reviewed"], body="Refs #123"),
-        # A concurrent run's e2e PR.
-        pull_request(11, "456-e2e-artifact", ["io-e2e-test-data"], body="Closes #456"),
-    ])
+    return FakeE2EGitHub(
+        [
+            pull_request(10, "123-e2e-artifact", ["io-e2e-test-data", "needs-code-review"], body="Closes #123"),
+            pull_request(9483, "9483-tech-lead-work", ["needs-code-review"], body="Closes #9483"),
+            pull_request(9501, "9501-tech-lead-work", ["code-reviewed"], body="Closes #9501"),
+            # Real work that even names the run's issue number: only an e2e label
+            # may put a PR in scope, never a workflow label.
+            pull_request(9296, "123-unrelated-work", ["code-reviewed"], body="Refs #123"),
+            # A concurrent run's e2e PR.
+            pull_request(11, "456-e2e-artifact", ["io-e2e-test-data"], body="Closes #456"),
+        ],
+        issues=[
+            issue(123, ["agent:e2e-test", "io-e2e-test-data"]),
+            issue(456, ["agent:e2e-test", "io-e2e-test-data"]),
+            issue(9483, ["agent:coder"]),
+        ],
+    )
 
 
 @pytest.fixture
@@ -93,14 +100,12 @@ _SWEPT_LABELS = ["agent:e2e-test", "needs-code-review", "code-reviewed"]
 
 def test_flow_cleanup_never_closes_real_prs_carrying_review_labels(monkeypatch, github):
     """#9523: cleanup by workflow label closed 17 real PRs and deleted their branches."""
-    import issue_orchestrator.testing.support.test_data as test_data
-
-    monkeypatch.setattr(test_data, "close_issue", lambda repo, issue_number: None)
     flow = _flow_that_created_issue_123(monkeypatch, _SWEPT_LABELS)
 
     flow.cleanup_created_issues()
 
     assert github.writes == ([10], ["123-e2e-artifact"])
+    assert github.closed_issues == [123]
 
 
 @pytest.mark.parametrize("pr_number", [9483, 9501, 9296, 11, 424242])
@@ -121,27 +126,47 @@ def test_flow_close_pr_closes_its_own_pr_and_deletes_the_branch(monkeypatch, git
     assert github.writes == ([10], ["123-e2e-artifact"])
 
 
+@pytest.mark.parametrize("issue_number", [456, 9483, 424242])
+def test_flow_close_issue_refuses_an_issue_it_did_not_create(monkeypatch, github, issue_number):
+    flow = _flow_that_created_issue_123(monkeypatch, ["agent:e2e-test"])
+
+    with pytest.raises(CleanupRefusedError):
+        flow.close_issue(issue_number, "done")
+
+    assert github.all_writes["closed_issues"] == [] and github.comments == []
+
+
+def test_flow_close_issue_comments_then_closes_its_own(monkeypatch, github):
+    flow = _flow_that_created_issue_123(monkeypatch, ["agent:e2e-test"])
+
+    flow.close_issue(123, "done")
+
+    assert github.comments == [(123, "done")] and github.closed_issues == [123]
+
+
 def test_a_flow_that_created_nothing_cleans_up_nothing(github):
     flow = flows.E2EFlow(repo=TEST_REPO, watcher=None, filter_label="io-e2e-test-data")
 
     assert flow.cleanup_created_prs() == 0
-    assert github.writes == ([], [])
+    flow.cleanup_created_issues()
+    assert github.writes == ([], []) and github.closed_issues == []
 
 
 def test_flow_cleanup_closes_prs_before_issues(monkeypatch, github):
     calls: list[tuple[str, object]] = []
     close_pr = github.close_pr
+    update_issue_state = github.update_issue_state
 
     def recording_close_pr(pr_number):
         calls.append(("pr", pr_number))
         close_pr(pr_number)
 
-    def fake_close_issue(repo, issue_number):
+    def recording_update_issue_state(issue_number, state):
         calls.append(("issue", issue_number))
+        update_issue_state(issue_number, state)
 
     monkeypatch.setattr(github, "close_pr", recording_close_pr)
-    import issue_orchestrator.testing.support.test_data as test_data
-    monkeypatch.setattr(test_data, "close_issue", fake_close_issue)
+    monkeypatch.setattr(github, "update_issue_state", recording_update_issue_state)
     flow = _flow_that_created_issue_123(monkeypatch, ["agent:e2e-test"])
 
     flow.cleanup_created_issues()

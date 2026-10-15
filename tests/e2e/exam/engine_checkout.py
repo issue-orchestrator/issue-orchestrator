@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -111,24 +111,23 @@ class EngineCheckout:
     def state_dir(self) -> Path:
         return self.root / ".issue-orchestrator" / "state"
 
-    def engine_branches(self) -> list[str]:
-        """Branches created in the clone since ``create``: the run's engine's.
+    def engine_branches(self) -> dict[str, str]:
+        """``{branch: tip}`` for the branches created in the clone since
+        ``create``: the clone is this run's alone, so the run's engine made them.
 
-        The clone is this run's alone, so nobody else creates branches in it;
-        a remote branch of the same name is the one this engine pushed.
+        That proves only what the engine committed locally, not what the
+        remote holds: ``RunBranches.record_all`` keeps a branch only when the
+        remote has exactly this tip and did not have the branch before the run.
         """
         if self.baseline_branches is None or not (self.root / ".git").is_dir():
-            return []
-        return sorted(_local_branches(self.root) - self.baseline_branches)
+            return {}
+        created = sorted(_local_branches(self.root) - self.baseline_branches)
+        return {branch: _git(self.root, "rev-parse", f"refs/heads/{branch}") for branch in created}
 
-    def remove(self, *, register_branch: Callable[[str], None]) -> None:
-        """Remove the clone, first registering the branches its engine created.
-
-        Once the clone is gone nothing records which remote branches this
-        run's engine pushed, so cleanup could only guess from their names.
-        """
-        for branch in self.engine_branches():
-            register_branch(branch)
+    def remove(self, *, record_branches: Callable[[Mapping[str, str]], object]) -> None:
+        """Remove the clone, first offering the branches its engine created
+        to the run's ledger: once the clone is gone, nothing could."""
+        record_branches(self.engine_branches())
         self._discard()
 
     def _discard(self) -> None:
