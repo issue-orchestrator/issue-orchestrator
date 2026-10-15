@@ -193,6 +193,26 @@ def test_an_e2e_pr_whose_age_is_unproven_is_never_stale(live_e2e_run, created_at
     assert github.writes == ([], [])
 
 
+def test_stale_reconciliation_never_deletes_a_branch_a_live_pr_still_heads(live_e2e_run):
+    """Deleting the old PR's branch would close the young PR it also heads."""
+    live_e2e_run(TEST_REPO)
+    github = FakeE2EGitHub([
+        pull_request(7, "5-shared", ["io-e2e-test-data"], state="closed", created_at=OLD),
+        pull_request(12, "5-shared", ["io-e2e-test-data"], created_at=YOUNG),
+    ])
+    owner = E2EArtifactCleanup.for_test_repo(TEST_REPO, github=github)
+
+    assert owner.sweep(StaleArtifactScope.as_of(NOW)) == 0
+    with pytest.raises(CleanupRefusedError, match="PR #12"):
+        owner.close_pr(StaleArtifactScope.as_of(NOW), 7)
+    assert github.writes == ([], [])
+
+
+def test_the_owner_cannot_be_built_without_validation():
+    with pytest.raises(TypeError, match="for_test_repo"):
+        E2EArtifactCleanup(TEST_REPO, _repository(), validated=object())
+
+
 def test_stale_reconciliation_never_deletes_a_branch_by_name(owner, github):
     with pytest.raises(CleanupRefusedError):
         owner.delete_branch(StaleArtifactScope.as_of(NOW), "5-leftover")

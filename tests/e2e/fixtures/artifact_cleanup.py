@@ -192,11 +192,17 @@ class StaleArtifactScope:
         return False
 
 
+#: Proof that :meth:`E2EArtifactCleanup.for_test_repo` validated the target.
+_VALIDATED = object()
+
+
 class E2EArtifactCleanup:
     """Closes PRs and deletes branches in the e2e test repository, and only
     what a scope admits. Construct it with :meth:`for_test_repo`."""
 
-    def __init__(self, repo: str, github: CleanupGitHub) -> None:
+    def __init__(self, repo: str, github: CleanupGitHub, *, validated: object) -> None:
+        if validated is not _VALIDATED:
+            raise TypeError("construct E2EArtifactCleanup with for_test_repo(), which validates")
         self.repo = repo
         self._github = github
 
@@ -223,7 +229,11 @@ class E2EArtifactCleanup:
                 f"{repo} is not the validated e2e test repository ({target}); "
                 "e2e cleanup never touches another repository"
             )
-        return cls(target, github if github is not None else _github_adapter(target))
+        return cls(
+            target,
+            github if github is not None else _github_adapter(target),
+            validated=_VALIDATED,
+        )
 
     def close_pr(self, scope: CleanupScope, pr_number: int) -> None:
         """Close PR ``pr_number`` (if open) and delete its branch.
@@ -284,8 +294,16 @@ class E2EArtifactCleanup:
             )
 
     def _remove(self, scope: CleanupScope, pr: PRInfo) -> int:
-        """Close ``pr`` if open and delete its branch; 1 if it was closed."""
+        """Close ``pr`` if open and delete its branch; 1 if it was closed.
+
+        Deleting a branch also closes every other open PR whose head it is, so
+        each of those must be admitted too, before anything is written.
+        """
         self._admit(scope, pr)
+        if pr.branch:
+            for head in self._github.get_prs_for_branch(pr.branch, state="open"):
+                if head.number != pr.number and head.state.lower() == "open":
+                    self._admit(scope, head)
         was_open = pr.state.lower() == "open"
         if was_open:
             self._github.close_pr(pr.number)
