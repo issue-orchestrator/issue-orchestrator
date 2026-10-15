@@ -83,3 +83,32 @@ def test_the_opted_in_suite_refuses_to_start_without_a_test_repository():
 
     assert result.returncode == 4, result.stdout + result.stderr
     assert "E2E_TEST_REPO is not set" in result.stderr
+
+
+#: Not this checkout's origin, so the suite's repository check passes and only
+#: the opt-in is left to refuse.
+_NON_PRODUCTION_REPO = "example-owner/e2e-test-repo"
+
+
+def test_the_suite_refuses_without_the_opt_in_even_without_the_root_conftest():
+    """``--confcutdir=tests/e2e`` skips the root conftest and its collection
+    guard with it; the suite's own conftest must still refuse (#9523 review F1)."""
+    result = _collect("--confcutdir=tests/e2e", "tests/e2e", E2E_TEST_REPO=_NON_PRODUCTION_REPO)
+
+    assert result.returncode == 4, result.stdout + result.stderr
+    assert "It runs only on explicit opt-in: set IO_E2E=1" in result.stderr
+    assert _collected_live_suite(result) == []
+
+
+def test_an_agent_session_is_refused_by_the_suite_even_without_the_root_conftest():
+    result = _collect(
+        "--confcutdir=tests/e2e",
+        "tests/e2e",
+        E2E_TEST_REPO=_NON_PRODUCTION_REPO,
+        IO_E2E="1",
+        ISSUE_ORCHESTRATOR_SESSION_ID="coding-1",
+    )
+
+    assert result.returncode == 4, result.stdout + result.stderr
+    assert "Agent sessions may never run it (ISSUE_ORCHESTRATOR_SESSION_ID is set)" in result.stderr
+    assert _collected_live_suite(result) == []

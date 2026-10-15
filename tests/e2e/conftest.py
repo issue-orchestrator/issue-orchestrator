@@ -27,6 +27,8 @@ from issue_orchestrator.testing.support.test_data import (
     cleanup_test_issues,
     cleanup_issues_by_label,
 )
+from tests.live_e2e_gate import LiveE2EGate
+
 from ._stale_orchestrator_cleanup import kill_stale_e2e_orchestrators
 
 # Import all helpers from fixture modules
@@ -108,7 +110,14 @@ def e2e_label(logical: str) -> str:
 # ---------------------------------------------------------------------------
 
 def pytest_configure(config):
-    """Refuse an unsafe target repository, then fail fast by default."""
+    """Refuse a run that has not opted in, then an unsafe target repository,
+    then fail fast by default."""
+    # Pytest loads this conftest only to collect the live suite. The root
+    # conftest normally refuses first, but a run that never loads it
+    # (--confcutdir=tests/e2e) reaches here with only this boundary (#9523).
+    refusal = LiveE2EGate.from_environ(os.environ).suite_refusal()
+    if refusal is not None:
+        raise pytest.UsageError(refusal)
     # Before any fixture touches GitHub: no E2E_TEST_REPO, or the production
     # repository, ends the run here rather than erroring test by test (#9523).
     try:

@@ -7,13 +7,16 @@ zsh's unmatched glob emptied the substitution, pytest fell back to
 ``testpaths`` (which holds ``tests``) and the suite's cleanup closed 17 real
 PRs and deleted their branches.
 
-So whether the suite may run is decided once, here, and the root conftest
-wires it into two hooks:
+So whether the suite may run is decided once, here, and enforced at two
+boundaries:
 
-- implicit collection (a bare ``pytest``, an empty path list, ``pytest
-  tests``) never descends into ``tests/e2e`` unless the run is allowed;
-- naming ``tests/e2e``, or a path inside it, without being allowed is a usage
-  error that names the opt-in, not a silent no-op.
+- the root conftest keeps implicit collection (a bare ``pytest``, an empty
+  path list, ``pytest tests``) out of ``tests/e2e`` unless the run is allowed,
+  and makes naming ``tests/e2e``, or a path inside it, a usage error that names
+  the opt-in rather than a silent no-op;
+- the suite's own conftest refuses the same way whenever pytest loads it, so
+  the suite stays closed when the root conftest is not loaded at all
+  (``--confcutdir=tests/e2e``).
 
 A run is allowed only with ``IO_E2E=1`` and outside an orchestrator agent
 session. An agent session never satisfies the opt-in, whatever its
@@ -22,8 +25,9 @@ environment says: every session inherits the engine's environment, so an
 
 This gate is one of three independent layers. The suite also refuses the
 production repository (``tests/e2e/fixtures/github_utils.get_test_repo``), and
-its cleanup touches only what its own run created
-(``tests/e2e/flows.cleanup_test_prs_for_issues``).
+every PR it closes or branch it deletes goes through one owner that admits
+only what a typed scope proves is an e2e artifact it may remove
+(``tests/e2e/fixtures/artifact_cleanup.py``).
 """
 
 from __future__ import annotations
@@ -75,18 +79,31 @@ class LiveE2EGate:
     def refusal(self, targets: Iterable[str], invocation_dir: Path) -> str | None:
         """Why naming ``targets`` on the command line is refused, or None."""
         named = [target for target in targets if is_live_e2e_target(target, invocation_dir)]
-        if not named or self.allows_live_e2e:
+        if not named:
+            return None
+        return self._refusal(named)
+
+    def suite_refusal(self) -> str | None:
+        """Why the live suite may not be collected in this process at all, or None.
+
+        The suite's own conftest asks this when pytest loads it: being loaded
+        means the suite is being collected, whatever reached it.
+        """
+        return self._refusal(["tests/e2e"])
+
+    def _refusal(self, refused: list[str]) -> str | None:
+        if self.allows_live_e2e:
             return None
         if self.agent_session_env is not None:
             return (
                 f"{_LIVE_SUITE} Agent sessions may never run it ({self.agent_session_env} "
                 f"is set), and {OPT_IN_ENV} does not apply inside one. Refused: "
-                f"{', '.join(named)}"
+                f"{', '.join(refused)}"
             )
         return (
             f"{_LIVE_SUITE} It runs only on explicit opt-in: set {OPT_IN_ENV}=1 "
             "(make test-e2e does) and E2E_TEST_REPO=<owner>/<test-repo>, a "
-            f"dedicated repository that is not this checkout's. Refused: {', '.join(named)}"
+            f"dedicated repository that is not this checkout's. Refused: {', '.join(refused)}"
         )
 
 

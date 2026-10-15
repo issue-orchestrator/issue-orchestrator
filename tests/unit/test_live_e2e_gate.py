@@ -106,3 +106,23 @@ def test_an_agent_session_naming_the_live_suite_is_refused_even_opted_in():
 
 def test_the_opted_in_suite_may_be_named():
     assert OPTED_IN.refusal(["tests/e2e"], ROOT) is None
+
+
+def test_the_suite_itself_is_refused_without_the_opt_in():
+    """The suite's own conftest asks this whatever reached it (#9523 review F1)."""
+    refusal = CLOSED.suite_refusal()
+
+    assert refusal is not None
+    assert "IO_E2E=1" in refusal
+    assert refusal.endswith("Refused: tests/e2e")
+
+
+def test_the_suite_itself_is_refused_in_an_agent_session_even_opted_in():
+    refusal = AGENT_OPTED_IN.suite_refusal()
+
+    assert refusal is not None
+    assert "Agent sessions may never run it" in refusal
+
+
+def test_the_opted_in_suite_is_not_refused():
+    assert OPTED_IN.suite_refusal() is None
