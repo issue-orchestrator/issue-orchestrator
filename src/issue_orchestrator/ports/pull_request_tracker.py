@@ -242,10 +242,6 @@ class PRInfo:
             close-on-merge fallback can ask for close-event evidence at/after
             the merge instead of inferring from issue state alone. `None` when
             unmerged or when the source did not provide it.
-        created_at: ISO-8601 creation timestamp. Carried so the live e2e
-            suite's stale-artifact reconciliation can prove a PR is older
-            than any run still going (#9523). `None` when the source did not
-            provide it.
     """
 
     number: int
@@ -261,7 +257,6 @@ class PRInfo:
     base_branch: str | None = None
     merged_at: str | None = None
     head_sha: str | None = None
-    created_at: str | None = None
 
     @property
     def is_closed_unmerged(self) -> bool:
