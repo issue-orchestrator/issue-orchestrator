@@ -119,9 +119,14 @@ def test_isolated_checkout_is_prepared_before_configured_validation(tmp_path):
 
     owner, _, command, runner = historical(tmp_path, prepare=prepare)
 
+    def validate(_command, *, cwd, **_kwargs):
+        assert (cwd / ".git" / "runtime-ready").read_text() == "prepared"
+        return CommandResult(returncode=0, stdout="fresh validation", stderr="")
+
+    runner.run.side_effect = validate
     assert isinstance(owner.import_historical(command), HistoricalIntakeParked)
     workspace = runner.run.call_args.kwargs["cwd"]
-    assert (workspace / ".git" / "runtime-ready").read_text() == "prepared"
+    assert not workspace.exists()
 
 
 def test_workspace_setup_failure_is_a_retained_prerequisite_failure(tmp_path):

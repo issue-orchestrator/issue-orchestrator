@@ -20,6 +20,7 @@ from issue_orchestrator.execution.historical_intake_custody import (
 from issue_orchestrator.execution.issue_run_ledger import SqliteIssueRunLedger
 from issue_orchestrator.ports.background_job import BackgroundJobRunner
 from issue_orchestrator.ports.historical_intake import HistoricalIntakeHandler
+from issue_orchestrator.ports.git import Git, GitError, GitResult
 from tests.unit.test_completion_evidence_intake import command, completion
 from tests.unit.test_issue_run_evidence import run_record
 
@@ -83,16 +84,9 @@ def test_owned_validation_output_does_not_dirty_isolated_checkout(tmp_path, exit
     workspaces = list(
         (tmp_path / "receipt-owner" / "completion-validation-workspaces").iterdir()
     )
-    assert len(workspaces) == 1
-    workspace = workspaces[0]
-    assert (
-        git.run(workspace, ["status", "--porcelain", "--untracked-files=all"]).stdout
-        == ""
-    )
-    assert not (workspace / ".issue-orchestrator").exists()
-    assert (
-        git.run(workspace, ["rev-parse", "HEAD"]).stdout.strip() == attestation.head_sha
-    )
+    assert workspaces == []
+    assert git.run(entry.run.worktree_path, ["rev-parse", "HEAD"]).stdout.strip() == attestation.head_sha
+    assert (entry.run.worktree_path / "source.txt").read_text() == "original\n"
     restarted = SqliteIssueRunLedger(
         tmp_path / "receipt-owner" / "issue_run_ledger.sqlite",
         repo_slug="test-owner/test-repo",
@@ -121,6 +115,61 @@ def test_command_workspace_mutations_still_refuse_attestation(
         owner.close_and_drain(42)
     assert ledger.validation_for_receipt(receipt.entry_id) is None
     assert [entry.receipt for entry in ledger.pending_receipts()] == [receipt]
+    assert list((tmp_path / "receipt-owner" / "completion-validation-workspaces").iterdir()) == []
+
+
+@pytest.mark.parametrize("failure", ["prepare", "consumer", "checkout"])
+def test_validation_workspace_lease_releases_clone_on_exceptions(tmp_path, failure):
+    ledger, _owner, receipt, git = intake(tmp_path, "true")
+    entry = ledger.entry_for_receipt(receipt.entry_id)
+    source = entry.run.worktree_path
+    head = git.run(source, ["rev-parse", "HEAD"]).stdout.strip()
+    state = tmp_path / "isolated-owner"
+    prepared = []
+
+    def prepare(workspace):
+        prepared.append(workspace)
+        (workspace / ".venv").mkdir()
+        (workspace / ".venv" / "dependency").write_text("installed")
+        if failure == "prepare":
+            raise RuntimeError("preparation failed")
+
+    workspace_owner = IsolatedCompletionValidationWorkspace(state, git, prepare)
+    # A failed checkout must also release the independently cloned object store.
+    selected_head = "f" * 40 if failure == "checkout" else head
+    with pytest.raises((RuntimeError, CompletionIntakeError)):
+        with workspace_owner.checkout(entry.run, selected_head, entry.entry_id) as workspace:
+            assert workspace.exists()
+            assert (workspace / ".git").is_dir()
+            assert git.run(workspace, ["rev-parse", "HEAD"]).stdout.strip() == head
+            raise RuntimeError("consumer failed")
+
+    assert list((state / "completion-validation-workspaces").iterdir()) == []
+    assert all(not path.exists() for path in prepared)
+    assert (source / "source.txt").read_text() == "original\n"
+    assert git.run(source, ["rev-parse", "HEAD"]).stdout.strip() == head
+
+
+def test_validation_workspace_clone_failure_releases_partial_allocation(tmp_path):
+    ledger, _owner, receipt, _git = intake(tmp_path, "true")
+    entry = ledger.entry_for_receipt(receipt.entry_id)
+    git = Mock(spec=Git)
+
+    def failed_clone(_source, args):
+        workspace = Path(args[-1])
+        (workspace / "partial-object-store").write_text("incomplete clone")
+        raise GitError(GitResult(["git", *args], 1, "", "clone failed"))
+
+    git.run.side_effect = failed_clone
+    prepare = Mock()
+    state = tmp_path / "failed-clone-owner"
+    workspace_owner = IsolatedCompletionValidationWorkspace(state, git, prepare)
+    with pytest.raises(GitError, match="clone failed"):
+        with workspace_owner.checkout(entry.run, "a" * 40, entry.entry_id):
+            pytest.fail("failed allocation must never be leased")
+    assert list((state / "completion-validation-workspaces").iterdir()) == []
+    prepare.assert_not_called()
+    assert (entry.run.worktree_path / "source.txt").read_text() == "original\n"
 
 
 @pytest.mark.parametrize("stream", ["stdout", "stderr"])
