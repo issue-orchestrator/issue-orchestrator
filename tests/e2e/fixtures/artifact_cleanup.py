@@ -91,7 +91,7 @@ class CleanupGitHub(Protocol):
 
     def get_pr(self, pr_number: int) -> PRInfo | None: ...
 
-    def get_prs_with_label(self, label: str, state: str = "open") -> list[PRInfo]: ...
+    def get_prs_with_label_complete(self, label: str, state: str = "open") -> list[PRInfo]: ...
 
     def get_open_prs_for_branch_complete(self, branch: str) -> list[PRInfo]: ...
 
@@ -316,9 +316,6 @@ class IdleRepositoryScope:
         return self._is_target(repo) and label.startswith((E2E_TEST_LABEL_PREFIX, E2E_RUN_LABEL_PREFIX))
 
 
-#: ``get_prs_with_label`` returns at most this many PRs and says nothing of
-#: what it left out: a listing this long cannot prove it is complete.
-PR_LABEL_LISTING_CAP = 100
 #: An issue listing walks every page up to this many issues and raises past
 #: it (``list_issues(exhaustive=True)``), so what it returns is complete.
 ISSUE_SCAN_LIMIT = 1000
@@ -472,11 +469,13 @@ class E2EArtifactCleanup:
 
         Open PRs (with their branches), the branches closed PRs left, then
         open issues, all listed under every e2e label: an engine-filed issue
-        may carry only its run's label. A label is the only way the next
-        reconciliation finds what carries it, so labels go last, and only if
-        everything before succeeded from complete reads, and only one that a
-        complete re-read shows no open issue or PR still carries. Anything
-        less is a failure in the result, never a partial success.
+        may carry only its run's label. Every listing is complete or raises
+        (``get_prs_with_label_complete``, ``list_issues(exhaustive=True)``).
+        A label is the only way the next reconciliation finds what carries it,
+        so labels go last, only if everything before succeeded, and each only
+        once a complete re-read shows nothing still depends on it: no open
+        issue or PR, and no closed PR whose branch survives. Anything less is
+        a failure in the result, never a partial success.
         """
         failures: list[CleanupFailure] = []
         try:
@@ -485,7 +484,7 @@ class E2EArtifactCleanup:
             failure = CleanupFailure("the label listing", str(exc))
             return IdleReconciliation(0, 0, (), (), (failure,))
         listing = (E2E_ARTIFACT_LABEL, *labels)
-        prs_closed = self._sweep_prs(scope, listing, "open", failures, complete=True)
+        prs_closed = self._sweep_prs(scope, listing, "open", failures)
         self._sweep_prs(scope, listing, "closed", failures)
         issues_closed = self._sweep_issues(scope, listing, comment, failures)
         if failures:
@@ -497,7 +496,7 @@ class E2EArtifactCleanup:
             try:
                 dependents = self._open_dependents(label)
                 if dependents:
-                    raise IncompleteListingError(f"still carried by open {', '.join(dependents)}")
+                    raise IncompleteListingError(f"still carried by {', '.join(dependents)}")
                 self._github.delete_label(label)
             except Exception as exc:
                 failures.append(CleanupFailure(f"label {label}", str(exc)))
@@ -509,10 +508,9 @@ class E2EArtifactCleanup:
         )
 
     # -- Read-only reports -------------------------------------------------
-    # -- Read-only reports -------------------------------------------------
 
     def open_prs_with_label(self, label: str) -> list[PRInfo]:
-        return self._github.get_prs_with_label(label, state="open")
+        return self._github.get_prs_with_label_complete(label, state="open")
 
     def open_issues_with_label(self, label: str) -> list[CleanupIssue]:
         return list(self._open_issues(label))
@@ -532,14 +530,16 @@ class E2EArtifactCleanup:
         )
 
     def _open_dependents(self, label: str) -> list[str]:
-        """Every open issue and PR still carrying ``label``, from complete reads."""
-        issues = self._open_issues(label)
-        prs = self._github.get_prs_with_label(label, state="open")
-        if len(prs) >= PR_LABEL_LISTING_CAP:
-            raise IncompleteListingError(
-                f"{len(prs)} open PRs carry {label}: the listing may be capped"
-            )
-        return [f"issue #{issue.number}" for issue in issues] + [f"PR #{pr.number}" for pr in prs]
+        """Everything that still needs ``label`` to be found, from complete
+        reads: open issues and PRs carrying it, and closed PRs carrying it
+        whose branch survives."""
+        dependents = [f"open issue #{issue.number}" for issue in self._open_issues(label)]
+        for pr in self._github.get_prs_with_label_complete(label, state="all"):
+            if pr.state.lower() == "open":
+                dependents.append(f"open PR #{pr.number}")
+            elif pr.branch and self._github.branch_head(pr.branch) is not None:
+                dependents.append(f"closed PR #{pr.number} (branch {pr.branch} remains)")
+        return dependents
 
     def _sweep_prs(
         self,
@@ -547,27 +547,20 @@ class E2EArtifactCleanup:
         labels: Iterable[str],
         state: str,
         failures: list[CleanupFailure],
-        *,
-        complete: bool = False,
     ) -> int:
         """Remove the admitted PRs listed under ``labels``; the number closed.
 
-        Every listing or removal that fails is added to ``failures``; with
-        ``complete``, so is a listing that may have been capped.
+        Every listing is complete or raises; every listing or removal that
+        fails is added to ``failures``.
         """
         seen: set[int] = set()
         closed = 0
         for label in labels:
             try:
-                prs = self._github.get_prs_with_label(label, state=state)
+                prs = self._github.get_prs_with_label_complete(label, state=state)
             except Exception as exc:
                 failures.append(CleanupFailure(f"the {state} PRs labelled {label}", str(exc)))
                 continue
-            if complete and len(prs) >= PR_LABEL_LISTING_CAP:
-                failures.append(CleanupFailure(
-                    f"the {state} PRs labelled {label}",
-                    f"{len(prs)} listed: the listing may be capped",
-                ))
             for pr in prs:
                 if pr.number in seen or not scope.admits_pr(pr, self.repo):
                     continue

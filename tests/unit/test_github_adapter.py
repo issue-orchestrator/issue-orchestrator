@@ -1310,6 +1310,25 @@ class TestPROperations:
         # REST fallback should NOT be called
         mock_http_client.get_prs_with_label.assert_not_called()
 
+    def test_get_prs_with_label_complete_maps_every_state(self, adapter, mock_http_client):
+        """The complete labeled read (#9523): one PRInfo per listed PR, merged
+        kept distinct from closed, head SHA and labels carried."""
+        mock_http_client.list_prs_with_label_complete.return_value = [
+            {"number": n, "title": "t", "html_url": "u", "body": "", "state": state, "draft": False,
+             "head": {"ref": f"{n}-work", "sha": "a" * 40}, "base": {"ref": "main"},
+             "labels": [{"name": "io:e2e-run-a"}]}
+            for n, state in ((1, "open"), (2, "closed"), (3, "merged"))
+        ]
+
+        prs = adapter.get_prs_with_label_complete("io:e2e-run-a", state="all")
+
+        mock_http_client.list_prs_with_label_complete.assert_called_once_with("io:e2e-run-a", state="all")
+        assert [(pr.number, pr.state, pr.head_sha, pr.labels) for pr in prs] == [
+            (1, "open", "a" * 40, ["io:e2e-run-a"]),
+            (2, "closed", "a" * 40, ["io:e2e-run-a"]),
+            (3, "merged", "a" * 40, ["io:e2e-run-a"]),
+        ]
+
     def test_get_prs_with_label_graphql_http_error_propagates(self, adapter, mock_http_client):
         """GraphQL PR label lookup preserves upstream HTTP failures."""
         mock_http_client.get_prs_with_label_graphql.side_effect = GitHubHttpError(

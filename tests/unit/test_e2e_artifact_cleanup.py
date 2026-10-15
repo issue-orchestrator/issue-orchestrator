@@ -451,20 +451,70 @@ def test_an_incomplete_issue_listing_keeps_every_label(monkeypatch, github, caps
     assert _still_findable(github, 457)
 
 
-def test_a_capped_pr_listing_keeps_every_label(live_e2e_run, capsys):
-    """100 open PRs carry the label: the listing cannot show a 101st."""
-    live_e2e_run(TEST_REPO)
-    github = FakeE2EGitHub(
-        [pull_request(n, f"{n}-run-a", [RUN_A_LABEL], body=f"Closes #{n}") for n in range(1000, 1101)],
+def _closed_run_a_prs(count: int) -> FakeE2EGitHub:
+    """``count`` closed PRs carrying nothing but run A's label, each with its
+    branch still on the remote."""
+    return FakeE2EGitHub(
+        [
+            pull_request(n, f"{n}-run-a", [RUN_A_LABEL], body=f"Closes #{n}", state="closed")
+            for n in range(1000, 1000 + count)
+        ],
         labels=[RUN_A_LABEL],
     )
+
+
+def test_closed_prs_a_listing_cannot_prove_complete_keep_their_label(live_e2e_run):
+    """#9523 review F6: 101 closed, run-label-only PRs whose branches survive.
+    The first attempt's listing cannot prove it saw them all: nothing is
+    lost, the label stays; the retry with a complete read removes them all."""
+    live_e2e_run(TEST_REPO)
+    github = _closed_run_a_prs(101)
+    github.pr_scan_cap = 100
+    owner = E2EArtifactCleanup.for_test_repo(TEST_REPO, github=github)
+    idle = IdleRepositoryScope(repo=TEST_REPO)
+
+    first = owner.reconcile_idle(idle, comment="x")
+
+    assert not first.complete
+    assert first.labels_retained == (RUN_A_LABEL,) and github.deleted_labels == []
+    assert github.branch_exists("1100-run-a")  # the unseen one is still findable
+
+    github.pr_scan_cap = None
+    retry = owner.reconcile_idle(idle, comment="x")
+
+    assert retry.complete, retry.failures
+    assert len(github.deleted_branches) == 101 and github.deleted_labels == [RUN_A_LABEL]
+
+
+def test_a_malformed_pr_listing_never_deletes_the_label(live_e2e_run):
+    """#9523 review F6: the old capped listing silently drops what it cannot
+    read (here: everything); the complete one raises, so the label stays."""
+    live_e2e_run(TEST_REPO)
+    github = _closed_run_a_prs(3)
+    github.malformed_pr_listings.add(RUN_A_LABEL)
+    owner = E2EArtifactCleanup.for_test_repo(TEST_REPO, github=github)
+
+    done = owner.reconcile_idle(IdleRepositoryScope(repo=TEST_REPO), comment="x")
+
+    assert github.get_prs_with_label(RUN_A_LABEL, state="all") == []  # what a guess would see
+    assert not done.complete
+    assert any("malformed" in failure.reason for failure in done.failures)
+    assert github.deleted_labels == [] and github.deleted_branches == []
+
+
+def test_a_label_a_closed_pr_with_a_surviving_branch_carries_is_kept(live_e2e_run):
+    """A closed PR's branch deletion GitHub accepted but never applied: the
+    re-read before deleting the label still finds the branch."""
+    live_e2e_run(TEST_REPO)
+    github = _closed_run_a_prs(1)
+    github.delete_works = False
     owner = E2EArtifactCleanup.for_test_repo(TEST_REPO, github=github)
 
     done = owner.reconcile_idle(IdleRepositoryScope(repo=TEST_REPO), comment="x")
 
     assert not done.complete
-    assert any("may be capped" in failure.reason for failure in done.failures)
-    assert done.labels_retained == (RUN_A_LABEL,) and github.deleted_labels == []
+    assert "closed PR #1000 (branch 1000-run-a remains)" in done.failures[0].reason
+    assert github.deleted_labels == [] and github.branch_exists("1000-run-a")
 
 
 def test_a_label_an_open_issue_still_carries_is_kept(owner, github):

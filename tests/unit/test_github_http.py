@@ -3589,3 +3589,92 @@ def test_comment_bodies_containing_fails_loud_on_a_malformed_page() -> None:
 
     with pytest.raises(GitHubHttpError):
         client.issue_comment_bodies_containing(318, _TEST_MARKER)
+
+
+def _labeled_pr_node(number: int, *, state: str = "OPEN", labels: tuple[str, ...] = ("io:e2e-run-a",)) -> dict:
+    return {
+        "number": number, "title": f"PR {number}", "url": f"u/{number}", "body": f"Closes #{number}",
+        "state": state, "isDraft": False, "headRefName": f"{number}-work",
+        "headRefOid": f"{number:040d}", "baseRefName": "main",
+        "labels": {"totalCount": len(labels), "nodes": [{"name": name} for name in labels]},
+    }
+
+
+def _labeled_pages(*pages: list[dict]) -> Callable[[httpx.Request], httpx.Response]:
+    """GraphQL pages served in order by cursor; records each request."""
+    served: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _graphql_body(request)
+        served.append(body["variables"])
+        index = 0 if body["variables"]["after"] is None else int(body["variables"]["after"])
+        last = index == len(pages) - 1
+        return httpx.Response(200, json={"data": {"repository": {"pullRequests": {
+            "pageInfo": {"hasNextPage": not last, "endCursor": None if last else str(index + 1)},
+            "nodes": pages[index],
+        }}}})
+
+    handler.served = served  # type: ignore[attr-defined]
+    return handler
+
+
+def test_labeled_prs_complete_walks_every_page_by_cursor() -> None:
+    """#9523: 101 PRs under one label come back whole, over two pages."""
+    handler = _labeled_pages(
+        [_labeled_pr_node(n, state="CLOSED") for n in range(1, 101)],
+        [_labeled_pr_node(101, state="MERGED")],
+    )
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    prs = client.list_prs_with_label_complete("io:e2e-run-a", state="closed")
+
+    assert [pr["number"] for pr in prs] == list(range(1, 102))
+    assert handler.served[0]["states"] == ["CLOSED", "MERGED"]  # type: ignore[attr-defined]
+    assert handler.served[0]["label"] == "io:e2e-run-a"  # type: ignore[attr-defined]
+    assert prs[-1] == {
+        "number": 101, "title": "PR 101", "html_url": "u/101", "body": "Closes #101",
+        "state": "merged", "draft": False,
+        "head": {"ref": "101-work", "sha": f"{101:040d}"}, "base": {"ref": "main"},
+        "labels": [{"name": "io:e2e-run-a"}],
+    }
+
+
+@pytest.mark.parametrize(
+    ("payload", "why"),
+    [
+        ({"data": {"repository": None}}, "no pullRequests connection"),
+        ({"data": {"repository": {"pullRequests": {"pageInfo": {"hasNextPage": False},
+                                                     "nodes": [_labeled_pr_node(1), {"number": 2}]}}}},
+         "malformed node"),
+        ({"data": {"repository": {"pullRequests": {"pageInfo": {"hasNextPage": False}, "nodes": [
+            {**_labeled_pr_node(1), "labels": {"totalCount": 101, "nodes": [{"name": "io:e2e-run-a"}]}},
+        ]}}}}, "truncated the labels"),
+        ({"data": {"repository": {"pullRequests": {"nodes": [_labeled_pr_node(1)]}}}}, "no pageInfo"),
+        ({"data": {"repository": {"pullRequests": {"pageInfo": {"hasNextPage": True, "endCursor": ""},
+                                                     "nodes": [_labeled_pr_node(1)]}}}},
+         "without a cursor"),
+    ],
+    ids=["no-connection", "malformed-node", "truncated-labels", "no-page-info", "no-cursor"],
+)
+def test_labeled_prs_complete_refuses_anything_it_cannot_prove(payload, why) -> None:
+    """The capped listing reads a missing connection as no PRs and drops nodes
+    it cannot convert; the complete one raises instead (#9523 review F6)."""
+    client = _client_with_transport(httpx.MockTransport(lambda request: httpx.Response(200, json=payload)))
+
+    with pytest.raises(GitHubScanIncompleteError, match=why):
+        client.list_prs_with_label_complete("io:e2e-run-a")
+
+
+def test_labeled_prs_complete_raises_past_its_page_cap() -> None:
+    handler = _labeled_pages([_labeled_pr_node(1)], [_labeled_pr_node(2)], [_labeled_pr_node(3)])
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match="page cap"):
+        client.list_prs_with_label_complete("io:e2e-run-a", page_cap=2)
+
+
+def test_labeled_prs_complete_refuses_an_unknown_state() -> None:
+    client = _client_with_transport(httpx.MockTransport(lambda request: httpx.Response(500)))
+
+    with pytest.raises(ValueError, match="unsupported PR state"):
+        client.list_prs_with_label_complete("io:e2e-run-a", state="merged")

@@ -586,6 +586,14 @@ class MockGitHubAdapter:
                     result.append(pr)
         return result
 
+    def get_prs_with_label_complete(self, label: str, state: str = "open") -> list[PRInfo]:
+        """Every PR with ``label`` in ``state`` (closed covers merged)."""
+        states = {"open": {"open"}, "closed": {"closed", "merged"}, "all": {"open", "closed", "merged"}}
+        return [
+            pr for pr in self.get_prs_with_label(label)
+            if pr.state.lower() in states[state]
+        ]
+
     def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list[PRInfo]:
         """Get PRs for an issue by matching branch prefix or title."""
         prefix = f"{issue_number}-"

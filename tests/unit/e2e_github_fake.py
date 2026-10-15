@@ -96,6 +96,11 @@ class FakeE2EGitHub:
         #: An exhaustive issue listing longer than this raises, as GitHub's
         #: page cap makes the real one do.
         self.issue_scan_cap: int | None = None
+        #: A complete PR listing of more than this many raises, as the real
+        #: one does past its page cap.
+        self.pr_scan_cap: int | None = None
+        #: Labels whose complete PR listing comes back malformed.
+        self.malformed_pr_listings: set[str] = set()
         #: Issues whose state update GitHub rejects.
         self.failing_issue_closes: set[int] = set()
         #: Issues whose state update GitHub accepts but never applies.
@@ -129,12 +134,27 @@ class FakeE2EGitHub:
         return [pr for number in self._prs if (pr := self.get_pr(number)) is not None]
 
     def get_prs_with_label(self, label: str, state: str = "open") -> list[PRInfo]:
-        """Like the adapter: at most 100, silently."""
+        """The capped, silent listing (at most 100, malformed results dropped):
+        the cleanup owner must never decide from it."""
+        if label in self.malformed_pr_listings:
+            return []
+        return self._labelled(label, state)[:100]
+
+    def get_prs_with_label_complete(self, label: str, state: str = "open") -> list[PRInfo]:
+        """Like the adapter's: every match, or an error."""
+        if label in self.malformed_pr_listings:
+            raise IncompleteReadError(f"listing PRs labelled {label} returned a malformed node")
+        matching = self._labelled(label, state)
+        if self.pr_scan_cap is not None and len(matching) > self.pr_scan_cap:
+            raise IncompleteReadError(f"listing PRs labelled {label} exceeded the page cap")
+        return matching
+
+    def _labelled(self, label: str, state: str) -> list[PRInfo]:
         states = {"all": ("open", "closed", "merged"), "closed": ("closed", "merged")}
         return [
             pr for pr in self._current()
             if label in pr.labels and pr.state in states.get(state, (state,))
-        ][:100]
+        ]
 
     def get_prs_for_branch(self, branch: str, state: str = "open") -> list[PRInfo]:
         return self.cached_for_branch.get(branch, [])
