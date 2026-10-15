@@ -3,6 +3,8 @@
 import subprocess
 from pathlib import Path
 
+from tests.git_push_authorization import authorized_local_fixture_git_env
+
 
 def _write_executable(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -232,9 +234,12 @@ def test_embeds_the_shared_pre_push_ref_functions_verbatim() -> None:
 
 
 def _git(cwd: Path, *args: str) -> str:
+    # The remote is a throwaway bare repo under tmp_path, so pushes carry the
+    # fixture authorization the agent-session git wrapper requires.
     result = subprocess.run(
         ["git", *args],
         cwd=cwd,
+        env=authorized_local_fixture_git_env(),
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,

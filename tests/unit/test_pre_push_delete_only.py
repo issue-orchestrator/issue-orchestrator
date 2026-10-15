@@ -24,6 +24,7 @@ from issue_orchestrator.execution.command_runner import LocalCommandRunner
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.hooks.pre_push_refs import pre_push_refs_shell
 from issue_orchestrator.infra.repo_guardrails import setup_repo_guardrails
+from tests.git_push_authorization import authorized_local_fixture_git_env
 
 # setup-guardrails needs a stable interpreter to bake (#8087).
 pytestmark = pytest.mark.usefixtures("durable_orchestrator_python")
@@ -117,10 +118,12 @@ def test_anything_but_delete_only_runs_the_gate(tmp_path: Path, ref_lines: str) 
 
 
 def _git(cwd: Path, *args: str, env: dict[str, str] | None = None) -> str:
+    # Every remote here is a throwaway bare repo under tmp_path, so pushes
+    # carry the fixture authorization the agent-session git wrapper requires.
     result = subprocess.run(
         ["git", *args],
         cwd=cwd,
-        env=env,
+        env=authorized_local_fixture_git_env(env),
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
