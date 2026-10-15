@@ -181,6 +181,15 @@ def test_cleanup_that_succeeds_raises_nothing() -> None:
     assert ran == ["a", "b"]
 
 
+def _exam_pr(number: int, *, branch: str, state: str):
+    from issue_orchestrator.ports.pull_request_tracker import PRInfo
+
+    return PRInfo(
+        number=number, title=f"PR {number}", url="", branch=branch, body="",
+        state=state, labels=[],
+    )
+
+
 class _FakeAdapter:
     """The slice of GitHubAdapter seeding and branch cleanup use."""
 
@@ -196,7 +205,7 @@ class _FakeAdapter:
             raise RuntimeError("create_pr failed")
         raise AssertionError("not reached in these tests")
 
-    def get_prs_for_branch(self, branch: str):
+    def get_prs_for_branch(self, branch: str, state: str = "open"):
         return self.prs.get(branch, [])
 
     def close_pr(self, number: int) -> None:
@@ -210,9 +219,11 @@ class _FakeAdapter:
         self.branches.discard(branch)
 
 
-def test_a_seed_branch_is_registered_before_its_pr_can_fail(monkeypatch, tmp_path) -> None:
+def test_a_seed_branch_is_registered_before_its_pr_can_fail(monkeypatch, tmp_path, live_e2e_run) -> None:
     """Round 1 F6: push lands, create_pr fails — cleanup must still own the branch."""
     from tests.e2e.exam import seeding
+
+    live_e2e_run("o/r")
 
     adapter = _FakeAdapter(fail_create=True)
     pushed: list[str] = []
@@ -248,14 +259,13 @@ def test_a_seed_branch_is_registered_before_its_pr_can_fail(monkeypatch, tmp_pat
     assert adapter.deleted == ["7-exam"] and adapter.closed == []
 
 
-def test_branch_cleanup_closes_the_open_pr_then_deletes_the_branch(monkeypatch) -> None:
-    from types import SimpleNamespace
-
+def test_branch_cleanup_closes_the_open_pr_then_deletes_the_branch(monkeypatch, live_e2e_run) -> None:
     from tests.e2e.exam import cleanup
 
+    live_e2e_run("o/r")
     adapter = _FakeAdapter()
     adapter.branches = {"8-exam"}
-    adapter.prs = {"8-exam": [SimpleNamespace(number=80, state="open")]}
+    adapter.prs = {"8-exam": [_exam_pr(80, branch="8-exam", state="open")]}
     monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: adapter)
 
     cleanup.delete_registered_branches("o/r", ["8-exam", "9-gone"])
@@ -396,9 +406,7 @@ class _StrictFake(_FakeAdapter):
             self.branches.discard(branch)
 
     def get_pr(self, number: int):
-        from types import SimpleNamespace
-
-        return SimpleNamespace(number=number, state=self.pr_state[number], branch="7-exam")
+        return _exam_pr(number, branch="7-exam", state=self.pr_state[number])
 
     def close_pr(self, number: int) -> None:
         self.closed.append(number)
@@ -408,20 +416,22 @@ class _StrictFake(_FakeAdapter):
         return self.issues
 
 
-def test_a_pr_whose_branch_survives_deletion_fails_cleanup(monkeypatch) -> None:
+def test_a_pr_whose_branch_survives_deletion_fails_cleanup(monkeypatch, live_e2e_run) -> None:
     """Round 6 F2: the shared close_pr swallowed this; the exam must not."""
     from tests.e2e.exam import cleanup
+    from tests.e2e.fixtures.artifact_cleanup import ExamRunScope
 
+    live_e2e_run("o/r")
     adapter = _StrictFake(delete_works=False)
     adapter.branches = {"7-exam"}
     monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: adapter)
 
     with pytest.raises(cleanup.ExamCleanupError, match="branch 7-exam still exists"):
-        cleanup.remove_pr("o/r", 70)
+        cleanup.remove_pr("o/r", ExamRunScope(issue_numbers=frozenset({7})), 70)
     assert adapter.closed == [70] and adapter.deleted == ["7-exam"]
 
 
-def test_teardown_removes_a_recovery_pr_strictly_and_reports_the_failure(monkeypatch) -> None:
+def test_teardown_removes_a_recovery_pr_strictly_and_reports_the_failure(monkeypatch, live_e2e_run) -> None:
     """A recovery-published PR (no cleanup labels) found through the issue
     link; its branch deletion failing surfaces through run_all_steps while the
     other steps still run."""
@@ -430,6 +440,7 @@ def test_teardown_removes_a_recovery_pr_strictly_and_reports_the_failure(monkeyp
     from tests.e2e.exam import cleanup
     from tests.e2e.exam.cleanup_steps import run_all_steps
 
+    live_e2e_run("o/r")
     adapter = _StrictFake(delete_works=False)
     adapter.branches = {"7-exam"}
     monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: adapter)
@@ -502,12 +513,13 @@ def test_a_missing_audit_report_from_a_live_engine_is_refused() -> None:
 
 
 
-def test_a_closed_pr_whose_branch_survived_is_cleaned_up(monkeypatch) -> None:
+def test_a_closed_pr_whose_branch_survived_is_cleaned_up(monkeypatch, live_e2e_run) -> None:
     """Round 8 F3: a closed (e.g. partially reset) PR's branch is deleted too."""
     from types import SimpleNamespace
 
     from tests.e2e.exam import cleanup
 
+    live_e2e_run("o/r")
     adapter = _StrictFake(delete_works=True)
     adapter.pr_state = {70: "closed"}
     adapter.branches = {"7-exam"}
@@ -577,10 +589,11 @@ def test_only_this_runs_log_tailers_are_selected(tmp_path) -> None:
 
 
 
-def test_an_engine_branch_with_no_pr_is_found_by_naming_and_removed(monkeypatch) -> None:
+def test_an_engine_branch_with_no_pr_is_found_by_naming_and_removed(monkeypatch, live_e2e_run) -> None:
     """Round 14 F2: the engine pushed 7-work, PR creation failed — no PR links it."""
     from tests.e2e.exam import cleanup
 
+    live_e2e_run("o/r")
     adapter = _StrictFake(delete_works=True)
     adapter.branches = {"7-exam-work"}
     monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: adapter)

@@ -17,7 +17,7 @@ import pytest
 from issue_orchestrator.events import EventName
 from tests.e2e.conftest import e2e_label
 from tests.e2e.flows import E2EFlow
-from tests.e2e.fixtures import _github_adapter, get_pr_uncached
+from tests.e2e.fixtures import get_pr_uncached
 
 logger = logging.getLogger(__name__)
 
@@ -129,25 +129,17 @@ class TestConcurrentPipelinePhases:
             ["agent:e2e-test", e2e_label(test_label)],
         )
         pr_number = None
-        pr_branch = None
 
         try:
             logger.info("Phase 2: Waiting for PR to be created...")
-            pr_number, pr_payload = await _wait_for_pr_and_fetch(
+            pr_number, _pr_payload = await _wait_for_pr_and_fetch(
                 e2e_flow,
                 issue,
                 timeout_s=360,
             )
-            pr_branch = (pr_payload.get("head") or {}).get("ref")
         finally:
             if pr_number is not None:
-                adapter = _github_adapter(e2e_flow.repo)
-                adapter.close_pr(pr_number)
-                if pr_branch:
-                    try:
-                        adapter.delete_branch(pr_branch)
-                    except Exception:
-                        pass
+                e2e_flow.close_pr(pr_number)
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(600)
@@ -168,15 +160,13 @@ class TestConcurrentPipelinePhases:
             ["agent:e2e-test", e2e_label(test_label)],
         )
         pr_number = None
-        pr_branch = None
 
         try:
-            pr_number, pr_payload = await _wait_for_pr_and_fetch(
+            pr_number, _pr_payload = await _wait_for_pr_and_fetch(
                 e2e_flow,
                 issue,
                 timeout_s=360,
             )
-            pr_branch = (pr_payload.get("head") or {}).get("ref")
             logger.info("Phase 3: Waiting for code review outcomes...")
             await e2e_flow.review_outcomes_any_of(
                 issues=[issue],
@@ -184,13 +174,7 @@ class TestConcurrentPipelinePhases:
             )
         finally:
             if pr_number is not None:
-                adapter = _github_adapter(e2e_flow.repo)
-                adapter.close_pr(pr_number)
-                if pr_branch:
-                    try:
-                        adapter.delete_branch(pr_branch)
-                    except Exception:
-                        pass
+                e2e_flow.close_pr(pr_number)
 
 
 # ---------------------------------------------------------------------------

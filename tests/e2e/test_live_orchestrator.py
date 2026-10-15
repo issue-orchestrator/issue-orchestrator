@@ -17,6 +17,7 @@ import time
 
 import pytest
 
+from tests.e2e.conftest import e2e_label
 from tests.e2e.flows import E2EFlow, check_issue_comment
 
 logger = logging.getLogger(__name__)
@@ -32,8 +33,9 @@ class TestLiveOrchestratorLifecycle:
         self,
         e2e_orchestrator,
         orchestrator_watcher,
-        test_issue_factory,
         repo_name: str,
+        filter_label: str,
+        test_label: str,
     ):
         """Full lifecycle: issue created -> session runs -> PR created -> completed.
 
@@ -44,11 +46,18 @@ class TestLiveOrchestratorLifecycle:
         4. PR is created
         5. Completion comment is posted
         """
-        flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher, fail_on_blocked_failed=True)
+        flow = E2EFlow(
+            repo=repo_name,
+            watcher=orchestrator_watcher,
+            filter_label=filter_label,
+            fail_on_blocked_failed=True,
+        )
 
-        # Create issue scoped to this test
-        issue = test_issue_factory("[E2E] Issue to completion test")
-        issue_number = int(issue.stable_id())
+        # Created through the flow, so the flow's cleanup scope owns its PR.
+        issue, issue_number = flow.create_issue(
+            "[E2E] Issue to completion test",
+            ["agent:e2e-test", e2e_label(test_label)],
+        )
 
         pr = None
         dry_run = os.environ.get("E2E_DRY_RUN_PUSH") == "1"

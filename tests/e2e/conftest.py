@@ -30,6 +30,7 @@ from issue_orchestrator.testing.support.test_data import (
 from tests.live_e2e_gate import LiveE2EGate
 
 from ._stale_orchestrator_cleanup import kill_stale_e2e_orchestrators
+from .fixtures.artifact_cleanup import E2E_RUN_LABEL_PREFIX, E2E_TEST_LABEL_PREFIX
 
 # Import all helpers from fixture modules
 from .fixtures import (
@@ -67,8 +68,7 @@ from .fixtures import (
     cleanup_local_worktrees,
     run_cleanup_step,
     verify_cleanup_items,
-    cleanup_remote_branches,
-    cleanup_prs,
+    reconcile_stale_prs,
     ensure_required_pr_labels,
     cleanup_e2e_labels,
     cleanup_issues,
@@ -94,8 +94,6 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-E2E_TEST_LABEL_PREFIX = "io:e2e:"
-E2E_RUN_LABEL_PREFIX = "io:e2e-run-"
 E2E_LABEL_CLEANUP_PREFIXES = (E2E_RUN_LABEL_PREFIX, E2E_TEST_LABEL_PREFIX)
 
 def e2e_label(logical: str) -> str:
@@ -223,7 +221,8 @@ def e2e_reconciliation_at_session_start(
     Cleans up:
     - Default /tmp/e2e-worktrees directory
     - Current e2e test session's worktree directory
-    - E2E PRs/branches/issues before and after the session
+    - Earlier runs' stale e2e PRs/branches, and e2e issues, before and after
+      the session (PRs only in the cleanup owner's stale-artifact scope)
     """
     repo = get_test_repo()
     logger.info("=" * 60)
@@ -241,18 +240,17 @@ def e2e_reconciliation_at_session_start(
 
     if keep_remote_artifacts():
         logger.info("[E2E RECONCILIATION] Skipping remote cleanup (E2E_KEEP_REMOTE_ARTIFACTS=1)")
-        prs_closed = branches_deleted = issues_closed = labels_deleted = 0
+        prs_closed = issues_closed = labels_deleted = 0
         ensure_required_pr_labels(repo)
     else:
-        prs_closed = run_cleanup_step("PR cleanup", lambda: cleanup_prs(repo), timeout_s=120)
-        branches_deleted = 0  # cleanup_prs already deletes branches for all PRs
+        prs_closed = run_cleanup_step("PR cleanup", lambda: reconcile_stale_prs(repo), timeout_s=120)
         issues_closed = run_cleanup_step("Issue cleanup", lambda: cleanup_issues(repo), timeout_s=120)
         labels_deleted = run_cleanup_step("Label cleanup", lambda: cleanup_e2e_labels(repo, E2E_LABEL_CLEANUP_PREFIXES), timeout_s=60)
         ensure_required_pr_labels(repo)
 
     logger.info("=" * 60)
-    logger.info("[E2E RECONCILIATION] Summary: PRs=%d, Branches=%d, Issues=%d, Labels=%d",
-                prs_closed, branches_deleted, issues_closed, labels_deleted)
+    logger.info("[E2E RECONCILIATION] Summary: PRs=%d, Issues=%d, Labels=%d",
+                prs_closed, issues_closed, labels_deleted)
     logger.info("=" * 60)
     yield
 
@@ -269,7 +267,9 @@ def e2e_reconciliation_at_session_start(
         logger.info("[E2E RECONCILIATION] Skipping post-run remote cleanup (E2E_KEEP_REMOTE_ARTIFACTS=1)")
         prs_closed = issues_closed = labels_deleted = 0
     else:
-        prs_closed = run_cleanup_step("Post-run PR cleanup", lambda: cleanup_prs(repo), timeout_s=120)
+        prs_closed = run_cleanup_step(
+            "Post-run PR cleanup", lambda: reconcile_stale_prs(repo), timeout_s=120
+        )
         issues_closed = run_cleanup_step("Post-run issue cleanup", lambda: cleanup_issues(repo), timeout_s=120)
         labels_deleted = run_cleanup_step(
             "Post-run label cleanup",

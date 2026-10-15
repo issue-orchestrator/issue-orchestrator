@@ -71,7 +71,7 @@ from issue_orchestrator.domain.session_key import SessionKey
 from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from tests.label_application_helpers import standing_while_present
-from tests.live_e2e_gate import LiveE2EGate
+from tests.live_e2e_gate import AGENT_SESSION_ENVS, OPT_IN_ENV, LiveE2EGate
 
 TEST_ADMIN_TOKEN = "test-admin-token"
 TEST_AGENT_CALLBACK_TOKEN = "test-agent-callback-token"
@@ -99,6 +99,22 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool 
     if config.stash[_LIVE_E2E_GATE].ignores(collection_path):
         return True
     return None
+
+
+@pytest.fixture
+def live_e2e_run(monkeypatch: pytest.MonkeyPatch):
+    """Give one unit test a live e2e run's environment: opted in, outside an
+    agent session, against ``test_repo``. The e2e cleanup owner refuses
+    anything else (#9523); this never affects collection, which was decided
+    from the real environment at startup."""
+
+    def opt_in(test_repo: str) -> None:
+        monkeypatch.setenv(OPT_IN_ENV, "1")
+        for name in AGENT_SESSION_ENVS:
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("E2E_TEST_REPO", test_repo)
+
+    return opt_in
 
 
 # =============================================================================

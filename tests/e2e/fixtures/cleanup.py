@@ -19,13 +19,19 @@ from issue_orchestrator.ports.worktree_custody import (
     CustodyUnavailableError,
 )
 
+from .artifact_cleanup import (
+    E2E_ARTIFACT_LABEL,
+    E2EArtifactCleanup,
+    StaleArtifactScope,
+    utc_now,
+)
 from .github_client import _github_adapter
 from .orchestrator_process import keep_artifacts, keep_remote_artifacts
 
 logger = logging.getLogger(__name__)
 
 # Explicit label for e2e test artifacts - specific to avoid accidental cleanup
-DEFAULT_E2E_FILTER_LABEL = "io-e2e-test-data"
+DEFAULT_E2E_FILTER_LABEL = E2E_ARTIFACT_LABEL
 
 
 def cleanup_local_worktrees(
@@ -208,6 +214,7 @@ def run_cleanup_step(name: str, fn, timeout_s: int) -> int:
         try:
             result["value"] = int(fn())
         except Exception:
+            logger.warning("[E2E CLEANUP] %s failed", name, exc_info=True)
             result["value"] = 0
 
     thread = threading.Thread(target=_runner, daemon=True)
@@ -253,113 +260,15 @@ def verify_cleanup_items(
     return len(remaining)
 
 
-def cleanup_remote_branches(repo: str) -> int:
-    """Clean up remote branches from PRs with io-e2e-test-data label.
+def reconcile_stale_prs(repo: str) -> int:
+    """Close earlier runs' leftover e2e PRs and delete their branches.
 
-    Uses the branch info already present in PRInfo from get_prs_with_label
-    to avoid N+1 individual get_pr() calls.
+    Through the one cleanup owner in its stale-artifact scope: only PRs that
+    carry the e2e artifact label and are older than any run still going, so a
+    concurrent run's PRs are left to that run (#9523). Returns the number
+    closed.
     """
-    branches_deleted = 0
-    branches_attempted: list[str] = []
-    deadline = time.monotonic() + 30
-
-    adapter = _github_adapter(repo)
-
-    try:
-        # get_prs_with_label returns PRInfo with branch already populated
-        items = adapter.get_prs_with_label(DEFAULT_E2E_FILTER_LABEL, state="all")
-        for item in items:
-            if time.monotonic() > deadline:
-                logger.warning("[E2E CLEANUP] Branch cleanup time budget exceeded; stopping early")
-                return branches_deleted
-            branch = item.branch or ""
-            if branch:
-                try:
-                    adapter.delete_branch(branch)
-                    branches_attempted.append(branch)
-                    logger.info("[E2E CLEANUP] Deleted branch for PR #%d: %s", item.number, branch)
-                    branches_deleted += 1
-                except Exception:
-                    logger.warning("[E2E CLEANUP] Failed deleting branch for PR #%s: %s", item.number, branch)
-    except Exception as exc:
-        logger.warning("[E2E CLEANUP] Failed to list PRs for branch cleanup: %s", exc)
-
-    def _branch_gone(branch: str) -> bool:
-        try:
-            return not adapter.branch_exists(branch)
-        except Exception:
-            return True
-
-    verify_cleanup_items(
-        "Branch cleanup",
-        branches_attempted,
-        _branch_gone,
-        retries=1,
-        retry_delay_s=3.0,
-    )
-    return branches_deleted
-
-
-def cleanup_prs(repo: str) -> int:
-    """Clean up PRs with io-e2e-test-data label only.
-
-    Fetches all PRs (open + closed) in a single query. Closes open ones
-    and deletes branches for all of them.
-    """
-    closed_pr_nums: set[int] = set()
-    branches_attempted: list[str] = []
-
-    adapter = _github_adapter(repo)
-
-    # Single query for all states — avoids two separate API calls
-    try:
-        items = adapter.get_prs_with_label(DEFAULT_E2E_FILTER_LABEL, state="all")
-        for item in items:
-            pr_num = item.number
-            if not pr_num:
-                continue
-            # Close open PRs
-            if item.state.lower() == "open":
-                logger.info("[E2E CLEANUP] Closing PR #%d: %s (label: %s)", pr_num, item.title, DEFAULT_E2E_FILTER_LABEL)
-                try:
-                    adapter.close_pr(pr_num)
-                    closed_pr_nums.add(pr_num)
-                except Exception:
-                    logger.warning("[E2E CLEANUP] Failed closing PR #%d", pr_num)
-            # Delete branch for all PRs (open, closed, merged)
-            branch = item.branch or ""
-            if branch:
-                try:
-                    adapter.delete_branch(branch)
-                    branches_attempted.append(branch)
-                    if item.state.lower() != "open":
-                        logger.info("[E2E CLEANUP] Deleted branch: %s (from %s PR #%d)", branch, item.state, pr_num)
-                except Exception:
-                    pass
-    except Exception as exc:
-        logger.warning("[E2E CLEANUP] Failed listing PRs for label '%s': %s", DEFAULT_E2E_FILTER_LABEL, exc)
-
-    pr_numbers = list(closed_pr_nums)
-
-    def _pr_closed(pr_number: int) -> bool:
-        try:
-            pr = adapter.get_pr(pr_number)
-            if not pr:
-                return True
-            return pr.state.upper() in {"CLOSED", "MERGED"}
-        except Exception:
-            return True
-
-    def _branch_gone(branch: str) -> bool:
-        try:
-            return not adapter.branch_exists(branch)
-        except Exception:
-            return True
-
-    verify_cleanup_items("PR cleanup", pr_numbers, _pr_closed, retries=1, retry_delay_s=3.0)
-    verify_cleanup_items("PR branch cleanup", branches_attempted, _branch_gone, retries=1, retry_delay_s=3.0)
-
-    return len(closed_pr_nums)
+    return E2EArtifactCleanup.for_test_repo(repo).sweep(StaleArtifactScope.as_of(utc_now()))
 
 
 def ensure_pr_label(repo: str, label: str) -> None:
@@ -445,8 +354,7 @@ __all__ = [
     "cleanup_local_worktrees",
     "run_cleanup_step",
     "verify_cleanup_items",
-    "cleanup_remote_branches",
-    "cleanup_prs",
+    "reconcile_stale_prs",
     "ensure_pr_label",
     "ensure_required_pr_labels",
     "cleanup_e2e_labels",
