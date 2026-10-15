@@ -3,22 +3,24 @@
 Every close and delete goes through the e2e suite's one cleanup owner
 (``tests/e2e/fixtures/artifact_cleanup.py``) in the run's ``ExamRunScope``:
 the issues the run created or labelled with its own unique run label, and the
-branches its harness pushed. Every removal is strict: a PR is closed AND its
-branch deleted, and both are verified gone, or the step raises.
-``cleanup_steps.run_all_steps`` keeps the other steps running and raises every
-failure together.
+branches it recorded creating (``ExamRun.branches``). Every removal is strict:
+a PR is closed AND its branch deleted, and both are verified gone, or the step
+raises. ``cleanup_steps.run_all_steps`` keeps the other steps running and
+raises every failure together.
 """
 
 from __future__ import annotations
 
 import logging
-import subprocess
 from typing import Iterable
 
 from tests.e2e.exam.observe import linked_pull_requests
-from tests.e2e.exam.run_identity import github_remote
 from tests.e2e.fixtures import _github_adapter
-from tests.e2e.fixtures.artifact_cleanup import E2EArtifactCleanup, ExamRunScope
+from tests.e2e.fixtures.artifact_cleanup import (
+    CleanupRefusedError,
+    E2EArtifactCleanup,
+    ExamRunScope,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +55,9 @@ def remove_pr(repo: str, scope: ExamRunScope, pr_number: int) -> None:
     logger.info("[EXAM] removed PR #%d and branch %s", pr_number, pr.branch)
 
 
-def teardown_run(repo: str, run_label: str, created: Iterable[int]) -> None:
+def teardown_run(
+    repo: str, run_label: str, created: Iterable[int], branches: Iterable[str]
+) -> None:
     """Remove every PR — open or closed — of every issue the run touched, with
     its branch (a closed PR can leave its branch behind, e.g. after a partial
     reset).
@@ -62,56 +66,26 @@ def teardown_run(repo: str, run_label: str, created: Iterable[int]) -> None:
     run label — the engine files some itself (tech-lead anchors, follow-ups,
     case files) and can publish PRs for them. Recovery-published PRs need not
     carry the e2e cleanup labels, so label-based reconciliation cannot be
-    relied on to find them. The issues themselves are closed by the caller.
+    relied on to find them. A candidate the run's evidence does not admit (its
+    head is not a branch the run recorded and its body links none of the
+    run's issues) is retained and reported, never removed. Branches with no
+    PR are ``delete_registered_branches``'s; the issues are the caller's.
     """
     labelled = [issue.number for issue in _github_adapter(repo).list_issues(labels=[run_label], state="all")]
     owned = sorted(set(created) | set(labelled))
-    scope = ExamRunScope(issue_numbers=frozenset(owned))
+    scope = ExamRunScope(issue_numbers=frozenset(owned), run_branches=frozenset(branches))
     for number in owned:
         for pr in linked_pull_requests(repo, number, state="all"):
-            remove_pr(repo, scope, pr.number)
-    # A branch the engine pushed for an owned issue whose PR was never
-    # created is found by the engine's branch naming (``<issue>-...``).
-    for branch in branches_for_issues(repo, owned):
-        remove_branch(repo, scope, branch)
-
-
-def branches_for_issues(repo: str, issue_numbers: Iterable[int]) -> list[str]:
-    """Every remote branch named ``<issue>-...`` for the given issues.
-
-    ``git ls-remote`` returns ALL heads in one complete read and spends no
-    GitHub API budget; it addresses the run's repository (github_remote).
-    """
-    wanted = {str(number) for number in issue_numbers}
-    if not wanted:
-        return []
-    result = subprocess.run(
-        ["git", "ls-remote", "--heads", github_remote(repo)],
-        capture_output=True, text=True, check=False,
-    )
-    if result.returncode != 0:
-        raise ExamCleanupError(f"could not list remote branches of {repo}: {result.stderr.strip()}")
-    return parse_issue_branches(result.stdout, wanted)
-
-
-def parse_issue_branches(ls_remote: str, issue_numbers: Iterable[str]) -> list[str]:
-    """Branches from ``git ls-remote --heads`` output whose name is exactly
-    ``<issue>-...`` for one of ``issue_numbers`` (so #7 never matches 77-x)."""
-    wanted = set(issue_numbers)
-    branches: list[str] = []
-    for line in ls_remote.splitlines():
-        ref = line.split("\t", 1)[-1].strip()
-        name = ref.removeprefix("refs/heads/")
-        prefix, sep, _rest = name.partition("-")
-        if sep and prefix in wanted:
-            branches.append(name)
-    return sorted(branches)
+            try:
+                remove_pr(repo, scope, pr.number)
+            except CleanupRefusedError as exc:
+                logger.warning("[EXAM] retained PR #%d, not provably this run's: %s", pr.number, exc)
 
 
 def delete_registered_branches(repo: str, branches: Iterable[str]) -> None:
-    """Remove every branch the harness pushed, whatever state seeding reached
+    """Remove every branch the run recorded creating, whatever state it reached
     (a branch whose PR was never created is removed too)."""
-    pushed = tuple(branches)
-    scope = ExamRunScope(issue_numbers=frozenset(), pushed_branches=frozenset(pushed))
-    for branch in pushed:
+    recorded = tuple(dict.fromkeys(branches))
+    scope = ExamRunScope(issue_numbers=frozenset(), run_branches=frozenset(recorded))
+    for branch in recorded:
         remove_branch(repo, scope, branch)

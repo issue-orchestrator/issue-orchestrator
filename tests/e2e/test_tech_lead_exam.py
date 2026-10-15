@@ -107,8 +107,8 @@ def _cleanup(repo: str, run_label: str, flows: list[E2EFlow], branches: list[str
     """Close everything the run touched; see :func:`run_all_steps`."""
     created = [number for flow in flows for number in flow.created_issue_numbers]
     steps: list[tuple[str, Callable[[], object]]] = [
-        ("close the run's PRs", lambda: teardown_run(repo, run_label, created)),
-        ("delete harness-pushed branches", lambda: delete_registered_branches(repo, branches)),
+        ("close the run's PRs", lambda: teardown_run(repo, run_label, created, branches)),
+        ("delete the run's branches", lambda: delete_registered_branches(repo, branches)),
         *(
             (f"close flow issues {flow.created_issue_numbers}", flow.cleanup_created_issues)
             for flow in flows

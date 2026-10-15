@@ -191,8 +191,10 @@ class ExamRun:
     identity: RunIdentity
     notes: list[str] = field(default_factory=list)
     branches: list[str] = field(default_factory=list)
-    """Remote branches the harness pushed, registered the moment they exist
-    so cleanup can delete them even if the PR was never created."""
+    """Branches the run created, registered so cleanup can delete them even if
+    no PR was ever created: the ones the harness pushed, the moment they
+    exist, and the ones the engine created in its clone, when the clone is
+    removed. Cleanup deletes no other branch (#9523)."""
 
     @property
     def run_label(self) -> str:
@@ -338,7 +340,7 @@ async def run_case_a(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
         finally:
             await engine.close()
     finally:
-        checkout.remove()
+        checkout.remove(register_branch=run.branches.append)
 
 
 # ---------------------------------------------------------------------------
@@ -442,7 +444,7 @@ async def run_case_b(
         finally:
             await engine.close()
     finally:
-        checkout.remove()
+        checkout.remove(register_branch=run.branches.append)
 
 
 #: How long a released review may take to launch: the next review scan.
@@ -540,7 +542,7 @@ async def run_case_c(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
         finally:
             await engine.close()
     finally:
-        checkout.remove()
+        checkout.remove(register_branch=run.branches.append)
 
 
 # ---------------------------------------------------------------------------
@@ -671,7 +673,7 @@ async def run_case_h(run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_mod
         finally:
             await engine.close()
     finally:
-        checkout.remove()
+        checkout.remove(register_branch=run.branches.append)
 
 
 # ---------------------------------------------------------------------------
@@ -733,7 +735,7 @@ async def run_case_d(
         finally:
             await engine.close()
     finally:
-        checkout.remove()
+        checkout.remove(register_branch=run.branches.append)
 
 
 # ---------------------------------------------------------------------------
@@ -789,7 +791,7 @@ async def run_case_e(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
         finally:
             await engine.close()
     finally:
-        checkout.remove()
+        checkout.remove(register_branch=run.branches.append)
 
 
 # ---------------------------------------------------------------------------
@@ -909,7 +911,7 @@ async def run_case_resolution(
         finally:
             await engine.close()
     finally:
-        checkout.remove()
+        checkout.remove(register_branch=run.branches.append)
 
 
 # ---------------------------------------------------------------------------
@@ -1036,7 +1038,7 @@ async def run_case_i(run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_mod
         finally:
             await engine.close()
     finally:
-        checkout.remove()
+        checkout.remove(register_branch=run.branches.append)
         shutil.rmtree(hold_dir, ignore_errors=True)
 
 
@@ -1167,7 +1169,7 @@ async def run_case_j(run: ExamRun, flow_cleanup: list[E2EFlow], *, tech_lead_mod
         finally:
             await engine.close()
     finally:
-        checkout.remove()
+        checkout.remove(register_branch=run.branches.append)
 
 
 # ---------------------------------------------------------------------------
@@ -1314,7 +1316,7 @@ async def run_case_u(
         finally:
             await candidate.close()
     finally:
-        checkout.remove()
+        checkout.remove(register_branch=run.branches.append)
         shutil.rmtree(hold_dir, ignore_errors=True)
 
 
@@ -1516,4 +1518,4 @@ async def run_case_k(run: ExamRun, flow_cleanup: list[E2EFlow]) -> ExamResult:
         finally:
             await engine.close()
     finally:
-        checkout.remove()
+        checkout.remove(register_branch=run.branches.append)

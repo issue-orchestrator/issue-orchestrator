@@ -8,19 +8,22 @@ carries, and every close and delete in ``tests/e2e`` goes through
 :class:`E2EArtifactCleanup`:
 
 - :class:`RunOwnedScope` -- a run's own teardown. A PR is admitted only if it
-  carries an e2e marker AND belongs to an issue the run created.
-- :class:`ExamRunScope` -- an exam run's teardown. Its issues are the ones it
-  created or labelled with its own unique run label; its branches are the
-  ones its harness pushed, or the engine named after one of those issues.
-- :class:`StaleArtifactScope` -- reconciliation of earlier runs' leftovers. A
-  PR is admitted only if it carries the static e2e artifact label AND was
-  created before any run still going could have started, so a concurrent
-  run's live PRs are never touched.
+  carries an e2e marker AND belongs to an issue the run recorded creating
+  (:data:`RUN_ISSUES`, or an ``E2EFlow``'s own issues).
+- :class:`ExamRunScope` -- an exam run's teardown. A PR is admitted when its
+  head is a branch the run recorded at creation, or its body links an issue
+  the run owns; a branch only when the run recorded it at creation.
+- :class:`IdleRepositoryScope` -- an operator's explicit statement that no
+  run is live against the test repository (``python -m tests.e2e.reconcile``).
+  No run can prove another has ended, so the suite never removes an unknown
+  run's PRs on its own.
 
-Outside the exam, a branch is deleted only as the head of an admitted PR,
-never because its name matches. The owner exists only for the validated test
-repository (``get_test_repo``) and only in a process the live gate allows, so
-destruction stays closed however the suite was reached.
+A branch is never deleted because its name matches. Deleting one closes every
+open PR it heads or is the base of, so each of those is read completely and
+uncached and must be admitted too, before anything is written. The owner
+exists only for the validated test repository (``get_test_repo``) and only in
+a process the live gate allows, so destruction stays closed however the suite
+was reached.
 """
 
 from __future__ import annotations
@@ -29,11 +32,10 @@ import logging
 import os
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from issue_orchestrator.control.review_scope import issues_of_pr
-from issue_orchestrator.domain.branch_naming import extract_issue_number_from_branch
+from issue_orchestrator.domain.pr_issue_reference import linked_issue_numbers
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from tests.live_e2e_gate import LiveE2EGate
 
@@ -48,10 +50,6 @@ E2E_ARTIFACT_LABEL = "io-e2e-test-data"
 #: Per-test and per-run e2e labels (``e2e_label``, run labels).
 E2E_TEST_LABEL_PREFIX = "io:e2e:"
 E2E_RUN_LABEL_PREFIX = "io:e2e-run-"
-
-#: Longer than any live run lasts. A PR younger than this may belong to a run
-#: still going, so stale reconciliation leaves it to that run's own teardown.
-MAX_LIVE_RUN_AGE = timedelta(hours=12)
 
 
 def is_e2e_marker(label: str) -> bool:
@@ -74,7 +72,9 @@ class CleanupGitHub(Protocol):
 
     def get_prs_with_label(self, label: str, state: str = "open") -> list[PRInfo]: ...
 
-    def get_prs_for_branch(self, branch: str, state: str = "open") -> list[PRInfo]: ...
+    def get_open_prs_for_branch_complete(self, branch: str) -> list[PRInfo]: ...
+
+    def list_open_prs_complete(self) -> list[PRInfo]: ...
 
     def close_pr(self, pr_number: int) -> None: ...
 
@@ -118,7 +118,7 @@ class RunOwnedScope:
 
     @property
     def listing_labels(self) -> tuple[str, ...]:
-        return tuple(sorted(self.markers))
+        return tuple(sorted(self.markers)) if self.issue_numbers else ()
 
     @property
     def listing_state(self) -> str:
@@ -133,43 +133,67 @@ class RunOwnedScope:
         return False
 
 
+class RunIssues:
+    """The issues this run (one pytest session) created, with their labels.
+
+    Every e2e issue creation records here (``fixtures.data_factory``); the
+    session's teardown removes the PRs of exactly these issues. An issue
+    missing from it only leaves its PR behind for the operator's
+    reconciliation; it can never put another run's PR in scope.
+    """
+
+    def __init__(self) -> None:
+        self._labels: dict[int, frozenset[str]] = {}
+
+    def record(self, issue_number: int, labels: Iterable[str]) -> None:
+        self._labels[issue_number] = frozenset(labels)
+
+    def scope(self) -> RunOwnedScope:
+        labels = {label for labels in self._labels.values() for label in labels}
+        return RunOwnedScope.of(self._labels, labels)
+
+
+#: This process's run: the e2e suite runs one pytest session per process.
+RUN_ISSUES = RunIssues()
+
+
 @dataclass(frozen=True)
 class ExamRunScope:
     """An exam run's artifacts.
 
+    ``run_branches`` were recorded the moment the run created them: the ones
+    the harness pushed, and the ones the run's own engine clone created
+    (``EngineCheckout.remove`` reads them before the clone is gone).
     ``issue_numbers`` are the issues the run created or labelled with its own
-    unique run label (``RunIdentity.label``); the engine files some itself and
-    may publish recovery PRs without e2e labels, so ownership comes from the
-    issue, not from a label on the PR. ``pushed_branches`` are the branches the
-    harness itself pushed.
+    unique run label (``RunIdentity.label``); a PR whose body links one of
+    them is the run's, even without e2e labels (the engine files issues and
+    publishes recovery PRs itself). A branch NAMED after an owned issue proves
+    nothing: anyone can push ``7-anything``.
     """
 
     issue_numbers: frozenset[int]
-    pushed_branches: frozenset[str] = frozenset()
+    run_branches: frozenset[str] = frozenset()
 
     def admits_pr(self, pr: PRInfo, repo: str) -> bool:
-        return pr.branch in self.pushed_branches or bool(
-            issues_of_pr(pr, repo_slug=repo) & self.issue_numbers
+        return pr.branch in self.run_branches or bool(
+            linked_issue_numbers(pr.body or "", repo_slug=repo) & self.issue_numbers
         )
 
     def admits_branch(self, branch: str) -> bool:
-        return (
-            branch in self.pushed_branches
-            or extract_issue_number_from_branch(branch) in self.issue_numbers
-        )
+        return branch in self.run_branches
 
 
 @dataclass(frozen=True)
-class StaleArtifactScope:
-    """Earlier runs' leftovers: PRs carrying the static e2e artifact label,
-    created before ``created_before``."""
+class IdleRepositoryScope:
+    """An operator's statement that no e2e run is live against ``repo``.
 
-    created_before: datetime
+    Only then is every PR carrying the static e2e artifact label a leftover:
+    nothing a run could observe proves another run has ended (#9523), so only
+    ``python -m tests.e2e.reconcile`` builds this, from an explicit
+    confirmation naming the repository.
+    """
 
-    @classmethod
-    def as_of(cls, now: datetime) -> StaleArtifactScope:
-        """Leftovers no run that may still be going at ``now`` can own."""
-        return cls(created_before=now - MAX_LIVE_RUN_AGE)
+    repo: str
 
     @property
     def listing_labels(self) -> tuple[str, ...]:
@@ -180,13 +204,7 @@ class StaleArtifactScope:
         return "all"
 
     def admits_pr(self, pr: PRInfo, repo: str) -> bool:
-        if E2E_ARTIFACT_LABEL not in pr.labels or not pr.created_at:
-            return False
-        try:
-            created = datetime.fromisoformat(pr.created_at)
-        except ValueError:
-            return False
-        return created.tzinfo is not None and created < self.created_before
+        return repo.casefold() == self.repo.casefold() and E2E_ARTIFACT_LABEL in pr.labels
 
     def admits_branch(self, branch: str) -> bool:
         return False
@@ -239,7 +257,8 @@ class E2EArtifactCleanup:
         """Close PR ``pr_number`` (if open) and delete its branch.
 
         Raises CleanupRefusedError when the PR cannot be read or the scope does
-        not admit it; nothing is written then.
+        not admit it (or a PR its branch deletion would close); nothing is
+        written then.
         """
         pr = self._github.get_pr(pr_number)
         if pr is None:
@@ -249,24 +268,25 @@ class E2EArtifactCleanup:
         self._remove(scope, pr)
 
     def delete_branch(self, scope: CleanupScope, branch: str) -> None:
-        """Close the open PRs of ``branch`` and delete it, if the scope names it."""
+        """Delete ``branch``, if the scope recorded it, closing the open PRs it heads."""
         if not scope.admits_branch(branch):
             raise CleanupRefusedError(f"branch {branch} is not in this cleanup's scope")
-        open_prs = [
-            pr for pr in self._github.get_prs_for_branch(branch, state="open")
-            if pr.state.lower() == "open"
-        ]
-        for pr in open_prs:
+        if not self._github.branch_exists(branch):
+            return
+        affected = self._open_prs_closed_by_deleting(branch)
+        for pr in affected:
             self._admit(scope, pr)
-        for pr in open_prs:
-            self._github.close_pr(pr.number)
-        self._delete_branch_if_present(branch)
+        for pr in affected:
+            if pr.branch == branch:
+                self._github.close_pr(pr.number)
+        self._github.delete_branch(branch)
 
     def sweep(self, scope: SweptScope) -> int:
         """Remove every admitted PR the scope's listing finds; the number closed.
 
-        Best effort per PR, so one failure does not strand the rest; PRs the
-        scope does not admit are never written to.
+        Best effort per PR, so one failure does not strand the rest; a PR the
+        scope does not admit, or whose branch deletion would close one it does
+        not admit, is never written to.
         """
         seen: set[int] = set()
         closed = 0
@@ -282,9 +302,13 @@ class E2EArtifactCleanup:
                 seen.add(pr.number)
                 try:
                     closed += self._remove(scope, pr)
-                except Exception:
-                    logger.warning("[E2E CLEANUP] Failed removing PR #%d", pr.number)
+                except Exception as exc:
+                    logger.warning("[E2E CLEANUP] Retained PR #%d: %s", pr.number, exc)
         return closed
+
+    def open_prs_with_label(self, label: str) -> list[PRInfo]:
+        """Read-only: the open PRs carrying ``label`` (for reporting leftovers)."""
+        return self._github.get_prs_with_label(label, state="open")
 
     def _admit(self, scope: CleanupScope, pr: PRInfo) -> None:
         if not scope.admits_pr(pr, self.repo):
@@ -293,30 +317,42 @@ class E2EArtifactCleanup:
                 "an e2e artifact this cleanup's scope owns"
             )
 
+    def _open_prs_closed_by_deleting(self, branch: str) -> list[PRInfo]:
+        """Every open PR whose head or base is ``branch``: deleting it closes them.
+
+        Both reads are complete and uncached, and raise rather than return a
+        partial answer, so a PR the cache or a capped page would hide still
+        counts. The complete listing carries no labels, so a PR based on
+        ``branch`` is read whole before it is judged.
+        """
+        affected = {pr.number: pr for pr in self._github.get_open_prs_for_branch_complete(branch)}
+        for listed in self._github.list_open_prs_complete():
+            if listed.base_branch != branch or listed.number in affected:
+                continue
+            pr = self._github.get_pr(listed.number)
+            if pr is None:
+                raise CleanupRefusedError(
+                    f"PR #{listed.number} is based on {branch} but cannot be read"
+                )
+            affected[pr.number] = pr
+        return [pr for pr in affected.values() if pr.state.lower() == "open"]
+
     def _remove(self, scope: CleanupScope, pr: PRInfo) -> int:
         """Close ``pr`` if open and delete its branch; 1 if it was closed.
 
-        Deleting a branch also closes every other open PR whose head it is, so
-        each of those must be admitted too, before anything is written.
+        Everything is admitted before anything is written: ``pr``, and every
+        other open PR deleting its branch would close.
         """
         self._admit(scope, pr)
-        if pr.branch:
-            for head in self._github.get_prs_for_branch(pr.branch, state="open"):
-                if head.number != pr.number and head.state.lower() == "open":
-                    self._admit(scope, head)
+        branch = pr.branch if pr.branch and self._github.branch_exists(pr.branch) else None
+        if branch is not None:
+            for affected in self._open_prs_closed_by_deleting(branch):
+                if affected.number != pr.number:
+                    self._admit(scope, affected)
         was_open = pr.state.lower() == "open"
         if was_open:
             self._github.close_pr(pr.number)
-        if pr.branch:
-            self._delete_branch_if_present(pr.branch)
+        if branch is not None:
+            self._github.delete_branch(branch)
         logger.info("[E2E CLEANUP] Removed PR #%d and branch %s", pr.number, pr.branch)
         return int(was_open)
-
-    def _delete_branch_if_present(self, branch: str) -> None:
-        if self._github.branch_exists(branch):
-            self._github.delete_branch(branch)
-
-
-def utc_now() -> datetime:
-    """Now, for :meth:`StaleArtifactScope.as_of`."""
-    return datetime.now(UTC)

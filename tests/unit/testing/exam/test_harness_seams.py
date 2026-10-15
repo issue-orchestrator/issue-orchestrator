@@ -181,11 +181,11 @@ def test_cleanup_that_succeeds_raises_nothing() -> None:
     assert ran == ["a", "b"]
 
 
-def _exam_pr(number: int, *, branch: str, state: str):
+def _exam_pr(number: int, *, branch: str, state: str, body: str = ""):
     from issue_orchestrator.ports.pull_request_tracker import PRInfo
 
     return PRInfo(
-        number=number, title=f"PR {number}", url="", branch=branch, body="",
+        number=number, title=f"PR {number}", url="", branch=branch, body=body,
         state=state, labels=[],
     )
 
@@ -205,8 +205,11 @@ class _FakeAdapter:
             raise RuntimeError("create_pr failed")
         raise AssertionError("not reached in these tests")
 
-    def get_prs_for_branch(self, branch: str, state: str = "open"):
-        return self.prs.get(branch, [])
+    def get_open_prs_for_branch_complete(self, branch: str):
+        return [pr for pr in self.prs.get(branch, []) if pr.state == "open"]
+
+    def list_open_prs_complete(self):
+        return [pr for prs in self.prs.values() for pr in prs if pr.state == "open"]
 
     def close_pr(self, number: int) -> None:
         self.closed.append(number)
@@ -319,8 +322,10 @@ def test_a_built_checkout_removes_cleanly_without_touching_the_harness_venv(monk
     checkout = engine_checkout.EngineCheckout.create(harness_root=harness, ref="HEAD", identity=RunIdentity.new("B"), repo="o/r", parent=parent)
 
     assert (checkout.root / ".venv").is_symlink()
-    checkout.remove()
+    registered: list[str] = []
+    checkout.remove(register_branch=registered.append)
     assert list(parent.iterdir()) == []
+    assert registered == []
     assert (harness / ".venv" / "bin").is_dir()
 
 
@@ -406,7 +411,17 @@ class _StrictFake(_FakeAdapter):
             self.branches.discard(branch)
 
     def get_pr(self, number: int):
-        return _exam_pr(number, branch="7-exam", state=self.pr_state[number])
+        # A recovery PR: no e2e labels, its body links the run's issue #7.
+        return _exam_pr(number, branch="7-exam", state=self.pr_state[number], body="Closes #7")
+
+    def get_open_prs_for_branch_complete(self, branch: str):
+        return [
+            self.get_pr(number) for number, state in self.pr_state.items()
+            if branch == "7-exam" and state == "open"
+        ]
+
+    def list_open_prs_complete(self):
+        return [self.get_pr(number) for number, state in self.pr_state.items() if state == "open"]
 
     def close_pr(self, number: int) -> None:
         self.closed.append(number)
@@ -449,14 +464,13 @@ def test_teardown_removes_a_recovery_pr_strictly_and_reports_the_failure(monkeyp
         return [SimpleNamespace(number=70)] if number == 7 else []
 
     monkeypatch.setattr(cleanup, "linked_pull_requests", linked)
-    monkeypatch.setattr(cleanup, "branches_for_issues", lambda _repo, _numbers: [])
     ran: list[str] = []
 
     with pytest.raises(ExceptionGroup) as caught:
         run_all_steps(
             "exam cleanup",
             [
-                ("teardown", lambda: cleanup.teardown_run("o/r", "io:e2e:exam-a-x", [7])),
+                ("teardown", lambda: cleanup.teardown_run("o/r", "io:e2e:exam-a-x", [7], [])),
                 ("close issues", lambda: ran.append("close issues")),
             ],
         )
@@ -528,9 +542,8 @@ def test_a_closed_pr_whose_branch_survived_is_cleaned_up(monkeypatch, live_e2e_r
         cleanup, "linked_pull_requests",
         lambda _repo, number, state: [SimpleNamespace(number=70)] if (number, state) == (7, "all") else [],
     )
-    monkeypatch.setattr(cleanup, "branches_for_issues", lambda _repo, _numbers: [])
 
-    cleanup.teardown_run("o/r", "io:e2e:exam-a-x", [7])
+    cleanup.teardown_run("o/r", "io:e2e:exam-a-x", [7], [])
 
     assert adapter.closed == [] and adapter.deleted == ["7-exam"] and adapter.branches == set()
 
@@ -558,7 +571,7 @@ def test_the_engine_clone_pushes_to_the_runs_repository(monkeypatch, tmp_path) -
 
     assert ("remote", "set-url", "origin", "https://github.com/me/fork.git") in calls
     assert not any(argv[:2] == ("remote", "get-url") for argv in calls)
-    checkout.remove()
+    checkout.remove(register_branch=lambda branch: None)
 
 
 @pytest.mark.parametrize("bad", ["", "owner", "owner/", "/name", "a/b/c"])
@@ -589,42 +602,88 @@ def test_only_this_runs_log_tailers_are_selected(tmp_path) -> None:
 
 
 
-def test_an_engine_branch_with_no_pr_is_found_by_naming_and_removed(monkeypatch, live_e2e_run) -> None:
-    """Round 14 F2: the engine pushed 7-work, PR creation failed — no PR links it."""
+def test_an_engine_branch_with_no_pr_is_removed_as_the_clone_recorded_it(monkeypatch, live_e2e_run) -> None:
+    """Round 14 F2: the engine pushed 7-exam-work and PR creation failed, so no
+    PR links it. The clone recorded creating it (#9523 review F2), so it goes."""
     from tests.e2e.exam import cleanup
 
     live_e2e_run("o/r")
     adapter = _StrictFake(delete_works=True)
     adapter.branches = {"7-exam-work"}
     monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: adapter)
-    monkeypatch.setattr(cleanup, "linked_pull_requests", lambda _repo, number, state: [])
-    seen: list[list[int]] = []
 
-    def branches(_repo, numbers):
-        seen.append(list(numbers))
-        return ["7-exam-work"]
+    cleanup.delete_registered_branches("o/r", ["7-exam-work"])
 
-    monkeypatch.setattr(cleanup, "branches_for_issues", branches)
-
-    cleanup.teardown_run("o/r", "io:e2e:exam-a-x", [7])
-
-    assert seen == [[7]]
     assert adapter.deleted == ["7-exam-work"] and adapter.branches == set()
 
 
-def test_issue_branches_match_the_engines_naming_exactly() -> None:
-    from tests.e2e.exam.cleanup import parse_issue_branches
+def test_teardown_never_touches_a_branch_only_named_after_an_owned_issue(monkeypatch, live_e2e_run) -> None:
+    """#9523 review F2: owned issue #7, and an unregistered ``7-unrelated``
+    branch with a PR that only its name links to #7: nothing is closed or deleted."""
+    from tests.e2e.exam import cleanup
+    from tests.unit.e2e_github_fake import FakeE2EGitHub, pull_request
 
-    ls_remote = "\n".join(
-        [
-            "aaa\trefs/heads/7-exam-work",
-            "bbb\trefs/heads/77-other",
-            "ccc\trefs/heads/main",
-            "ddd\trefs/heads/70-7-lookalike",
-            "eee\trefs/heads/8-second",
-        ]
+    class _Repository(FakeE2EGitHub):
+        def list_issues(self, labels, state):
+            return []
+
+    live_e2e_run("o/r")
+    github = _Repository([pull_request(72, "7-unrelated", [], body="human work")])
+    monkeypatch.setattr(cleanup, "_github_adapter", lambda _repo: github)
+    monkeypatch.setattr(
+        cleanup, "linked_pull_requests",
+        lambda _repo, number, state: [github.get_pr(72)] if number == 7 else [],
     )
-    assert parse_issue_branches(ls_remote, {"7", "8"}) == ["7-exam-work", "8-second"]
+
+    cleanup.teardown_run("o/r", "io:e2e:exam-a-x", [7], ["7-exam-work"])
+    with pytest.raises(cleanup.CleanupRefusedError):
+        cleanup.remove_branch("o/r", cleanup.ExamRunScope(frozenset({7})), "7-unrelated")
+
+    assert github.writes == ([], [])
+    assert github.branch_exists("7-unrelated")
+
+
+def test_the_engine_clone_registers_the_branches_its_engine_created(tmp_path) -> None:
+    """Recorded at creation, in the run's own clone, and read before it is
+    removed: the only branches teardown deletes without a PR (#9523 review F2)."""
+    from tests.e2e.exam.engine_checkout import EngineCheckout
+
+    root = tmp_path / "clone"
+    root.mkdir()
+
+    def git(*argv: str) -> str:
+        return subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@example.test", *argv],
+            cwd=root, check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    git("init", "--quiet", "--initial-branch=main")
+    git("commit", "--quiet", "--allow-empty", "-m", "base")
+    git("branch", "9523-harness-branch")
+    commit = git("rev-parse", "HEAD")
+    checkout = EngineCheckout(
+        root=root, commit=commit, baseline_branches=frozenset({"main", "9523-harness-branch"})
+    )
+    git("branch", "7-engine-work")
+    registered: list[str] = []
+
+    checkout.remove(register_branch=registered.append)
+
+    assert registered == ["7-engine-work"]
+    assert not root.exists()
+
+
+def test_a_checkout_without_a_baseline_registers_no_branch(tmp_path) -> None:
+    from tests.e2e.exam.engine_checkout import EngineCheckout
+
+    root = tmp_path / "clone"
+    root.mkdir()
+    subprocess.run(["git", "init", "--quiet"], cwd=root, check=True)
+    registered: list[str] = []
+
+    EngineCheckout(root=root, commit="0" * 40).remove(register_branch=registered.append)
+
+    assert registered == []
 
 
 # ---------------------------------------------------------------------------
@@ -729,6 +788,10 @@ def test_removing_the_engine_checkout_removes_the_worktrees_it_created(tmp_path:
     base, _ = _git_repo_with_two_commits(harness)
     engine_root = tmp_path / "engine"
     subprocess.run(["git", "clone", "-q", "--shared", str(harness), str(engine_root)], check=True)
+    baseline = frozenset(subprocess.run(
+        ["git", "for-each-ref", "--format=%(refname:short)", "refs/heads"],
+        cwd=engine_root, capture_output=True, text=True, check=True,
+    ).stdout.split())
     agent_worktree = tmp_path / "worktrees" / "issue-911"
     subprocess.run(
         ["git", "worktree", "add", "-q", "-b", "911-exam", str(agent_worktree), base],
@@ -736,9 +799,13 @@ def test_removing_the_engine_checkout_removes_the_worktrees_it_created(tmp_path:
         check=True,
     )
     (agent_worktree / "uncommitted.txt").write_text("agent work in progress", encoding="utf-8")
+    registered: list[str] = []
 
-    EngineCheckout(root=engine_root, commit=base).remove()
+    EngineCheckout(root=engine_root, commit=base, baseline_branches=baseline).remove(
+        register_branch=registered.append
+    )
 
+    assert registered == ["911-exam"]  # the agent's branch, recorded before the clone went
     assert not engine_root.exists()
     assert not agent_worktree.exists()
     assert (harness / ".git").is_dir()  # the harness repository is untouched

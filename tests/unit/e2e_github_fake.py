@@ -20,7 +20,7 @@ def pull_request(
     *,
     body: str = "",
     state: str = "open",
-    created_at: str | None = None,
+    base: str = "main",
 ) -> PRInfo:
     return PRInfo(
         number=number,
@@ -30,19 +30,30 @@ def pull_request(
         body=body,
         state=state,
         labels=list(labels),
-        created_at=created_at,
+        base_branch=base,
     )
+
+
+class IncompleteReadError(RuntimeError):
+    """A complete read that could not be completed (a capped or failed scan)."""
 
 
 class FakeE2EGitHub:
     """PRs and branches of one repository; ``closed`` and ``deleted_branches``
-    are every write made to it."""
+    are every write made to it.
+
+    ``cached_for_branch`` is what a cached per-branch read would answer: it is
+    there to prove the owner never decides from it. ``incomplete_reads`` makes
+    the complete reads raise, as a capped scan does.
+    """
 
     def __init__(self, prs: Iterable[PRInfo], *, branches: Iterable[str] = ()) -> None:
         self._prs = {pr.number: pr for pr in prs}
         self.branches = {pr.branch for pr in self._prs.values() if pr.branch} | set(branches)
         self.closed: list[int] = []
         self.deleted_branches: list[str] = []
+        self.cached_for_branch: dict[str, list[PRInfo]] = {}
+        self.incomplete_reads = False
 
     @property
     def writes(self) -> tuple[list[int], list[str]]:
@@ -64,10 +75,18 @@ class FakeE2EGitHub:
         ]
 
     def get_prs_for_branch(self, branch: str, state: str = "open") -> list[PRInfo]:
-        return [
-            pr for pr in self._current()
-            if pr.branch == branch and state in ("all", pr.state)
-        ]
+        return self.cached_for_branch.get(branch, [])
+
+    def get_open_prs_for_branch_complete(self, branch: str) -> list[PRInfo]:
+        if self.incomplete_reads:
+            raise IncompleteReadError(f"open PR scan for {branch} incomplete")
+        return [pr for pr in self._current() if pr.branch == branch and pr.state == "open"]
+
+    def list_open_prs_complete(self) -> list[PRInfo]:
+        """Like the GraphQL walk: complete, but without labels."""
+        if self.incomplete_reads:
+            raise IncompleteReadError("open PR listing incomplete")
+        return [replace(pr, labels=[]) for pr in self._current() if pr.state == "open"]
 
     def close_pr(self, pr_number: int) -> None:
         self.closed.append(pr_number)

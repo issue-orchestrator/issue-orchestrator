@@ -25,8 +25,8 @@ import httpx
 import pytest
 
 from issue_orchestrator.infra.config import Config
+from tests.e2e.fixtures.data_factory import create_run_issue
 from issue_orchestrator.testing.support.test_data import (
-    create_issue,
     cleanup_issues_by_label,
 )
 
@@ -284,7 +284,7 @@ def claim_test_issue(
     cleanup_issues_by_label(repo_name, claim_test_label)
 
     # Create a new test issue
-    issue_number = create_issue(
+    issue_number = create_run_issue(
         repo_name,
         "[E2E-CLAIM] Coordination test issue",
         ["agent:e2e-test", claim_test_label],

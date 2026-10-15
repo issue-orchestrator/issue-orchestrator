@@ -22,7 +22,6 @@ from issue_orchestrator.testing.asyncdsl import (
     WatcherConfig,
 )
 from issue_orchestrator.testing.support.test_data import (
-    create_issue,
     create_test_issues,
     cleanup_test_issues,
     cleanup_issues_by_label,
@@ -31,6 +30,7 @@ from tests.live_e2e_gate import LiveE2EGate
 
 from ._stale_orchestrator_cleanup import kill_stale_e2e_orchestrators
 from .fixtures.artifact_cleanup import E2E_RUN_LABEL_PREFIX, E2E_TEST_LABEL_PREFIX
+from .fixtures.data_factory import create_run_issue
 
 # Import all helpers from fixture modules
 from .fixtures import (
@@ -68,7 +68,8 @@ from .fixtures import (
     cleanup_local_worktrees,
     run_cleanup_step,
     verify_cleanup_items,
-    reconcile_stale_prs,
+    report_leftover_prs,
+    cleanup_run_prs,
     ensure_required_pr_labels,
     cleanup_e2e_labels,
     cleanup_issues,
@@ -221,8 +222,9 @@ def e2e_reconciliation_at_session_start(
     Cleans up:
     - Default /tmp/e2e-worktrees directory
     - Current e2e test session's worktree directory
-    - Earlier runs' stale e2e PRs/branches, and e2e issues, before and after
-      the session (PRs only in the cleanup owner's stale-artifact scope)
+    - This run's own e2e PRs/branches after the session; other runs' open e2e
+      PRs are only reported (no run can prove another has ended)
+    - E2E issues and labels before and after the session
     """
     repo = get_test_repo()
     logger.info("=" * 60)
@@ -243,7 +245,8 @@ def e2e_reconciliation_at_session_start(
         prs_closed = issues_closed = labels_deleted = 0
         ensure_required_pr_labels(repo)
     else:
-        prs_closed = run_cleanup_step("PR cleanup", lambda: reconcile_stale_prs(repo), timeout_s=120)
+        prs_closed = 0
+        run_cleanup_step("Leftover PR report", lambda: report_leftover_prs(repo), timeout_s=60)
         issues_closed = run_cleanup_step("Issue cleanup", lambda: cleanup_issues(repo), timeout_s=120)
         labels_deleted = run_cleanup_step("Label cleanup", lambda: cleanup_e2e_labels(repo, E2E_LABEL_CLEANUP_PREFIXES), timeout_s=60)
         ensure_required_pr_labels(repo)
@@ -268,7 +271,7 @@ def e2e_reconciliation_at_session_start(
         prs_closed = issues_closed = labels_deleted = 0
     else:
         prs_closed = run_cleanup_step(
-            "Post-run PR cleanup", lambda: reconcile_stale_prs(repo), timeout_s=120
+            "Post-run PR cleanup", lambda: cleanup_run_prs(repo), timeout_s=120
         )
         issues_closed = run_cleanup_step("Post-run issue cleanup", lambda: cleanup_issues(repo), timeout_s=120)
         labels_deleted = run_cleanup_step(
@@ -472,13 +475,13 @@ def e2e_issues(repo_name: str) -> Generator[dict[str, int], None, None]:
     cleanup_test_issues(repo_name)
 
     issues = {
-        "simple_task": create_issue(
+        "simple_task": create_run_issue(
             repo_name,
             "[E2E] Simple task",
             ["agent:e2e-test", "io-e2e-test-data"],
             body="A simple task for basic e2e testing.",
         ),
-        "will_block": create_issue(
+        "will_block": create_run_issue(
             repo_name,
             "[E2E] Task that blocks",
             ["agent:e2e-test", "io-e2e-test-data"],
@@ -669,7 +672,7 @@ def test_issue_factory(repo_name: str, test_label: str, filter_label: str):
         if extra_labels:
             labels.extend(extra_labels)
         try:
-            issue_num = create_issue(repo_name, title, labels)
+            issue_num = create_run_issue(repo_name, title, labels)
         except RuntimeError as exc:
             if is_github_connection_error(str(exc)):
                 pytest.skip("GitHub API not reachable for live e2e tests")
@@ -751,7 +754,7 @@ def single_test_issue(repo_name: str) -> Generator[dict, None, None]:
     """Create a single test issue and return its details."""
     cleanup_test_issues(repo_name)
     title = "[E2E-TEST] Automated test issue 0"
-    issue_number = create_issue(
+    issue_number = create_run_issue(
         repo=repo_name,
         title=title,
         labels=["agent:e2e-test", "io-e2e-test-data"],
@@ -782,7 +785,7 @@ def concurrent_test_run(repo_name: str, request) -> Generator[dict, None, None]:
     issues = []
     for i in range(count):
         title = f"[E2E-TEST] Concurrent test issue {i}"
-        issue_number = create_issue(
+        issue_number = create_run_issue(
             repo=repo_name,
             title=title,
             labels=["agent:e2e-test", run_label],

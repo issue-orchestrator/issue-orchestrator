@@ -21,9 +21,9 @@ from issue_orchestrator.ports.worktree_custody import (
 
 from .artifact_cleanup import (
     E2E_ARTIFACT_LABEL,
+    RUN_ISSUES,
     E2EArtifactCleanup,
-    StaleArtifactScope,
-    utc_now,
+    RunIssues,
 )
 from .github_client import _github_adapter
 from .orchestrator_process import keep_artifacts, keep_remote_artifacts
@@ -260,15 +260,36 @@ def verify_cleanup_items(
     return len(remaining)
 
 
-def reconcile_stale_prs(repo: str) -> int:
-    """Close earlier runs' leftover e2e PRs and delete their branches.
+#: How an operator removes leftovers once no run is live (``tests/e2e/reconcile.py``).
+RECONCILE_COMMAND = (
+    "IO_E2E=1 E2E_TEST_REPO={repo} python -m tests.e2e.reconcile --no-live-run-against {repo}"
+)
 
-    Through the one cleanup owner in its stale-artifact scope: only PRs that
-    carry the e2e artifact label and are older than any run still going, so a
-    concurrent run's PRs are left to that run (#9523). Returns the number
-    closed.
+
+def report_leftover_prs(repo: str) -> int:
+    """Report open e2e PRs this run did not create; never close them.
+
+    Nothing this run can observe proves the run that made them has ended, so
+    they are left to that run, or to the operator's explicit reconciliation
+    (#9523). Returns how many there are.
     """
-    return E2EArtifactCleanup.for_test_repo(repo).sweep(StaleArtifactScope.as_of(utc_now()))
+    leftovers = E2EArtifactCleanup.for_test_repo(repo).open_prs_with_label(E2E_ARTIFACT_LABEL)
+    if leftovers:
+        logger.warning(
+            "[E2E RECONCILIATION] %d open e2e PR(s) left by other runs: %s. One may "
+            "belong to a run still going, so this run leaves them. Once no run is "
+            "live against %s, remove them with: %s",
+            len(leftovers),
+            ", ".join(f"#{pr.number}" for pr in leftovers),
+            repo,
+            RECONCILE_COMMAND.format(repo=repo),
+        )
+    return len(leftovers)
+
+
+def cleanup_run_prs(repo: str, run_issues: RunIssues = RUN_ISSUES) -> int:
+    """Close the open e2e PRs of every issue this run recorded creating."""
+    return E2EArtifactCleanup.for_test_repo(repo).sweep(run_issues.scope())
 
 
 def ensure_pr_label(repo: str, label: str) -> None:
@@ -354,7 +375,8 @@ __all__ = [
     "cleanup_local_worktrees",
     "run_cleanup_step",
     "verify_cleanup_items",
-    "reconcile_stale_prs",
+    "report_leftover_prs",
+    "cleanup_run_prs",
     "ensure_pr_label",
     "ensure_required_pr_labels",
     "cleanup_e2e_labels",

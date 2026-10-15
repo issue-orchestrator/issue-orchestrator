@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -50,6 +51,10 @@ class EngineCheckout:
 
     root: Path
     commit: str
+    #: The local branches the clone held before the engine ran. Every branch
+    #: created in the clone after that is the run's own engine's; ``None``
+    #: (a checkout ``create`` did not build) proves no branch is the run's.
+    baseline_branches: frozenset[str] | None = None
 
     @classmethod
     def create(
@@ -82,8 +87,9 @@ class EngineCheckout:
             _git(root, "branch", "--force", "main", "origin/main")
             _git(root, "checkout", "--quiet", "--detach", commit)
             (root / ".venv").symlink_to(venv)
+            checkout = cls(root=root, commit=commit, baseline_branches=_local_branches(root))
         except BaseException:
-            checkout.remove()
+            checkout._discard()
             raise
         logger.info("[EXAM] engine checkout %s at %s", root, commit)
         return checkout
@@ -99,13 +105,33 @@ class EngineCheckout:
         commit = _git(harness_root, "rev-parse", "--verify", f"{ref}^{{commit}}")
         _git(self.root, "checkout", "--quiet", "--detach", commit)
         logger.info("[EXAM] engine checkout %s upgraded %s -> %s", self.root, self.commit, commit)
-        return EngineCheckout(root=self.root, commit=commit)
+        return EngineCheckout(root=self.root, commit=commit, baseline_branches=self.baseline_branches)
 
     @property
     def state_dir(self) -> Path:
         return self.root / ".issue-orchestrator" / "state"
 
-    def remove(self) -> None:
+    def engine_branches(self) -> list[str]:
+        """Branches created in the clone since ``create``: the run's engine's.
+
+        The clone is this run's alone, so nobody else creates branches in it;
+        a remote branch of the same name is the one this engine pushed.
+        """
+        if self.baseline_branches is None or not (self.root / ".git").is_dir():
+            return []
+        return sorted(_local_branches(self.root) - self.baseline_branches)
+
+    def remove(self, *, register_branch: Callable[[str], None]) -> None:
+        """Remove the clone, first registering the branches its engine created.
+
+        Once the clone is gone nothing records which remote branches this
+        run's engine pushed, so cleanup could only guess from their names.
+        """
+        for branch in self.engine_branches():
+            register_branch(branch)
+        self._discard()
+
+    def _discard(self) -> None:
         self._remove_engine_worktrees()
         # The venv is a symlink to the HARNESS's; unlink it so rmtree can
         # never follow it into the harness.
@@ -137,3 +163,8 @@ class EngineCheckout:
             _git(self.root, "worktree", "remove", "--force", "--force", str(path))
             if path.exists():
                 raise RuntimeError(f"engine worktree {path} survived its removal")
+
+
+def _local_branches(root: Path) -> frozenset[str]:
+    listing = _git(root, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+    return frozenset(line for line in listing.splitlines() if line)

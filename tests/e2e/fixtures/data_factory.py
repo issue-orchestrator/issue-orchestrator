@@ -12,9 +12,33 @@ from issue_orchestrator.testing.support.test_data import (
     update_issue,
     close_issue,
 )
+from .artifact_cleanup import RUN_ISSUES
 from .inflight_tracker import trigger_refresh
 
 logger = logging.getLogger(__name__)
+
+
+def create_run_issue(
+    repo: str,
+    title: str,
+    labels: list[str],
+    body: str = "E2E test issue.\n\nExpected: Agent completes.",
+    *,
+    on_created: Callable[[int], None] | None = None,
+    ensure_labels: bool = True,
+) -> int:
+    """Create an issue and record it as this run's (``RUN_ISSUES``).
+
+    The run's teardown removes the PRs of exactly the issues recorded here,
+    so every e2e issue is created through this function.
+    """
+
+    def record(issue_number: int) -> None:
+        RUN_ISSUES.record(issue_number, labels)
+        if on_created is not None:
+            on_created(issue_number)
+
+    return create_issue(repo, title, labels, body, on_created=record, ensure_labels=ensure_labels)
 
 
 def inflight_create(
@@ -53,7 +77,9 @@ def inflight_create(
             f"Title must contain external ID prefix like [M1-011]: {title!r}"
         )
 
-    issue_number = create_issue(repo, title, labels, body, on_created=on_created, ensure_labels=ensure_labels)
+    issue_number = create_run_issue(
+        repo, title, labels, body, on_created=on_created, ensure_labels=ensure_labels
+    )
     logger.info("Created issue #%d with external_id=%s", issue_number, parsed.external_id)
     return GitHubIssueKey(repo=repo, external_id=parsed.external_id), issue_number
 
