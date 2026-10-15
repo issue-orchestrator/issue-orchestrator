@@ -21,7 +21,7 @@ from tests.e2e.fixtures.artifact_cleanup import (
     RunOwnedScope,
     StaleArtifactScope,
 )
-from tests.e2e.fixtures.github_utils import E2ETargetRepoError, get_repo_from_git
+from tests.e2e.fixtures.github_utils import E2ETargetRepoError
 
 from .e2e_github_fake import FakeE2EGitHub, pull_request
 
@@ -96,11 +96,26 @@ def test_the_owner_refuses_any_repository_but_the_test_repository(live_e2e_run):
 
 
 def test_the_owner_refuses_this_checkouts_own_repository(live_e2e_run):
-    production = get_repo_from_git()
-    live_e2e_run(production)
+    live_e2e_run("Owner/Production", production_repo="owner/production")
 
     with pytest.raises(E2ETargetRepoError, match="this checkout's own repository"):
-        E2EArtifactCleanup.for_test_repo(production, github=_repository())
+        E2EArtifactCleanup.for_test_repo("Owner/Production", github=_repository())
+
+
+def test_the_owner_refuses_when_the_checkouts_origin_is_unreadable(monkeypatch, live_e2e_run):
+    """Unknown is refused rather than guessed: nothing proves the target is
+    not production."""
+    from tests.e2e.fixtures import github_utils
+
+    live_e2e_run(TEST_REPO)
+
+    def unreadable() -> str:
+        raise E2ETargetRepoError("Cannot read a GitHub origin remote for this checkout")
+
+    monkeypatch.setattr(github_utils, "get_repo_from_git", unreadable)
+
+    with pytest.raises(E2ETargetRepoError, match="Cannot read a GitHub origin"):
+        E2EArtifactCleanup.for_test_repo(TEST_REPO, github=_repository())
 
 
 # -- RunOwnedScope: a run's own teardown ------------------------------------

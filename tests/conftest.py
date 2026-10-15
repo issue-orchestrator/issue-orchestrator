@@ -101,18 +101,28 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool 
     return None
 
 
+#: The checkout's ``origin`` in a unit test's simulated live e2e run.
+SIMULATED_PRODUCTION_REPO = "example-owner/production-repo"
+
+
 @pytest.fixture
 def live_e2e_run(monkeypatch: pytest.MonkeyPatch):
     """Give one unit test a live e2e run's environment: opted in, outside an
-    agent session, against ``test_repo``. The e2e cleanup owner refuses
-    anything else (#9523); this never affects collection, which was decided
-    from the real environment at startup."""
+    agent session, against ``test_repo``, from a checkout whose ``origin`` is
+    ``production_repo``. The e2e cleanup owner refuses anything else (#9523).
 
-    def opt_in(test_repo: str) -> None:
+    The checkout's ``origin`` is environment too: a validation workspace has
+    none, so the real one is never read. This never affects collection, which
+    was decided from the real environment at startup.
+    """
+    from tests.e2e.fixtures import github_utils
+
+    def opt_in(test_repo: str, *, production_repo: str = SIMULATED_PRODUCTION_REPO) -> None:
         monkeypatch.setenv(OPT_IN_ENV, "1")
         for name in AGENT_SESSION_ENVS:
             monkeypatch.delenv(name, raising=False)
         monkeypatch.setenv("E2E_TEST_REPO", test_repo)
+        monkeypatch.setattr(github_utils, "get_repo_from_git", lambda: production_repo)
 
     return opt_in
 
