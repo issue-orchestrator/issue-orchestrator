@@ -10,15 +10,24 @@ this suite against the production repository, and its cleanup closed 17 real
 PRs. Three safeguards now fail closed independently:
 
 1. **Opt-in only** (`tests/live_e2e_gate.py`): collected only with `IO_E2E=1`.
-   Implicit runs skip it; naming it without the opt-in is a usage error. Inside
-   an agent session (`ISSUE_ORCHESTRATOR_SESSION_ID` set) the opt-in never
-   applies. Agents: do not run this suite, and do not try to opt in.
+   Implicit runs skip it; naming it without the opt-in is a usage error. This
+   suite's own conftest refuses as well, so excluding the root conftest
+   (`--confcutdir`) does not open it. Inside an agent session
+   (`ISSUE_ORCHESTRATOR_SESSION_ID` set) the opt-in never applies. Agents: do
+   not run this suite, and do not try to opt in.
 2. **Never production** (`fixtures/github_utils.get_test_repo`):
    `E2E_TEST_REPO` is required and must not be this checkout's `origin`.
-3. **Run-scoped cleanup** (`flows.cleanup_test_prs_for_issues`): a PR is
-   closed only if it carries an e2e label and references an issue the run
-   created. Never clean up by a workflow label (`needs-code-review`,
-   `code-reviewed`, ...): real work carries those.
+3. **One cleanup owner** (`fixtures/artifact_cleanup.E2EArtifactCleanup`):
+   every PR close and branch delete goes through it, and it admits only what
+   a typed scope proves. `RunOwnedScope` (a run's teardown, `E2EFlow`): an
+   e2e label on the PR and an issue the run created. `StaleArtifactScope`
+   (session reconciliation): `io-e2e-test-data` and a creation time older
+   than any live run, so a concurrent run's PRs are never touched.
+   `ExamRunScope` (the exam): the run's own issues and pushed branches. A
+   branch goes only with an admitted PR, never by name. Never call the
+   adapter's `close_pr`/`delete_branch` from a test, and never clean up by a
+   workflow label (`needs-code-review`, `code-reviewed`, ...): real work
+   carries those.
 
 ## Prerequisites
 
@@ -47,7 +56,8 @@ All of these also need `E2E_TEST_REPO` set.
 
 Tests use `io-e2e-test-data` label to isolate test artifacts:
 - Issues and PRs created by e2e tests get this label
-- Cleanup only targets items with this explicit label
+- A test closes a PR through the `E2EFlow` that created its issue
+  (`flow.close_pr`), so the flow's scope owns it
 - No branch pattern matching (avoids accidentally deleting legitimate PRs)
 
 ## E2E Reconciliation
@@ -56,7 +66,9 @@ Before running tests, the `e2e_reconciliation_at_session_start` fixture cleans u
 
 1. Local worktrees in `/tmp/e2e-worktrees/`
 2. Stale tmux sessions
-3. PRs and branches with `io-e2e-test-data` label
+3. PRs carrying `io-e2e-test-data` older than any live run
+   (`MAX_LIVE_RUN_AGE`), and their branches; younger ones belong to a run
+   that may still be going, whose own teardown removes them
 4. Issues with `io-e2e-test-data` label
 
 This ensures deterministic test runs regardless of previous state.

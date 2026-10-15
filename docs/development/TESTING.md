@@ -124,14 +124,21 @@ that, each of three safeguards fails closed on its own (#9523):
 
 - **Opt-in only.** `tests/e2e` is collected only with `IO_E2E=1`. A bare
   `pytest`, an empty path list or `pytest tests/` skips it, and naming a path
-  inside it without the opt-in is a usage error. Inside an orchestrator agent
-  session (`ISSUE_ORCHESTRATOR_SESSION_ID` set) the opt-in never applies.
+  inside it without the opt-in is a usage error. The suite's own conftest
+  refuses too, so a run that skips the root conftest (`--confcutdir`) is still
+  refused. Inside an orchestrator agent session
+  (`ISSUE_ORCHESTRATOR_SESSION_ID` set) the opt-in never applies.
 - **Never the production repository.** `E2E_TEST_REPO` is required and must
   not be this checkout's own `origin` repository. There is no git-remote
   fallback.
-- **Cleanup touches only the run's own artifacts.** PRs are closed only when
-  they carry an e2e label *and* reference an issue the run created; workflow
-  labels such as `needs-code-review` never put a PR in scope.
+- **Cleanup removes only what a scope proves is an e2e artifact.** Every PR
+  close and branch delete goes through one owner
+  (`tests/e2e/fixtures/artifact_cleanup.py`). A run's teardown closes a PR
+  only when it carries an e2e label *and* belongs to an issue the run
+  created; session reconciliation closes only PRs carrying
+  `io-e2e-test-data` that are older than any live run, so a concurrent run's
+  PRs are left alone. Branches go only with an admitted PR, never by name, and
+  workflow labels such as `needs-code-review` never put a PR in scope.
 
 ```bash
 # Run e2e tests (make sets IO_E2E=1; requires gh auth + write access to the test repo)
