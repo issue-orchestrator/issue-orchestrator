@@ -1299,6 +1299,7 @@ class TestPROperations:
                 "body": "",
                 "state": "open",
                 "labels": [{"name": "bug"}],
+                "created_at": "2026-10-14T03:00:00Z",
             },
         ]
 
@@ -1306,6 +1307,7 @@ class TestPROperations:
 
         assert len(prs) == 1
         assert "bug" in prs[0].labels
+        assert prs[0].created_at == "2026-10-14T03:00:00Z"
         mock_http_client.get_prs_with_label_graphql.assert_called_once_with("bug", state="open")
         # REST fallback should NOT be called
         mock_http_client.get_prs_with_label.assert_not_called()

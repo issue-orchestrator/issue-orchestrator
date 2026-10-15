@@ -3589,3 +3589,22 @@ def test_comment_bodies_containing_fails_loud_on_a_malformed_page() -> None:
 
     with pytest.raises(GitHubHttpError):
         client.issue_comment_bodies_containing(318, _TEST_MARKER)
+
+
+def test_prs_with_label_carry_their_creation_time() -> None:
+    """The live e2e suite's stale reconciliation reads a PR's age from here (#9523)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/graphql"
+        assert "createdAt" in _graphql_body(request)["query"]
+        node = {**_pr_node(7), "state": "OPEN", "createdAt": "2026-10-14T03:00:00Z",
+                "labels": {"nodes": [{"name": "io-e2e-test-data"}]}}
+        return httpx.Response(200, json={"data": {"repository": {"pullRequests": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": [node],
+        }}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    [pr] = client.get_prs_with_label_graphql("io-e2e-test-data")
+
+    assert pr["created_at"] == "2026-10-14T03:00:00Z"

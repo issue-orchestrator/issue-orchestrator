@@ -3339,8 +3339,8 @@ class GitHubHttpClient:
         this returns full PR info including head.ref in 1-2 GraphQL requests.
 
         Returns dicts with keys matching the REST PR API shape (number, title,
-        html_url, head.ref, body, state, labels, draft) so _pr_info_from_api
-        can parse them directly.
+        html_url, head.ref, body, state, labels, draft, created_at) so
+        _pr_info_from_api can parse them directly.
         """
         # Map state filter to GraphQL enum values
         states: list[str]
@@ -3366,6 +3366,7 @@ class GitHubHttpClient:
                 body
                 state
                 isDraft
+                createdAt
                 labels(first: 20) {
                   nodes { name }
                 }
@@ -3413,6 +3414,7 @@ class GitHubHttpClient:
                     "state": node.get("state", "OPEN").lower(),
                     "labels": labels,
                     "draft": node.get("isDraft"),
+                    "created_at": node.get("createdAt"),
                 }
                 all_prs.append(pr_dict)
 
