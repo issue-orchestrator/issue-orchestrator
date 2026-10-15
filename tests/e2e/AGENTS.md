@@ -18,18 +18,23 @@ PRs. Three safeguards now fail closed independently:
 2. **Never production** (`fixtures/github_utils.get_test_repo`):
    `E2E_TEST_REPO` is required and must not be this checkout's `origin`.
 3. **One cleanup owner** (`fixtures/artifact_cleanup.E2EArtifactCleanup`):
-   every PR close and branch delete goes through it, and it admits only what
-   a typed scope proves. `RunOwnedScope` (`E2EFlow`, and the session's
-   teardown over `RUN_ISSUES`): an e2e label on the PR and an issue the run
-   recorded creating. `ExamRunScope` (the exam): a branch the run recorded
-   creating (harness pushes, branches its engine clone created), or a body
-   link to an issue it owns. `IdleRepositoryScope`: only an operator's
-   explicit `python -m tests.e2e.reconcile`. A branch is never deleted by
-   name, and never while an open PR it heads or bases (read completely,
-   uncached) is outside the scope. Create issues with `create_run_issue` (or
-   an `E2EFlow`), never call the adapter's `close_pr`/`delete_branch` from a
-   test, and never clean up by a workflow label (`needs-code-review`,
-   `code-reviewed`, ...): real work carries those.
+   every PR close, branch delete, issue close and label delete goes through
+   it, and it admits only what a typed scope proves. `RunOwnedScope`
+   (`E2EFlow`, and the session's teardown over `RUN_ISSUES`): the issues the
+   run recorded creating, and their PRs carrying an e2e label.
+   `RunLabelScope`: issues carrying a label the run minted with its own random
+   id (engine-filed tech-lead issues). `ExamRunScope` (the exam): its owned
+   issues, PRs whose body links one, and branches it holds a
+   `RemoteBranchReceipt` for (absent when the run started, holding the run's
+   commit, still its head; `exam/run_branches.py`). `IdleRepositoryScope`:
+   only an operator's explicit `python -m tests.e2e.reconcile`. A branch is
+   never deleted by name, nor while an open PR it heads or bases (read
+   completely, uncached) is outside the scope; no label is deleted
+   automatically. Create issues with `create_run_issue` (or an `E2EFlow`),
+   close them through the owner (`flow.close_issue`, `close_run_issue`), never
+   call the adapter's `close_pr`/`delete_branch`/`update_issue_state`/
+   `delete_label` from a test, and never clean up by a workflow label
+   (`needs-code-review`, `code-reviewed`, ...): real work carries those.
 
 ## Prerequisites
 
@@ -68,17 +73,17 @@ Before running tests, the `e2e_reconciliation_at_session_start` fixture cleans u
 
 1. Local worktrees in `/tmp/e2e-worktrees/`
 2. Stale tmux sessions
-3. Open PRs carrying `io-e2e-test-data` are only *reported*: nothing a run
-   can observe proves the run that made them has ended (a long suite, a
-   delayed dependency or a stuck process outlives any fixed age), so they
-   are never closed automatically
-4. Issues with `io-e2e-test-data` label
+3. Open PRs and issues carrying `io-e2e-test-data` that this run did not
+   create are only *reported*: nothing a run can observe proves the run that
+   made them has ended (a long suite, a delayed dependency or a stuck process
+   outlives any fixed age), so they are never closed automatically, and no
+   label is deleted
 
-After the session, the PRs of every issue this run recorded creating
-(`RUN_ISSUES`) are closed and their branches deleted.
+After the session, every issue this run recorded creating (`RUN_ISSUES`) is
+closed, with its e2e PRs and their branches.
 
-To remove other runs' leftover PRs, first make sure no run is live against
-the test repository, then say so explicitly:
+To remove other runs' leftover PRs, issues and e2e labels, first make sure no
+run is live against the test repository, then say so explicitly:
 
 ```bash
 IO_E2E=1 E2E_TEST_REPO=owner/test-repo \

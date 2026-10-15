@@ -8,7 +8,7 @@ pytest tests/unit/              # Run unit tests
 pytest tests/unit/ -v           # Verbose
 pytest tests/unit/ --cov        # With coverage (90%+)
 pytest tests/integration/       # Integration tests (requires Claude CLI)
-pytest tests/e2e/ -v            # Live e2e tests (requires gh auth)
+E2E_TEST_REPO=youruser/your-test-repo make test-e2e   # Live e2e tests (see E2E Tests)
 ```
 
 ## Test Structure
@@ -131,17 +131,20 @@ that, each of three safeguards fails closed on its own (#9523):
 - **Never the production repository.** `E2E_TEST_REPO` is required and must
   not be this checkout's own `origin` repository. There is no git-remote
   fallback.
-- **Cleanup removes only what a scope proves is an e2e artifact.** Every PR
-  close and branch delete goes through one owner
-  (`tests/e2e/fixtures/artifact_cleanup.py`). A run closes a PR only when it
-  carries an e2e label *and* belongs to an issue the run recorded creating.
-  No run can prove another has ended, so other runs' open e2e PRs are only
-  reported; an operator who knows no run is live removes them explicitly:
+- **Cleanup removes only what a scope proves is this run's.** Every PR close,
+  branch delete, issue close and label delete goes through one owner
+  (`tests/e2e/fixtures/artifact_cleanup.py`). A run closes only the issues it
+  recorded creating (or that carry a label it minted with its own random id)
+  and their PRs carrying an e2e label, and deletes no label. A branch goes
+  only as an admitted PR's head, or with a receipt proving the run created it
+  (absent when the run started, holding the run's commit, still its head) --
+  never by name, and only when every open PR it heads or is the base of (read
+  completely, uncached) is admitted too. No run can prove another has ended,
+  so other runs' open e2e PRs and issues are only reported; an operator who
+  knows no run is live removes them, and the e2e labels, explicitly:
   `IO_E2E=1 E2E_TEST_REPO=<repo> python -m tests.e2e.reconcile
-  --no-live-run-against <repo>`. A branch is deleted only as an admitted PR's
-  head or as one the run recorded creating, never by name, and only when every
-  open PR it heads or is the base of (read completely, uncached) is admitted
-  too. Workflow labels such as `needs-code-review` never put a PR in scope.
+  --no-live-run-against <repo>`. Workflow labels such as `needs-code-review`
+  never put anything in scope.
 
 ```bash
 # Run e2e tests (make sets IO_E2E=1; requires gh auth + write access to the test repo)
