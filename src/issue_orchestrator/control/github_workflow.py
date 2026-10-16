@@ -392,7 +392,7 @@ class GitHubWorkflow:
 
         state.dependency_problems = new
 
-    def reconcile_orphaned_pr_labels(self, orchestrator_pr_marker: str) -> int:
+    def reconcile_orphaned_pr_labels(self) -> int:
         """Reconcile orphaned PR labels at startup.
 
         Returns the number of labels reconciled.
@@ -408,7 +408,6 @@ class GitHubWorkflow:
         return self.label_sync.reconcile_orphaned_pr_labels(
             self.config.code_review_label,
             self.config.code_reviewed_label,
-            orchestrator_pr_marker,
             is_pr_in_scope=scope_checker.is_pr_in_scope,
         )
 

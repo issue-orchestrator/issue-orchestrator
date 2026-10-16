@@ -55,6 +55,7 @@ from issue_orchestrator.ports.pull_request_tracker import (
     MergeQueueEntry,
     MergeQueueRead,
     PRInfo,
+    PullRequestAuthor,
     PRRef,
     StatusCheckRollupRead,
 )
@@ -405,6 +406,14 @@ def logged_in_dashboard_client(
     return auth_enabled_dashboard_client
 
 
+#: The account the in-memory fake's engine opens PRs as (``engine_account_id``).
+IO_ACCOUNT_ID = 9_499_001
+#: io's own account as a PR's author: what every PR io opened carries (#9499).
+IO_AUTHOR = PullRequestAuthor(IO_ACCOUNT_ID, "issue-orchestrator[bot]")
+#: Someone else's account: a PR a person or another tool opened.
+HAND_AUTHOR = PullRequestAuthor(4_242, "a-person")
+
+
 class MockGitHubAdapter:
     """Mock GitHub adapter implementing port interfaces for testing.
 
@@ -648,6 +657,13 @@ class MockGitHubAdapter:
             for pr in merged
         )
 
+    def engine_account_id(self) -> int:
+        """The account this engine opens PRs as (mock): ``IO_ACCOUNT_ID``,
+        unless a test seeds an ``engine_account_id`` failure."""
+        if "engine_account_id" in self.integration_failures:
+            raise self.integration_failures["engine_account_id"]
+        return IO_ACCOUNT_ID
+
     def list_open_prs_complete(self) -> list[PRInfo]:
         """Every open PR, as the complete listing contract promises."""
         return [
@@ -838,6 +854,7 @@ class MockGitHubAdapter:
             labels=[],
             draft=draft,
             base_branch=base,
+            author=IO_AUTHOR,  # opened under the engine's own credential
         )
         self.prs.setdefault(head, []).append(pr)
         self.open_pr_refs[(head, base)] = OpenPullRequestRef(number=pr.number, url=pr.url, body=body)

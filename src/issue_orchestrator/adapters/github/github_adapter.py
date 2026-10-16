@@ -22,6 +22,7 @@ from ...ports.pull_request_tracker import (
     MergeQueueRead,
     PRInfo,
     PRRef,
+    PullRequestAuthor,
     StatusCheckRollupRead,
     StatusCheckRollupState,
 )
@@ -170,6 +171,17 @@ def _pr_state_from_api(pr: dict[str, Any]) -> str:
     if _payload_indicates_merged(pr):
         return "merged"
     return raw_state
+
+
+def _pr_author(user: object) -> PullRequestAuthor | None:
+    """A PR payload's ``user``: the account GitHub records as its author, or
+    None when the payload names no readable account (a deleted one)."""
+    if not isinstance(user, dict):
+        return None
+    account_id, login = user.get("id"), user.get("login")
+    if type(account_id) is not int or account_id <= 0 or not isinstance(login, str):
+        return None
+    return PullRequestAuthor(account_id=account_id, login=login)
 
 
 class GitHubAdapter(GitHubIntegrationBranchMixin):
@@ -1735,6 +1747,7 @@ class GitHubAdapter(GitHubIntegrationBranchMixin):
             or None,
             merged_at=pr.get("merged_at") or None,
             head_sha=(pr.get("head") or {}).get("sha") or pr.get("headRefOid") or None,
+            author=_pr_author(pr.get("user")),
         )
 
     def _fetch_pr_info_from_search(self, pr: dict[str, Any]) -> PRInfo | None:
@@ -1983,6 +1996,10 @@ class GitHubAdapter(GitHubIntegrationBranchMixin):
         """
         account = self._client.app_bot_account()
         return account is not None and event.actor_is_bot and event.actor_id == account.user_id
+
+    def engine_account_id(self) -> int:
+        """The account id GitHub records as the author of this engine's PRs."""
+        return self._client.engine_account_id()
 
     def own_write_verdict(self, event: "LabelEvent") -> bool | None:
         """:meth:`is_own_write` where it is decidable (an App engine), else

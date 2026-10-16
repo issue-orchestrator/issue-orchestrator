@@ -11,6 +11,7 @@ from issue_orchestrator.domain.external_pr_adoption import (
     Admission,
     AdoptedExternalPullRequest,
     AdoptionRefusal,
+    Authorship,
     ExternalPullRequestFacts,
     ExternalPullRequestLedger,
     IoCustody,
@@ -27,10 +28,11 @@ from issue_orchestrator.domain.external_pr_adoption import (
     adoption_label_writes,
     effort_governs,
     effort_label,
-    io_owned_pr,
+    io_owned,
     launch_authority,
     launch_refusal,
     judge_external_pull_request,
+    marker_hint,
     merge_refusal,
     refusal_marker,
     render_refusal_comment,
@@ -38,13 +40,12 @@ from issue_orchestrator.domain.external_pr_adoption import (
     reviewed_head_receipt,
 )
 
-IO_BODY = f"Closes #7\n\n*{ORCHESTRATOR_PR_MARKER}*"
 EFFORT = "integrate:integration"
 NOBODY = IoCustody(working_branch=None, pull_requests=frozenset())
 NO_LINK = IssueLink(frozenset())
 
 PR = PullRequestFacts(
-    number=70, open=True, draft=False, body="Closes #7", branch="7-by-hand", base_branch="integration",
+    number=70, open=True, draft=False, authorship=Authorship.EXTERNAL, branch="7-by-hand", base_branch="integration",
     labels=frozenset(), link=IssueLink(frozenset({7})),
 )
 ISSUE = LinkedIssueFacts(
@@ -75,9 +76,10 @@ def test_facts_read_exactly_the_issue_the_pr_references() -> None:
     [
         (PR, Admission.ADOPTABLE),
         (replace(PR, labels=frozenset({"origin:external"})), Admission.ADMITTED),
-        (replace(PR, body=IO_BODY), Admission.IGNORED),
-        # Once adopted, the label decides: io's marker pasted in later does not make it io's.
-        (replace(PR, body=IO_BODY, labels=frozenset({"origin:external"})), Admission.ADMITTED),
+        # io opened it (THE provenance owner's proof, never the body's marker): its lanes own it.
+        (replace(PR, authorship=Authorship.IO), Admission.IGNORED),
+        # Once adopted, the label decides: not even a PR io opened is io's own then.
+        (replace(PR, authorship=Authorship.IO, labels=frozenset({"origin:external"})), Admission.ADMITTED),
         (replace(PR, draft=True), Admission.IGNORED),
         (replace(PR, open=False), Admission.IGNORED),
         (replace(PR, branch="integration", base_branch="main"), Admission.IGNORED),  # the delivery PR
@@ -130,7 +132,7 @@ def test_a_pr_into_another_base_for_an_issue_outside_the_effort_is_not_io_s_busi
 @pytest.mark.parametrize(
     ("pr", "issue", "refused"),
     [
-        (replace(PR, body=IO_BODY), ISSUE, None),  # io's own PR: its lanes own it
+        (replace(PR, authorship=Authorship.IO), ISSUE, None),  # io's own PR: its lanes own it
         (replace(PR, labels=frozenset({"origin:external"})), ISSUE, None),
         (PR, ISSUE, "not an adopted PR"),
         (replace(PR, labels=frozenset({"origin:external"}), link=NO_LINK), ISSUE, "references no issue, not issue #7"),
@@ -166,7 +168,7 @@ def test_an_issue_link_names_none_one_or_several_issues() -> None:
         (PR, True),  # external, into the effort branch
         (replace(PR, base_branch="main"), False),  # external, elsewhere: not the effort's business
         (replace(PR, base_branch="main", labels=frozenset({"origin:external"})), True),  # adopted, then retargeted
-        (replace(PR, body=IO_BODY), False),  # io's own
+        (replace(PR, authorship=Authorship.IO), False),  # io's own
     ],
 )
 def test_which_prs_the_effort_governs(pr: PullRequestFacts, governed: bool) -> None:
@@ -207,18 +209,25 @@ def test_an_authority_keeps_custody_whatever_the_pr_says_now() -> None:
 
 def test_a_pr_found_at_launch_is_never_one_the_effort_governs() -> None:
     assert "found at launch" in (_launch(_request(None, resolved_at_launch=True)) or "")
-    assert _launch(_request(None, resolved_at_launch=True), replace(PR, body=IO_BODY)) is None
+    assert _launch(_request(None, resolved_at_launch=True), replace(PR, authorship=Authorship.IO)) is None
 
 
 def test_the_authority_is_built_from_exactly_the_admitted_pr_and_issue() -> None:
     assert launch_authority("integration", ADOPTED, ISSUE) == QUEUED
-    assert launch_authority("integration", replace(PR, body=IO_BODY), ISSUE) is None
+    assert launch_authority("integration", replace(PR, authorship=Authorship.IO), ISSUE) is None
 
 
 def test_once_adopted_the_origin_label_decides_provenance() -> None:
-    assert io_owned_pr(IO_BODY, ["needs-code-review"])
-    assert not io_owned_pr(IO_BODY, ["origin:external"])
-    assert not io_owned_pr("Closes #7", [])
+    assert io_owned(Authorship.IO, ["needs-code-review"])
+    assert not io_owned(Authorship.IO, ["origin:external"])
+    assert not io_owned(Authorship.EXTERNAL, [])
+
+
+def test_io_s_marker_is_only_a_hint() -> None:
+    """The body is its author's to write: the marker says where to look for
+    io's own PRs, and THE provenance owner proves them (#9499 review F1)."""
+    assert marker_hint(f"Closes #7\n\n*{ORCHESTRATOR_PR_MARKER}*")
+    assert not marker_hint(None) and not marker_hint("Closes #7")
 
 
 def test_a_refused_launch_says_why_and_an_admitted_one_does_not() -> None:

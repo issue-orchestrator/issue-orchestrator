@@ -290,7 +290,11 @@ class IntegrationBranchOwner:
 
     def route(self, *, pr: "PRInfo", issue: "Issue", action: PostApprovalAction) -> IntegrationRouting:
         """Decide what happens to one reviewer-approved PR into integration."""
-        refusal = self.external.refusal(pr=pr, issue=issue, issue_labels=issue.labels, pr_labels=pr.labels)
+        try:
+            refusal = self.external.refusal(pr=pr, issue=issue, issue_labels=issue.labels, pr_labels=pr.labels)
+        except RepositoryHostError as error:
+            logger.warning("Integration: PR #%d's provenance unreadable: %s", pr.number, error)
+            return IntegrationRouting(_NOTHING)  # fail closed; re-read next pass
         if refusal is not None:
             # Not io's to act on at all - no rework, update or merge (#9499):
             # the adoption owner reports it instead.

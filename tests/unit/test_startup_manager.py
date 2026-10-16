@@ -31,6 +31,7 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.tech_lead_session import TechLeadSessionFlavor
 from tests.conftest import operator_paused_state
+from tests.conftest import IO_ACCOUNT_ID, IO_AUTHOR
 
 
 def _startup_worktree_reconciler() -> MagicMock:
@@ -104,6 +105,7 @@ def mock_repository_host():
     repo = MagicMock()
     repo.list_issues.return_value = []
     repo.get_prs_with_label.return_value = []
+    repo.engine_account_id.return_value = IO_ACCOUNT_ID
     return repo
 
 
@@ -760,6 +762,7 @@ class TestStartupManagerCodeReviewRecovery:
             branch="1-feature",
             labels=["needs-code-review"],
             body=f"Closes #1\n\n{ORCHESTRATOR_PR_MARKER}",
+            author=IO_AUTHOR,
             state="open",
         )
         mock_repository_host.get_prs_with_label.return_value = [pr]
@@ -827,6 +830,7 @@ class TestStartupManagerCodeReviewRecovery:
             branch="1-feature",
             labels=["needs-code-review", "origin:external"],
             body=f"Closes #1\n\n{ORCHESTRATOR_PR_MARKER}",
+            author=IO_AUTHOR,
             state="open",
         )
         mock_repository_host.get_prs_with_label.return_value = [pr]
@@ -859,6 +863,7 @@ class TestStartupManagerCodeReviewRecovery:
             branch="1-old-branch",
             labels=["needs-code-review"],
             body=f"Closes #1\n\n{ORCHESTRATOR_PR_MARKER}",
+            author=IO_AUTHOR,
             state="open",
         )
         mock_repository_host.get_prs_with_label.return_value = [pr]
@@ -900,6 +905,7 @@ class TestStartupManagerCodeReviewRecovery:
             branch="1-feature",
             labels=["needs-code-review"],
             body=f"Closes #1\n\n{ORCHESTRATOR_PR_MARKER}",
+            author=IO_AUTHOR,
             state="open",
         )
         issue = Issue(

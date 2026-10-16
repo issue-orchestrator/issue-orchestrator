@@ -65,9 +65,9 @@ from issue_orchestrator.events import EventContext, EventName
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.config_models import IntegrationConfig
 from issue_orchestrator.ports import InMemoryEventSink
-from issue_orchestrator.ports.pull_request_tracker import PRInfo
+from issue_orchestrator.ports.pull_request_tracker import PRInfo, PullRequestAuthor
 from issue_orchestrator.ports.repository_host import RepositoryHostError
-from tests.conftest import MockGitHubAdapter
+from tests.conftest import HAND_AUTHOR, IO_AUTHOR, MockGitHubAdapter
 from tests.standing_ruling_helpers import IssueBodies, a_ruling, body_with, rulings_owner
 
 TIP = "1" * 40
@@ -121,21 +121,23 @@ class _World:
     def pr(
         self, number: int, *, issue: int | None, base: str = "integration", body: str | None = None,
         labels: tuple[str, ...] = (), draft: bool = False, branch: str | None = None, head: str = HEAD,
+        author: PullRequestAuthor = HAND_AUTHOR,
     ) -> PRInfo:
         pr = PRInfo(
             number=number, title=f"Hand-made {number}", url=f"https://github.com/owner/repo/pull/{number}",
             branch=branch or (f"{issue}-hand-made" if issue is not None else f"hand-made-{number}"),
             body=body if body is not None else (f"Closes #{issue}" if issue is not None else "A change"),
             state="open", labels=list(labels), base_branch=base, head_sha=head, draft=draft,
-            mergeable_state="clean", status_check_rollup="SUCCESS",
+            mergeable_state="clean", status_check_rollup="SUCCESS", author=author,
         )
         self.host.prs.setdefault(pr.branch, []).append(pr)
         self.host.labels[number] = set(labels)
         return pr
 
     def io_pr(self, number: int, *, issue: int, base: str = "integration") -> PRInfo:
+        """A PR io opened: io's account is its author, its body carries io's marker."""
         return self.pr(number, issue=issue, base=base, branch=f"{issue}-io-{number}",
-                       body=f"Closes #{issue}\n\n*{ORCHESTRATOR_PR_MARKER}*")
+                       body=f"Closes #{issue}\n\n*{ORCHESTRATOR_PR_MARKER}*", author=IO_AUTHOR)
 
     def discover(self, *, issue_branches: dict[int, str] | None = None) -> list:
         self.state.discovered_integration_steps.clear()

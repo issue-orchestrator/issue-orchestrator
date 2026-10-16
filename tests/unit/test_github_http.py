@@ -3702,6 +3702,7 @@ def _labeled_pr_node(number: int, *, state: str = "OPEN", labels: tuple[str, ...
         "state": state, "isDraft": False, "headRefName": f"{number}-work",
         "headRefOid": f"{number:040d}", "baseRefName": "main",
         "labels": {"totalCount": len(labels), "nodes": [{"name": name} for name in labels]},
+        "author": {"__typename": "User", "login": "a-person", "databaseId": 7},
     }
 
 
@@ -3741,6 +3742,7 @@ def test_labeled_prs_complete_walks_every_page_by_cursor() -> None:
         "state": "merged", "draft": False,
         "head": {"ref": "101-work", "sha": f"{101:040d}"}, "base": {"ref": "main"},
         "labels": [{"name": "io:e2e-run-a"}],
+        "user": {"id": 7, "login": "a-person", "type": "User"},
     }
 
 

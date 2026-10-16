@@ -48,6 +48,7 @@ from issue_orchestrator.ports import InMemoryEventSink
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.ports.repository_host import RepositoryHostError
 from tests.conftest import MockGitHubAdapter
+from tests.conftest import IO_AUTHOR
 from tests.standing_ruling_helpers import IssueBodies, a_ruling, body_with, rulings_owner
 
 
@@ -137,6 +138,7 @@ class _Engine:
         pr = PRInfo(
             number=pr_number, title=f"Fix {issue_number}", url=f"https://github.com/owner/repo/pull/{pr_number}",
             branch=f"{issue_number}-fix", body=f"Fixes #{issue_number}\n\n*{ORCHESTRATOR_PR_MARKER}*", state="open",
+            author=IO_AUTHOR,
             labels=[self.labels.code_reviewed], mergeable_state="clean", base_branch="integration",
             status_check_rollup="SUCCESS",
             head_sha=self.github.commit(self.github.branches["integration"]),

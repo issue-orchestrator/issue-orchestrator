@@ -575,6 +575,7 @@ class GitHubHttpClient:
         self._config = config
         self._etag_cache = _ETagCache()
         self._app_bot_account: GitHubAppBotAccount | None = None
+        self._engine_account_id: int | None = None
         if config.auth is not None:
             self._auth = config.auth
         elif config.token_provider is not None:
@@ -1833,6 +1834,20 @@ class GitHubHttpClient:
             self._app_bot_account = GitHubAppBotAccount.from_user_payload(login, payload)
         return self._app_bot_account
 
+    def engine_account_id(self) -> int:
+        """The account id GitHub records as the author of the PRs this engine
+        opens (#9499): its App's bot account, or its token's user. Read once."""
+        if self._engine_account_id is None:
+            bot = self.app_bot_account()
+            if bot is not None:
+                self._engine_account_id = bot.user_id
+            else:
+                actor = self._request_json("GET", "/user", use_cache=False, caller="engine_account_id")
+                if not isinstance(actor, dict) or type(actor.get("id")) is not int or actor["id"] <= 0:
+                    raise GitHubAuthError("GitHub's authenticated user carries no account id")
+                self._engine_account_id = actor["id"]
+        return self._engine_account_id
+
     def repository_role(self, login: str) -> str | None:
         """``login``'s repository role, or None when GitHub knows no such user.
 
@@ -2524,7 +2539,8 @@ class GitHubHttpClient:
         connection or a walk longer than ``page_cap`` pages raises
         ``GitHubScanIncompleteError``. Each PR carries its labels (REST shape),
         read whole through ``_complete_label_names``: a caller deciding from a
-        label's absence never reads a truncated set (#9499).
+        label's absence never reads a truncated set (#9499). And each carries
+        its author (REST ``user``, ``_pr_author_user``): whether io opened it.
         """
         owner, repo = self._config.repo.split("/", 1)
         query = """
@@ -2536,11 +2552,12 @@ class GitHubHttpClient:
                     nodes {
                         number title url body headRefName headRefOid baseRefName isDraft
                         %s
+                        %s
                     }
                 }
             }
         }
-        """ % self._COMPLETE_LABELS
+        """ % (self._COMPLETE_LABELS, self._PR_AUTHOR)
         prs: list[dict[str, Any]] = []
         after: str | None = None
         for _page in range(page_cap):
@@ -2567,7 +2584,8 @@ class GitHubHttpClient:
                 # ``draft`` is the REST spelling ``_pr_info_from_api`` reads;
                 # an open PR is always one or the other (#7490).
                 prs.append({**node, "state": "open", "draft": node["isDraft"],
-                            "labels": [{"name": name} for name in labels]})
+                            "labels": [{"name": name} for name in labels],
+                            "user": self._pr_author_user(node, self._incomplete_open_prs)})
             page_info = connection.get("pageInfo")
             if not isinstance(page_info, dict) or type(page_info.get("hasNextPage")) is not bool:
                 raise self._incomplete_open_prs("returned no pageInfo.hasNextPage")
@@ -2607,6 +2625,30 @@ class GitHubHttpClient:
             raise incomplete(f"truncated the labels of #{node['number']}")
         return [entry["name"] for entry in labels["nodes"]]
 
+    # The one author selection every complete GraphQL PR read asks for, and
+    # ``_pr_author_user`` its one reader: GitHub's account id for the PR's
+    # author, which nothing on the PR can edit (#9499 review F1).
+    _PR_AUTHOR = "author { __typename login ... on User { databaseId } ... on Bot { databaseId } }"
+
+    @staticmethod
+    def _pr_author_user(
+        node: dict[str, Any], incomplete: Callable[[str], GitHubScanIncompleteError]
+    ) -> dict[str, Any] | None:
+        """One ``_PR_AUTHOR`` node's author in REST shape (``user``), or None
+        when GitHub names no account (a deleted one); ``incomplete``'s error
+        for an author it cannot read. ``node`` has an int number."""
+        author = node.get("author")
+        if author is None:
+            return None
+        if not (
+            isinstance(author, dict)
+            and isinstance(author.get("login"), str)
+            and type(author.get("databaseId")) is int
+            and author["databaseId"] > 0
+        ):
+            raise incomplete(f"returned #{node['number']} with an unreadable author")
+        return {"id": author["databaseId"], "login": author["login"], "type": author.get("__typename")}
+
     _LABELED_PR_STATES = {
         "open": ["OPEN"],
         "closed": ["CLOSED", "MERGED"],
@@ -2642,11 +2684,12 @@ class GitHubHttpClient:
                         number title url body state isDraft
                         headRefName headRefOid baseRefName
                         %s
+                        %s
                     }
                 }
             }
         }
-        """ % self._COMPLETE_LABELS
+        """ % (self._COMPLETE_LABELS, self._PR_AUTHOR)
         variables: dict[str, Any] = {
             "owner": owner, "repo": repo, "label": label,
             "states": self._LABELED_PR_STATES[state], "after": None,
@@ -2683,7 +2726,8 @@ class GitHubHttpClient:
             and type(node.get("isDraft")) is bool
         ):
             raise self._incomplete_labeled_prs(label, f"returned a malformed node: {node!r}")
-        names = self._complete_label_names(node, partial(self._incomplete_labeled_prs, label))
+        incomplete = partial(self._incomplete_labeled_prs, label)
+        names = self._complete_label_names(node, incomplete)
         return {
             "number": node["number"],
             "title": node.get("title") or "",
@@ -2694,6 +2738,7 @@ class GitHubHttpClient:
             "head": {"ref": node["headRefName"], "sha": node["headRefOid"]},
             "base": {"ref": node["baseRefName"]},
             "labels": [{"name": name} for name in names],
+            "user": self._pr_author_user(node, incomplete),
         }
 
     def _incomplete_labeled_prs(self, label: str, why: str) -> GitHubScanIncompleteError:
@@ -3518,11 +3563,12 @@ class GitHubHttpClient:
                 labels(first: 20) {
                   nodes { name }
                 }
+                %s
               }
             }
           }
         }
-        """
+        """ % self._PR_AUTHOR
         all_prs: list[dict[str, Any]] = []
         cursor: str | None = None
         remaining = limit
@@ -3562,6 +3608,7 @@ class GitHubHttpClient:
                     "state": node.get("state", "OPEN").lower(),
                     "labels": labels,
                     "draft": node.get("isDraft"),
+                    "user": self._pr_author_user(node, partial(self._incomplete_labeled_prs, label)),
                 }
                 all_prs.append(pr_dict)
 

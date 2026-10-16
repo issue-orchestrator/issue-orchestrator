@@ -27,6 +27,9 @@ PRs ride, and nothing else has to move it.
   asks for io's review receipt for the PR's CURRENT head
   (:func:`~..domain.external_pr_adoption.reviewed_head_receipt`, an exact
   comment written under io's own credential when io's reviewer approves).
+* **Provenance.** Whether a PR is io's own - exempt from all of the above -
+  is :class:`~.pull_request_provenance.PullRequestProvenance`'s answer (io's
+  account recorded as its author), never its body's marker.
 
 Layering, as for the integration owner: discovery here only READS (one
 complete open-PR listing per general scan, plus the issue each PR into the
@@ -49,6 +52,7 @@ from ..domain.external_pr_adoption import (
     Admission,
     AdoptedExternalPullRequest,
     AdoptExternalPullRequest,
+    Authorship,
     ExternalAdmission,
     ExternalPullRequestFacts,
     IoCustody,
@@ -69,6 +73,7 @@ from ..infra import gh_audit
 from ..infra.repo_scope import require_repo
 from ..ports.repository_host import RepositoryHostError
 from .issue_scope import evaluate_issue_scope
+from .pull_request_provenance import PullRequestProvenance
 from .review_scope import extract_issue_number_from_pr, issues_linked
 
 if TYPE_CHECKING:
@@ -105,11 +110,14 @@ def issue_link(pr: "PRInfo", *, repo_slug: str) -> IssueLink:
     return IssueLink(linked | {primary})
 
 
-def pull_request_facts(pr: "PRInfo", *, repo_slug: str, labels: Iterable[str]) -> PullRequestFacts:
-    """*pr* as the admission rule reads it, with *labels* as the boundary read them."""
+def pull_request_facts(
+    pr: "PRInfo", *, repo_slug: str, labels: Iterable[str], authorship: Authorship,
+) -> PullRequestFacts:
+    """*pr* as the admission rule reads it, with *labels* as the boundary read
+    them and *authorship* as THE provenance owner proved it."""
     return PullRequestFacts(
         number=pr.number, open=(pr.state or "").strip().lower() == "open", draft=bool(pr.draft),
-        body=pr.body or "", branch=pr.branch, base_branch=pr.base_branch, labels=frozenset(labels),
+        authorship=authorship, branch=pr.branch, base_branch=pr.base_branch, labels=frozenset(labels),
         link=issue_link(pr, repo_slug=repo_slug),
     )
 
@@ -133,11 +141,13 @@ def linked_issue_facts(config: "Config", issue: "Issue", *, labels: Iterable[str
     )
 
 
-def io_attempts(prs: Iterable["PRInfo"], *, repo_slug: str) -> dict[int, frozenset[int]]:
+def io_attempts(
+    prs: Iterable["PRInfo"], *, repo_slug: str, provenance: PullRequestProvenance,
+) -> dict[int, frozenset[int]]:
     """Per issue: the open PRs that are io's own or adopted attempts at it."""
     attempts: dict[int, set[int]] = {}
     for pr in prs:
-        facts = pull_request_facts(pr, repo_slug=repo_slug, labels=pr.labels)
+        facts = pull_request_facts(pr, repo_slug=repo_slug, labels=pr.labels, authorship=provenance.authorship(pr))
         if facts.open and (facts.io_owned or facts.adopted):
             for issue_number in facts.link.issues:  # an ambiguous attempt holds every issue it names
                 attempts.setdefault(issue_number, set()).add(pr.number)
@@ -209,7 +219,9 @@ class FreshCustody:
 
     def custody(self, issue_number: int) -> IoCustody:
         if self._attempts is None:
-            self._attempts = io_attempts(self.host.list_open_prs_complete(), repo_slug=self.repo_slug)
+            self._attempts = io_attempts(
+                self.host.list_open_prs_complete(), repo_slug=self.repo_slug, provenance=PullRequestProvenance(self.host),
+            )
         return IoCustody(
             working_branch=self.active_branch(issue_number),
             pull_requests=self._attempts.get(issue_number, frozenset()) | published_attempts(self.history(), issue_number),
@@ -240,8 +252,16 @@ class ExternalPullRequestGate:
     def repo_slug(self) -> str:
         return require_repo(self.config)
 
+    @property
+    def provenance(self) -> PullRequestProvenance:
+        return PullRequestProvenance(self.host)
+
     def facts(self, pr: "PRInfo", *, pr_labels: Iterable[str]) -> PullRequestFacts:
-        return pull_request_facts(pr, repo_slug=self.repo_slug, labels=pr_labels)
+        """*pr* as THE admission rule reads it; raises RepositoryHostError when
+        its provenance cannot be proved."""
+        return pull_request_facts(
+            pr, repo_slug=self.repo_slug, labels=pr_labels, authorship=self.provenance.authorship(pr),
+        )
 
     def judge(self, pr: "PRInfo", *, pr_labels: Iterable[str]) -> ExternalAdmission:
         """THE admission rule for *pr*, reading the issue it references (one read)."""
@@ -350,7 +370,7 @@ class ExternalPullRequestAdoption:
                 # Complete or an error, never a page: a PR past any page would
                 # wait forever, and the board's view is replaced only by a whole scan.
                 prs = self.host.list_open_prs_complete()
-            attempts = io_attempts(prs, repo_slug=repo)
+            attempts = io_attempts(prs, repo_slug=repo, provenance=PullRequestProvenance(self.host))
             gate = ExternalPullRequestGate(
                 self.config, self.host, ScanCustody(issue_branches, tuple(state.session_history), attempts),
             )

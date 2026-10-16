@@ -7,15 +7,22 @@ merge into the effort's branch, the delivery. The PR is the splice point.
 * **The effort.** An integration effort is integration mode's branch
   (#8144); an issue belongs to it when it carries :func:`effort_label`
   (``integrate:<branch>``).
-* **Provenance.** io's own PRs carry :data:`ORCHESTRATOR_PR_MARKER` in their
-  body. Any other PR is external. One the effort governs - adopted, or into
-  the effort branch (:func:`effort_governs`) - io reviews, reworks, updates
-  or merges only while it is ADOPTED (it carries
+* **Provenance.** A PR is io's own only when io opened it: GitHub records
+  io's own account as its author - set when the PR is opened, under the
+  credential that opened it, and never editable - and its body carries
+  :data:`ORCHESTRATOR_PR_MARKER`. The body is its author's to write, so the
+  marker is only a lookup hint: pasted into a hand-opened PR it grants
+  nothing. THE provenance owner
+  (:class:`~..control.pull_request_provenance.PullRequestProvenance`) proves
+  it, and every boundary reads its typed answer (:class:`Authorship`, carried
+  in :class:`PullRequestFacts`). Any other PR is external. One the effort
+  governs - adopted, or into the effort branch (:func:`effort_governs`) - io
+  reviews, reworks, updates or merges only while it is ADOPTED (it carries
   :data:`ORIGIN_EXTERNAL_LABEL`, which also lets the tech lead, the improver
   and an evaluation separate adopted work from io's own) and still ADMITTED;
   an external PR into another base that was never adopted is not the
-  effort's business. Once adopted, the label decides: a body that later
-  carries io's marker does not make the PR io's own.
+  effort's business. Once adopted, the label decides: even a PR io opened is
+  no longer io's own.
 * **THE admission rule.** :func:`judge_external_pull_request` is the one
   decision every boundary asks, on :class:`ExternalPullRequestFacts` it reads
   itself: discovery, the applier's re-check before each adoption, refusal,
@@ -76,14 +83,24 @@ def effort_label(branch: str) -> str:
     return f"{EFFORT_LABEL_PREFIX}{branch}"
 
 
-def io_authored(body: str | None) -> bool:
-    """Whether a PR body is one io wrote for its own work."""
+class Authorship(StrEnum):
+    """Who opened a PR, as THE provenance owner proved it (module docstring)."""
+
+    #: GitHub records io's own account as its author, and its body carries io's marker.
+    IO = "io"
+    #: Anyone else - a person, another tool - whatever its body says.
+    EXTERNAL = "external"
+
+
+def marker_hint(body: str | None) -> bool:
+    """Whether a PR body carries io's marker: where to look for io's own PRs,
+    never proof of one - the body is its author's to write."""
     return ORCHESTRATOR_PR_MARKER in (body or "")
 
 
-def io_owned_pr(body: str | None, labels: Iterable[str]) -> bool:
-    """io's own PR: its marker, and never adopted (the origin label decides once it is on)."""
-    return io_authored(body) and ORIGIN_EXTERNAL_LABEL not in labels
+def io_owned(authorship: Authorship, labels: Iterable[str]) -> bool:
+    """io's own PR: io opened it, and it was never adopted (the origin label decides once it is on)."""
+    return authorship is Authorship.IO and ORIGIN_EXTERNAL_LABEL not in labels
 
 
 def in_effort(branch: str, issue_labels: Iterable[str]) -> bool:
@@ -129,7 +146,8 @@ class PullRequestFacts:
     number: int
     open: bool
     draft: bool
-    body: str
+    #: Who opened it: THE provenance owner's answer, never the body's say-so.
+    authorship: Authorship
     branch: str
     base_branch: str | None
     labels: frozenset[str]
@@ -148,8 +166,8 @@ class PullRequestFacts:
 
     @property
     def io_owned(self) -> bool:
-        """io's own PR: its marker, and never adopted (the label decides once it is on)."""
-        return io_owned_pr(self.body, self.labels)
+        """io's own PR: io opened it, and never adopted (the label decides once it is on)."""
+        return io_owned(self.authorship, self.labels)
 
 
 @dataclass(frozen=True)
@@ -692,6 +710,7 @@ __all__ = [
     "AdoptedExternalPullRequest",
     "Admission",
     "AdoptionRefusal",
+    "Authorship",
     "EFFORT_LABEL_PREFIX",
     "ExternalAdmission",
     "ExternalPullRequestFacts",
@@ -716,12 +735,12 @@ __all__ = [
     "effort_label",
     "external_work",
     "in_effort",
-    "io_authored",
-    "io_owned_pr",
+    "io_owned",
     "issue_gap",
     "judge_external_pull_request",
     "launch_authority",
     "launch_refusal",
+    "marker_hint",
     "merge_refusal",
     "refusal_marker",
     "render_refusal_comment",
