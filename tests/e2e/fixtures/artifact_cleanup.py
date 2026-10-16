@@ -376,7 +376,7 @@ class E2EArtifactCleanup:
 
         Refuses outside a run the live gate allows (an agent session, no
         ``IO_E2E=1``) and for any repository but ``get_test_repo()``, which in
-        turn refuses an unset ``E2E_TEST_REPO`` and this checkout's origin.
+        turn refuses an unset ``E2E_TEST_REPO`` and any repository io manages.
         """
         refusal = LiveE2EGate.from_environ(environ).suite_refusal()
         if refusal is not None:

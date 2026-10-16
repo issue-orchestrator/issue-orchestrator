@@ -1,11 +1,12 @@
 """E2E GitHub utility functions."""
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from issue_orchestrator.adapters.github import resolve_github_token
 from issue_orchestrator.entrypoints.setup_wizard_common import detect_repo
+from issue_orchestrator.infra.repo_registry import list_repos
 from tests.fixtures.live_agent_cli import (
     is_claude_authenticated,
     is_claude_available,
@@ -127,13 +128,49 @@ def get_repo_from_git() -> str:
     return repo
 
 
-def resolve_test_repo(configured: str | None, production_repo: Callable[[], str]) -> str:
-    """The live suite's target: ``configured``, unless it is unset or production.
+def get_registered_repos() -> dict[str, Path]:
+    """The repositories of the checkouts in the operator's io repo registry.
+
+    Keyed by casefolded ``owner/name``, each mapped to the registered checkout
+    whose GitHub ``origin`` names it (#9529). An io engine is registered by
+    the checkout it runs from (``~/.config/issue-orchestrator/repos.json``),
+    so every repository developed there is one an io engine manages. The
+    origin, not the YAML an entry last selected, is the identity: an e2e
+    engine registers the harness checkout (whose origin is this repository's)
+    while naming the test repository only in a temporary config.
+
+    A registered checkout that no longer exists hosts no engine and is
+    skipped. One whose origin is unreadable is refused rather than guessed.
+    """
+    repos: dict[str, Path] = {}
+    for registered in list_repos():
+        checkout = Path(registered.path)
+        if not checkout.exists():
+            continue
+        repo = detect_repo(cwd=checkout)
+        if repo is None:
+            raise E2ETargetRepoError(
+                f"Cannot read a GitHub origin remote for {checkout}, which the "
+                "io repo registry lists, so the live e2e suite cannot prove "
+                "E2E_TEST_REPO is not a repository an io engine manages. "
+                "Unregister the checkout if no engine manages it."
+            )
+        repos.setdefault(repo.casefold(), checkout)
+    return repos
+
+
+def resolve_test_repo(
+    configured: str | None,
+    production_repo: Callable[[], str],
+    registered_repos: Callable[[], Mapping[str, Path]],
+) -> str:
+    """The live suite's target: ``configured``, unless unset or io-managed.
 
     The suite creates, edits and closes real issues and PRs (#9523), so it
     never falls back to the checkout's own repository: it must be named
-    explicitly, and it must not be that repository. ``production_repo`` is
-    read only once a target is named, so an unset one is reported as such.
+    explicitly, and it must be neither that repository nor one any io engine
+    on this machine manages (``registered_repos``, #9529). Both readers run
+    only once a target is named, so an unset one is reported as such.
     """
     repo = (configured or "").strip()
     if not repo:
@@ -151,19 +188,29 @@ def resolve_test_repo(configured: str | None, production_repo: Callable[[], str]
             "the engine manages. The live e2e suite never runs against it: "
             "point E2E_TEST_REPO at a dedicated test repository."
         )
+    checkout = registered_repos().get(repo.casefold())
+    if checkout is not None:
+        raise E2ETargetRepoError(
+            f"E2E_TEST_REPO={repo} is managed by an io engine: the io repo "
+            f"registry lists its checkout {checkout}. The live e2e suite never "
+            "runs against a managed repository: point E2E_TEST_REPO at a "
+            "dedicated test repository."
+        )
     return repo
 
 
 def get_test_repo() -> str:
     """The repository the live e2e suite runs against: ``E2E_TEST_REPO``.
 
-    Required, and never this checkout's own repository (see
-    ``resolve_test_repo``). For open-source contributors:
+    Required, and never this checkout's own repository nor one an io engine
+    manages (see ``resolve_test_repo``). For open-source contributors:
     - Create a test repository (or a fork you do not develop in)
     - Set E2E_TEST_REPO=youruser/yourrepo
     - Run e2e tests against it
     """
-    return resolve_test_repo(os.environ.get("E2E_TEST_REPO"), get_repo_from_git)
+    return resolve_test_repo(
+        os.environ.get("E2E_TEST_REPO"), get_repo_from_git, get_registered_repos
+    )
 
 
 def env_token_name() -> str | None:
