@@ -43,6 +43,11 @@ def _repos_file() -> Path:
     return _config_dir() / "repos.json"
 
 
+def registry_file() -> Path:
+    """The file the registry persists in, for diagnostics that name it."""
+    return _repos_file()
+
+
 @dataclass
 class RepoHealth:
     """Health status of a repository."""

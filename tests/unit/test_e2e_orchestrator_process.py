@@ -9,7 +9,9 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from issue_orchestrator.domain.repository_launch_selection import RepositoryLaunchSelection
 from issue_orchestrator.infra.config import AgentConfig, Config
+from issue_orchestrator.infra.repo_registry import list_repos, record_launched_selection
 from tests.e2e.fixtures.orchestrator_process import OrchestratorProcess
 from tests.e2e.fixtures.process_group_owner import ProcessGroupOwner
 
@@ -101,7 +103,79 @@ def test_start_runs_source_from_separate_repo_root(
     )
 
     process = OrchestratorProcess(config, repo_root, source_root=source_root)
+    captured = _capture_engine_launch(monkeypatch, tmp_path)
+
+    try:
+        process.start(max_issues=1)
+    finally:
+        process._close_log_file()  # noqa: SLF001
+
+    cmd = captured["cmd"]
+    env = captured["env"]
+    assert isinstance(cmd, list)
+    assert isinstance(env, dict)
+
+    assert cmd[0] == str(executable)
+    assert captured["cwd"] == repo_root
+    assert captured["start_new_session"] is True
+    assert str(source_root / "src") == env["PYTHONPATH"].split(":", maxsplit=1)[0]
+
+
+@pytest.mark.parametrize("overridden", [False, True])
+def test_an_engine_registers_its_checkout_in_a_registry_of_its_own(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    overridden: bool,
+) -> None:
+    """get_test_repo refuses every repository the operator's io registry
+    names, and the exam and onboarding engines run from clones of the test
+    repository, so no e2e engine registers there (#9529)."""
+    operator_registry = tmp_path / "operator-io-config"
+    monkeypatch.setenv("ISSUE_ORCHESTRATOR_CONFIG_DIR", str(operator_registry))
+    test_repo_clone = tmp_path / "exam-engine-clone"
+    test_repo_clone.mkdir()
+    config = Config(
+        repo="someone/io-e2e-sandbox",
+        repo_root=test_repo_clone,
+        worktree_base=tmp_path / "worktrees",
+        github_token_env="GH_TOKEN",
+    )
+    overrides = {"ISSUE_ORCHESTRATOR_CONFIG_DIR": str(operator_registry)} if overridden else {}
+    process = OrchestratorProcess(config, test_repo_clone, env_overrides=overrides)
+    captured = _capture_engine_launch(monkeypatch, tmp_path)
+
+    try:
+        process.start(max_issues=1)
+        env = captured["env"]
+        assert isinstance(env, dict)
+        engine_registry = Path(env["ISSUE_ORCHESTRATOR_CONFIG_DIR"])
+        assert engine_registry.is_dir()
+
+        # What the engine does as it starts: register the checkout it runs from.
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_CONFIG_DIR", str(engine_registry))
+        record_launched_selection(test_repo_clone, RepositoryLaunchSelection.default())
+        assert [repo.path for repo in list_repos()] == [str(test_repo_clone.resolve())]
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_CONFIG_DIR", str(operator_registry))
+
+        assert list_repos() == []
+    finally:
+        process._close_log_file()  # noqa: SLF001
+
+    assert not engine_registry.exists()
+
+
+def _capture_engine_launch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> dict[str, object]:
+    """Replace the engine launch: return what ``start`` would run it with.
+
+    Its logs go to ``tmp_path``, not the machine-wide e2e log directory that
+    every concurrent run prunes.
+    """
     captured: dict[str, object] = {}
+    log_dir = tmp_path / "e2e-logs"
+    log_dir.mkdir()
+    monkeypatch.setattr("tests.e2e.fixtures.orchestrator_process.E2E_LOG_DIR", log_dir)
 
     class FakeProcess:
         pid = 12345
@@ -119,21 +193,7 @@ def test_start_runs_source_from_separate_repo_root(
     )
     monkeypatch.setattr(OrchestratorProcess, "wait_until_ready", lambda self: None)
     monkeypatch.setattr(OrchestratorProcess, "_log_reader", lambda self: None)
-
-    try:
-        process.start(max_issues=1)
-    finally:
-        process._close_log_file()  # noqa: SLF001
-
-    cmd = captured["cmd"]
-    env = captured["env"]
-    assert isinstance(cmd, list)
-    assert isinstance(env, dict)
-
-    assert cmd[0] == str(executable)
-    assert captured["cwd"] == repo_root
-    assert captured["start_new_session"] is True
-    assert str(source_root / "src") == env["PYTHONPATH"].split(":", maxsplit=1)[0]
+    return captured
 
 
 def test_process_group_owner_snapshots_the_full_process_tree(monkeypatch) -> None:

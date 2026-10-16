@@ -117,6 +117,13 @@ def test_the_owner_refuses_this_checkouts_own_repository(live_e2e_run):
         E2EArtifactCleanup.for_test_repo("Owner/Production", github=_repository())
 
 
+def test_the_owner_refuses_a_repository_an_io_engine_manages(live_e2e_run):
+    live_e2e_run("Owner/Managed", managed_repos=("owner/managed",))
+
+    with pytest.raises(E2ETargetRepoError, match="managed by an io engine"):
+        E2EArtifactCleanup.for_test_repo("Owner/Managed", github=_repository())
+
+
 def test_the_owner_refuses_when_the_checkouts_origin_is_unreadable(monkeypatch, live_e2e_run):
     """Unknown is refused rather than guessed: nothing proves the target is
     not production."""

@@ -16,7 +16,13 @@ PRs. Three safeguards now fail closed independently:
    (`ISSUE_ORCHESTRATOR_SESSION_ID` set) the opt-in never applies. Agents: do
    not run this suite, and do not try to opt in.
 2. **Never production** (`fixtures/github_utils.get_test_repo`):
-   `E2E_TEST_REPO` is required and must not be this checkout's `origin`.
+   `E2E_TEST_REPO` is required and must not be this checkout's `origin`,
+   nor the `origin` of any checkout in the io repo registry
+   (`~/.config/issue-orchestrator/repos.json`): a repository an io engine
+   manages is never a test repository (#9529). A registered checkout that is
+   missing or has no GitHub origin refuses every target. `OrchestratorProcess`
+   points each engine it starts at a registry of its own, so the suite's
+   engines (some run from clones of the test repository) never land there.
 3. **One cleanup owner** (`fixtures/artifact_cleanup.E2EArtifactCleanup`):
    every PR close, branch delete, issue close and label delete goes through
    it, and it admits only what a typed scope proves. `RunOwnedScope`

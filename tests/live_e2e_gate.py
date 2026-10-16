@@ -24,7 +24,8 @@ environment says: every session inherits the engine's environment, so an
 ``IO_E2E`` exported where the engine started would otherwise reach them all.
 
 This gate is one of three independent layers. The suite also refuses the
-production repository (``tests/e2e/fixtures/github_utils.get_test_repo``), and
+production repository and every other repository an io engine manages
+(``tests/e2e/fixtures/github_utils.get_test_repo``), and
 every PR, branch, issue or label it closes or deletes goes through one owner
 that admits only what a typed scope proves is the run's own
 (``tests/e2e/fixtures/artifact_cleanup.py``).
