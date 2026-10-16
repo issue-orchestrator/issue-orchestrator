@@ -55,6 +55,10 @@ test('embedded: shown, asks the Control Center for the count, and renders it as 
     // An incomplete count arrives worded by the Control Center, never as an all-clear.
     h.listeners.message(fromCc({ type: 'cc-tech-lead-waiting', count: 0, text: '0 waiting on you; 1 repository not reporting' }));
     assert.equal(h.button.textContent, '0 waiting on you; 1 repository not reporting');
+    // #8988: an unknown count is not a number, and never marked as 0.
+    h.listeners.message(fromCc({ type: 'cc-tech-lead-waiting', count: null, text: 'What waits on you is unknown; 1 repository not reporting' }));
+    assert.equal(h.button.textContent, 'What waits on you is unknown; 1 repository not reporting');
+    assert.equal(h.button.dataset.waiting, 'unknown');
 });
 
 test('the badge and the custody drawer link open the Tech lead page, never approve', () => {

@@ -493,6 +493,7 @@ def test_tech_lead_refusal_off_the_outcome_contract_names_status_and_body(
     from issue_orchestrator.execution.control_center_tech_lead import (
         ControlCenterTechLead,
         HttpEngineTechLeadTransport,
+        TechLeadSectionMemory,
     )
     from issue_orchestrator.infra.repo_identity import configured_repository_key
     from issue_orchestrator.infra.repo_registry import RegisteredRepo
@@ -505,7 +506,7 @@ def test_tech_lead_refusal_off_the_outcome_contract_names_status_and_body(
         repo_root=str(tmp_path),
         instances=[SupervisorStatus(state="running", port=live_engine.port)],
     )
-    owner = ControlCenterTechLead(supervisor, lambda: [repo], HttpEngineTechLeadTransport())
+    owner = ControlCenterTechLead(supervisor, lambda: [repo], HttpEngineTechLeadTransport(), TechLeadSectionMemory())
 
     result = owner.command(
         configured_repository_key(str(tmp_path)),

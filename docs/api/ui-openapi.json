@@ -1673,8 +1673,26 @@
         }
       },
       "ControlCenterTechLeadRepoPayload": {
+        "description": "One configured repository on the Control Center's Tech lead page. Its availability decides whether it carries a section (#8988): a row cannot claim a report it does not have, nor carry one it says it lacks.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ControlCenterTechLeadAvailableRepoPayload"
+          },
+          {
+            "$ref": "#/components/schemas/ControlCenterTechLeadLastKnownRepoPayload"
+          },
+          {
+            "$ref": "#/components/schemas/ControlCenterTechLeadUnreportedRepoPayload"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "availability"
+        }
+      },
+      "ControlCenterTechLeadAvailableRepoPayload": {
         "type": "object",
         "additionalProperties": false,
+        "description": "The engine answered this read: section is what it reports now.",
         "required": [
           "repo_key",
           "name",
@@ -1691,25 +1709,80 @@
             "type": "string"
           },
           "availability": {
-            "type": "string",
-            "enum": [
-              "available",
-              "engine_not_running",
-              "unavailable"
-            ]
+            "const": "available"
           },
           "detail": {
             "type": "string"
           },
           "section": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/TechLeadPageSectionPayload"
-              },
-              {
-                "type": "null"
-              }
+            "$ref": "#/components/schemas/TechLeadPageSectionPayload"
+          }
+        }
+      },
+      "ControlCenterTechLeadLastKnownRepoPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "The engine is running but did not answer this read: section is what this engine last reported, and its generated_at is the as-of time (#8988).",
+        "required": [
+          "repo_key",
+          "name",
+          "availability",
+          "detail",
+          "section"
+        ],
+        "properties": {
+          "repo_key": {
+            "type": "string",
+            "pattern": "^repo-[0-9a-f]{64}$"
+          },
+          "name": {
+            "type": "string"
+          },
+          "availability": {
+            "const": "last_known"
+          },
+          "detail": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Why this read did not answer."
+          },
+          "section": {
+            "$ref": "#/components/schemas/TechLeadPageSectionPayload"
+          }
+        }
+      },
+      "ControlCenterTechLeadUnreportedRepoPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Nothing is known of the repository's backlog. unavailable: its engine is running but did not answer and has reported nothing in its current life. engine_not_running: no engine to ask.",
+        "required": [
+          "repo_key",
+          "name",
+          "availability",
+          "detail",
+          "section"
+        ],
+        "properties": {
+          "repo_key": {
+            "type": "string",
+            "pattern": "^repo-[0-9a-f]{64}$"
+          },
+          "name": {
+            "type": "string"
+          },
+          "availability": {
+            "enum": [
+              "unavailable",
+              "engine_not_running"
             ]
+          },
+          "detail": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Why nothing is known."
+          },
+          "section": {
+            "type": "null"
           }
         }
       },
@@ -1724,13 +1797,14 @@
         ],
         "properties": {
           "waiting_count": {
-            "type": "integer",
-            "minimum": 0
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "description": "What waits on the operator across the repositories that reported, or null when a running engine did not report now (unavailable or last_known): the count is then unknown, never a number (#8988)."
           },
           "unreported_count": {
             "type": "integer",
             "minimum": 0,
-            "description": "Configured repositories whose engine did not report: waiting_count is then a lower bound, never an all-clear."
+            "description": "Configured repositories whose engine did not report now (last_known included): when only stopped engines did, waiting_count is a lower bound, never an all-clear."
           },
           "generated_at": {
             "type": "string"
@@ -1774,8 +1848,9 @@
             "const": "cc-tech-lead-waiting"
           },
           "count": {
-            "type": "integer",
-            "minimum": 0
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "description": "The waiting count, or null when it is unknown (#8988): the text says why."
           },
           "text": {
             "type": "string",

@@ -80,6 +80,10 @@ make test-tech-lead-exam EXAM_CASE=U EXAM_ENGINE_REF=origin/tech-lead-reliabilit
 make test-tech-lead-exam EXAM_CASE=U EXAM_ENGINE_REF=<candidate> EXAM_BASE_REF=<running commit>   # upgrade from a given commit
 ```
 
+Like the rest of `tests/e2e`, the exam runs only against `E2E_TEST_REPO`, which is
+required and may not be this checkout's own repository, and only with the `IO_E2E=1`
+opt-in that `make test-tech-lead-exam` supplies (#9523). Agent sessions can never run it.
+
 Case U is the upgrade check to run before merging a feature branch into `main`. The engine
 starts at `EXAM_BASE_REF` (default `origin/main`), puts a coding session and a code review
 mid-flight (the scripted agents hold until released), and is stopped without a drain. The

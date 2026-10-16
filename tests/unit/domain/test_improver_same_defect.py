@@ -1,22 +1,33 @@
-"""One defect is filed once, whatever kinds of finding report it (#8700).
+"""One defect is filed once, whatever kinds of finding report it (#8700),
+and whichever run reports it (#8986).
 
 The fixtures are the two accepted heat answers of the first apply-mode run
 (``20261008T061946Z-a858fd07``), which filed one defect twice in two ways:
 two design findings about one code line (#8693/#8696), and a design finding
-and a stall finding about one owner (#8694/#8691).
+and a stall finding about one owner (#8694/#8691). Applied as two runs, the
+same answers are a later run rewording an earlier run's finding.
 """
 
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
-from issue_orchestrator.contracts.improver_findings import ImproverFindings
-from issue_orchestrator.control.improver_effects import EffectIdentity, planned_effects
+from issue_orchestrator.contracts.improver_findings import FINDINGS_FILE, ImproverFindings
+from issue_orchestrator.contracts.improver_run import EffectStatus, ImproverRunRecord, RunOutcome
+from issue_orchestrator.control.improver_effects import (
+    DEFECT_MARKER,
+    EffectIdentity,
+    filed_defect,
+    planned_effects,
+)
 from issue_orchestrator.domain.engine_activity import EngineRef
 from issue_orchestrator.domain.improver_defects import CodeSite, code_site, same_defect, stall_profile
 from issue_orchestrator.domain.improver_heats import AcceptedHeat, MergedHeats, merge_heats
-from tests.unit.improver_support import FakeEngineSource
+from issue_orchestrator.execution.improver_effect_applier import ImproverEffects
+from issue_orchestrator.ports.engine_audit import OpenIssueLabels
+from tests.unit.improver_support import FakeEngineSource, FakeIssueHost, MemoryRunStore
 
 RUN = Path(__file__).resolve().parents[2] / "fixtures" / "improver" / "run-20261008T061946Z-a858fd07"
 ENGINE = EngineRef(
@@ -53,8 +64,14 @@ HAND_OFF = "operator-approval-does-not-carry-the-pr-hand-off"  # #8694, heat 1 (
 ROUTE_PR = "decision-approval-cannot-route-the-pr-327"  # #8691, heat 2 (stall)
 #: Heat 1's stall finding about #327 too, through another owner.
 NON_PARTIAL = "non-partial-receipt-publishes-closing-pr-on-partially-delivered-issue"
-#: Heat 2's stall findings with the effect key of one of heat 1's: merged by key.
-KEY_MERGED = {"flaky-check-rerun-has-no-action-450", "provisioning-handover-179-undated-marker"}
+#: Heat 1's stall finding about #450 (#8688).
+WATERMARK = "triage-watermark-survives-block-lift-and-reblock"
+#: Heat 2's stall finding with the effect key of WATERMARK, about another defect (#8985).
+FLAKY_CHECK = "flaky-check-rerun-has-no-action-450"
+#: Heat 2's stall finding with the effect key of heat 1's, naming no cause: the same finding.
+PROVISIONING_H1 = "handed-over-provisioning-block-onset-unretained"
+#: Heat 2's stall findings with the effect key of one of heat 1's: carried on that one's issue.
+KEY_MERGED = {FLAKY_CHECK, "provisioning-handover-179-undated-marker"}
 #: As the prompt now asks (#8700): where the hand-off defect lives.
 HAND_OFF_OWNER = "issue_orchestrator.control.tech_lead_operator_decision:OperatorDecisionExecutor"
 
@@ -66,16 +83,16 @@ def _heat(n: int, **design_updates: dict) -> dict:
     return doc
 
 
-def _merge(*docs: dict) -> MergedHeats:
+def _merge(*docs: dict, identity: EffectIdentity = IDENTITY) -> MergedHeats:
     return merge_heats(
         [AcceptedHeat(n, ImproverFindings.model_validate_json(json.dumps(d))) for n, d in enumerate(docs, 1)],
-        IDENTITY,
+        identity,
     )
 
 
 def _filed(merged: MergedHeats) -> list[str]:
     """The finding ids the run files (or comments) an effect for."""
-    return [e.finding_id for e in planned_effects(merged.findings, ENGINE, merged.original_ids)]
+    return [e.finding_id for e in planned_effects(merged.findings, IDENTITY, merged.original_ids)]
 
 
 def _all_ids(*docs: dict) -> set[str]:
@@ -107,6 +124,32 @@ def test_as_written_the_two_design_findings_citing_one_code_line_are_one_issue()
 
     assert [(s.design.id, s.finding_id) for s in merged.same_defects] == [(CRASH_H2, CRASH_H1)]
     assert HAND_OFF in _filed(merged) and CRASH_H2 not in _filed(merged)
+
+
+def test_another_defect_with_a_kept_findings_effect_key_is_shown_on_its_issue_not_counted_as_support() -> None:
+    """#8985: heat 2's flaky-check finding has the effect key of heat 1's
+    triage-watermark finding (one output on one anomaly, #450) but names
+    another root-cause owner and another reproduction: another defect. It is
+    no support for the triage-watermark finding, and all it claims is shown
+    on that finding's issue. Heat 2's #179 finding, naming no cause, is the
+    same finding as heat 1's and supports it."""
+    first, second = (ImproverFindings.model_validate_json(json.dumps(_heat(n))) for n in (1, 2))
+    watermark = next(f for f in first.findings if f.id == WATERMARK)
+    flaky = next(f for f in second.findings if f.id == FLAKY_CHECK)
+    assert IDENTITY.stall_key(watermark) == IDENTITY.stall_key(flaky)
+
+    merged = _merge(_heat(1), _heat(2))
+
+    assert merged.support[WATERMARK] == (1,)
+    assert merged.support[PROVISIONING_H1] == (1, 2)
+    [conflict] = [c for c in merged.conflicts if FLAKY_CHECK in c.reason]
+    assert (conflict.finding_id, conflict.heat) == (WATERMARK, 2)
+    assert flaky.root_cause is not None and flaky.reproduction is not None and flaky.proposal is not None
+    for claimed in (
+        flaky.root_cause.owner, flaky.root_cause.why, flaky.reproduction.harness,
+        flaky.reproduction.planted_state, *flaky.reproduction.assertions, flaky.proposal,
+    ):
+        assert claimed in conflict.claim, claimed
 
 
 def test_an_item_both_are_about_does_not_relate_findings_on_different_code() -> None:
@@ -359,3 +402,289 @@ def test_an_owner_is_read_as_the_prompt_asks_it_written() -> None:
     assert code_site("issue_orchestrator.control.x:run()") == CodeSite(("issue_orchestrator", "control", "x"), ("run",))
     for unanchored in ("issue_orchestrator.control.x.run", "control/x.py:run (and its callers)", "control/x.txt:run", ":run"):
         assert code_site(unanchored) is None, unanchored
+
+
+# -- across runs (#8986) --------------------------------------------------------
+
+NOW = datetime(2026, 10, 12, 9, 0, tzinfo=UTC)
+OUTPUTS = "io/io"
+#: Heat 2's tracked finding comments on its tracked issue, which is open.
+TRACKED = OpenIssueLabels(number=8137, title="Parked records keyed on the original branch", labels=())
+
+
+def _host() -> FakeIssueHost:
+    return FakeIssueHost([TRACKED])
+
+
+def _record(
+    store: MemoryRunStore, run_id: str, *docs: dict, identity: EffectIdentity = IDENTITY, profiles: bool = True
+) -> None:
+    """One accepted run of ``docs`` (its heats), its effects owed; without
+    ``profiles``, as a run recorded before #8986 owes them."""
+    merged = _merge(*docs, identity=identity)
+    run_dir = store.new_run_dir(run_id)
+    (run_dir / FINDINGS_FILE).write_text(merged.findings.model_dump_json(by_alias=True), encoding="utf-8")
+    effects = planned_effects(merged.findings, identity, merged.original_ids)
+    store.record(ImproverRunRecord(
+        run_id=run_id, started_at=NOW, finished_at=NOW, outcome=RunOutcome.ACCEPTED, detail="",
+        engine_id=identity.engine.engine_id, audited_repo=identity.engine.repo, outputs_repo=OUTPUTS,
+        run_dir=str(run_dir), engine_commit=merged.findings.engine_commit,
+        effects=effects if profiles else tuple(e.model_copy(update={"profile": None}) for e in effects),
+    ))
+
+
+def _apply(
+    store: MemoryRunStore, host: FakeIssueHost, run_id: str, *docs: dict, identity: EffectIdentity = IDENTITY,
+    profiles: bool = True,
+) -> ImproverRunRecord:
+    """One accepted run of ``docs`` (its heats), recorded and applied."""
+    _record(store, run_id, *docs, identity=identity, profiles=profiles)
+    ImproverEffects(store=store, host=host, outputs_repo=OUTPUTS, clock=lambda: NOW).apply_pending()
+    return next(r for r in store.runs() if r.run_id == run_id)
+
+
+def _effect(run: ImproverRunRecord, finding_id: str) -> tuple[EffectStatus, int | None]:
+    receipt = next(e for e in run.effects if e.finding_id == finding_id)
+    return receipt.status, receipt.issue_number
+
+
+def _filed_for(host: FakeIssueHost, finding_id: str) -> int:
+    [number] = [c["number"] for c in host.created if f": {finding_id} (" in c["title"]]
+    return number
+
+
+def test_a_later_run_rewording_8693s_slug_comments_on_8693_instead_of_filing(tmp_path: Path) -> None:
+    """#8693 was filed by heat 1; heat 2 wrote the same defect under another
+    slug. Applied as a later run, heat 2's finding is evidence on #8693's
+    issue: its title token differs, its defect does not."""
+    store, host = MemoryRunStore(tmp_path), _host()
+    _apply(store, host, "a", _heat(1))
+    crash = _filed_for(host, CRASH_H1)
+
+    later = _apply(store, host, "b", _heat(2))
+
+    assert _effect(later, CRASH_H2) == (EffectStatus.COMMENTED, crash)
+    assert not any(CRASH_H2 in c["title"] for c in host.created)
+    [(_, body)] = [(n, b) for n, b in host.comments if n == crash]
+    assert "found this issue's defect again" in body and f"`{CRASH_H2}`" in body
+    assert '"id": "rework-needs-human-on-pr-pending-aborts-tick"' in body
+
+
+def test_a_run_owed_with_an_earlier_one_comments_on_the_issue_that_one_just_filed(tmp_path: Path) -> None:
+    """Both runs' effects are applied in one batch: the issue the first
+    files carries its defect for the second, before any re-read."""
+    store, host = MemoryRunStore(tmp_path), _host()
+    for run_id, doc in (("a", _heat(1)), ("b", _heat(2))):
+        _record(store, run_id, doc)
+
+    applied = ImproverEffects(store=store, host=host, outputs_repo=OUTPUTS, clock=lambda: NOW).apply_pending()
+
+    later = next(r for r in applied if r.run_id == "b")
+    assert _effect(later, CRASH_H2) == (EffectStatus.COMMENTED, _filed_for(host, CRASH_H1))
+
+
+def _crash_h1_alone() -> dict:
+    """Heat 1 with nothing but #8693's design finding."""
+    first = _heat(1)
+    return {**first, "findings": [], "design_findings": [d for d in first["design_findings"] if d["id"] == CRASH_H1]}
+
+
+def test_an_issue_a_fresh_read_proves_open_carries_its_defect_for_every_run_after(tmp_path: Path) -> None:
+    """r3 F3: the application's read does not show A's issue yet. B, with
+    A's key, finds it by its marker and comments there; C words A's defect
+    under another key and comments there too: what the fresh read proved,
+    defect and all, is an open issue for every receipt after B's."""
+    store, host = MemoryRunStore(tmp_path), _host()
+    _apply(store, host, "a", _crash_h1_alone())
+    crash = _filed_for(host, CRASH_H1)
+    host.stale_listing = True
+    _record(store, "b", _crash_h1_alone())
+    _record(store, "c", _heat(2))
+
+    applied = ImproverEffects(store=store, host=host, outputs_repo=OUTPUTS, clock=lambda: NOW).apply_pending()
+
+    runs = {r.run_id: r for r in applied}
+    assert _effect(runs["b"], CRASH_H1) == (EffectStatus.COMMENTED, crash)
+    assert _effect(runs["c"], CRASH_H2) == (EffectStatus.COMMENTED, crash)
+    assert _filed_for(host, CRASH_H1) == crash
+    assert not any(CRASH_H2 in c["title"] for c in host.created)
+    assert [n for n, _ in host.comments].count(crash) == 2
+
+
+def _recovered(tmp_path: Path, *, closed_since: bool) -> tuple[dict[str, ImproverRunRecord], FakeIssueHost, int]:
+    """Run A's POST filed #8693's issue, then its response was lost, and the
+    application's open-issue read does not show it yet; run B (heat 2, the same defect under
+    another key) is owed with it. The issue is closed (or not) before the
+    batch is applied again."""
+    store, host = MemoryRunStore(tmp_path), _host()
+    host.stale_listing = True
+    _record(store, "a", _crash_h1_alone())
+    _record(store, "b", _heat(2))
+    effects = ImproverEffects(store=store, host=host, outputs_repo=OUTPUTS, clock=lambda: NOW)
+    host.lose_create_result = RuntimeError("connection reset")
+    [lost] = effects.apply_pending()
+    [crash] = [c["number"] for c in host.created]
+    assert lost.run_id == "a" and lost.effects[0].create_attempted_at is not None
+    host.lose_create_result = None
+    if closed_since:
+        host.open = [i for i in host.open if i.number != crash]
+    return {r.run_id: r for r in effects.apply_pending()}, host, crash
+
+
+def test_an_issue_recovered_after_a_lost_create_and_closed_since_takes_no_later_evidence(tmp_path: Path) -> None:
+    """Recovery proves A filed the issue over every issue, open or closed;
+    only one proven open is an open issue. B's evidence is never commented
+    on the closed issue: B files the defect anew."""
+    applied, host, crash = _recovered(tmp_path, closed_since=True)
+
+    assert _effect(applied["a"], CRASH_H1) == (EffectStatus.FILED, crash)
+    status, filed = _effect(applied["b"], CRASH_H2)
+    assert status is EffectStatus.FILED and filed not in (None, crash)
+    assert filed == _filed_for(host, CRASH_H2)
+    assert not any(n == crash for n, _ in host.comments)
+
+
+def test_an_issue_recovered_after_a_lost_create_and_still_open_carries_its_defect(tmp_path: Path) -> None:
+    applied, host, crash = _recovered(tmp_path, closed_since=False)
+
+    assert _effect(applied["a"], CRASH_H1) == (EffectStatus.FILED, crash)
+    assert _effect(applied["b"], CRASH_H2) == (EffectStatus.COMMENTED, crash)
+    assert not any(CRASH_H2 in c["title"] for c in host.created)
+
+
+def test_a_later_design_finding_about_an_open_stall_findings_defect_comments_there(tmp_path: Path) -> None:
+    """#8691 (a stall finding) was filed first; the hand-off design finding
+    names its owner and is about its item, so a later run comments on it."""
+    store, host = MemoryRunStore(tmp_path), _host()
+    _apply(store, host, "a", _heat(2))
+    route = next(c["number"] for c in host.created if ROUTE_PR in c["title"])
+
+    later = _apply(store, host, "b", _heat(1, **{HAND_OFF: {"owner": HAND_OFF_OWNER}}))
+
+    assert _effect(later, HAND_OFF) == (EffectStatus.COMMENTED, route)
+
+
+def test_a_later_stall_finding_about_an_open_design_findings_defect_comments_there(tmp_path: Path) -> None:
+    store, host = MemoryRunStore(tmp_path), _host()
+    _apply(store, host, "a", _heat(1, **{HAND_OFF: {"owner": HAND_OFF_OWNER}}))
+    hand_off = _filed_for(host, HAND_OFF)
+
+    later = _apply(store, host, "b", _heat(2))
+
+    assert _effect(later, ROUTE_PR) == (EffectStatus.COMMENTED, hand_off)
+    assert not any(ROUTE_PR in c["title"] for c in host.created)
+
+
+def test_a_receipt_planned_before_profiles_files_as_it_did(tmp_path: Path) -> None:
+    """A run recorded before #8986 owes receipts without a profile: they
+    file, carrying only their key, and match no open issue's defect."""
+    store, host = MemoryRunStore(tmp_path), _host()
+    _apply(store, host, "a", _heat(1))
+
+    old = _apply(store, host, "old", _heat(2), profiles=False)
+
+    assert _effect(old, CRASH_H2)[0] is EffectStatus.FILED
+    crash_h2 = next(c for c in host.created if CRASH_H2 in c["title"])
+    assert DEFECT_MARKER not in crash_h2["body"]
+
+
+def test_every_filed_issue_records_its_defect_on_its_first_line(tmp_path: Path) -> None:
+    store, host = MemoryRunStore(tmp_path), _host()
+    run = _apply(store, host, "a", _heat(1))
+
+    crash = next(c for c in host.created if c["number"] == _filed_for(host, CRASH_H1))
+    first, rest = crash["body"].split("\n", 1)
+    defect = filed_defect(crash["body"])
+    assert defect is not None and DEFECT_MARKER in first and DEFECT_MARKER not in rest
+    assert (defect.run_id, defect.engine_id, defect.audited_repo) == ("a", ENGINE.engine_id, ENGINE.repo)
+    assert {(s.module, s.symbol) for s in defect.profile.sites} == {
+        (UPDATE.module, UPDATE.symbol), (FINALIZE.module, FINALIZE.symbol),
+    }
+    assert defect.profile == next(e.profile for e in run.effects if e.finding_id == CRASH_H1)
+
+
+def test_one_runs_own_issues_are_left_to_its_merge(tmp_path: Path) -> None:
+    """#8700: a design finding related to two stall findings of its own run
+    is folded into neither. Applying the run does not undo that: its own
+    issues are never matched."""
+    first = _heat(1, **{HAND_OFF: {"owner": HAND_OFF_OWNER}})
+    non_partial = next(f for f in first["findings"] if f["id"] == NON_PARTIAL)
+    non_partial["root_cause"]["owner"] = HAND_OFF_OWNER
+    store, host = MemoryRunStore(tmp_path), _host()
+
+    run = _apply(store, host, "a", first, _heat(2))
+
+    assert _effect(run, HAND_OFF)[0] is EffectStatus.FILED
+
+
+def test_two_stall_findings_about_one_owner_are_two_issues_in_any_runs(tmp_path: Path) -> None:
+    """A stall finding's identity is its key, across runs too: an exam case
+    and a fix about one owner are two deliverables."""
+    second = _heat(2)
+    route = next(f for f in second["findings"] if f["id"] == ROUTE_PR)
+    exam_case = {
+        **json.loads(json.dumps(route)), "id": "route-pr-exam-case", "output": "exam_case",
+        "reproduction": {**route["reproduction"], "kind": "exam_case", "case_id": "E-route-the-pr"},
+    }
+    store, host = MemoryRunStore(tmp_path), _host()
+    _apply(store, host, "a", second)
+
+    later = _apply(store, host, "b", {**_heat(2), "findings": [exam_case], "design_findings": []})
+
+    assert _effect(later, "route-pr-exam-case")[0] is EffectStatus.FILED
+
+
+def test_another_engines_issue_about_the_same_code_is_not_its_defect(tmp_path: Path) -> None:
+    """Two engines run io's code; their items share numbers and their logs
+    share paths. One engine's finding is never evidence on another's issue."""
+    other = EffectIdentity(EngineRef(engine_id="repo-other", repo="other/other", state_dir=Path("/other")), SOURCE)
+    store, host = MemoryRunStore(tmp_path), _host()
+    _apply(store, host, "a", _heat(1))
+
+    later = _apply(store, host, "b", _heat(2), identity=other)
+
+    assert _effect(later, CRASH_H2)[0] is EffectStatus.FILED
+
+
+def test_a_defect_two_open_issues_carry_is_evidence_on_the_oldest(tmp_path: Path) -> None:
+    """Two earlier runs filed one defect before this rule: a later finding
+    about it comments on the oldest and names the other, filing nothing."""
+    store, host = MemoryRunStore(tmp_path), _host()
+    _apply(store, host, "a", _heat(1))
+    crash = next(c for c in host.created if c["number"] == _filed_for(host, CRASH_H1))
+    host.open.append(OpenIssueLabels(number=100, title="An older run's crash issue", labels=()))
+    host.bodies[100] = crash["body"].replace('"run_id":"a"', '"run_id":"older"')
+
+    later = _apply(store, host, "b", _heat(2))
+
+    assert _effect(later, CRASH_H2) == (EffectStatus.COMMENTED, 100)
+    [body] = [b for n, b in host.comments if n == 100]
+    assert f"#{crash['number']}" in body
+
+
+def test_quoted_text_cannot_end_or_plant_the_defect_marker(tmp_path: Path) -> None:
+    """A quote is the improver's text: in the marker's JSON it cannot close
+    the comment or open another, and it reads back as written."""
+    quote = "the tick crashed --> <!-- io-improver-defect:{} --> on #450"
+    design = _chain_design("crash-quoting-markers", _log(10, quote))
+    store, host = MemoryRunStore(tmp_path), _host()
+
+    _apply(store, host, "a", {**_heat(1), "findings": [], "design_findings": [design]})
+
+    [created] = host.created
+    first, rest = created["body"].split("\n", 1)
+    assert first.count("-->") == 2 and first.count("<!--") == 2 and "<!--" not in rest
+    defect = filed_defect(created["body"])
+    assert defect is not None and defect.profile.quotes == (quote,)
+
+
+def test_a_marker_that_is_not_a_defect_stops_the_batch_loudly(tmp_path: Path) -> None:
+    """Ignoring it would file again a defect that issue already carries."""
+    store, host = MemoryRunStore(tmp_path), _host()
+    host.open.append(OpenIssueLabels(number=100, title="Edited by hand", labels=()))
+    host.bodies[100] = f"{DEFECT_MARKER}{{not json}} -->\nThe operator's notes."
+
+    run = _apply(store, host, "a", _heat(1))
+
+    assert host.created == [] and len(run.pending_effects) == len(run.effects)
+    assert "open issue #100's defect marker records no defect" in (run.effects[0].error or "")

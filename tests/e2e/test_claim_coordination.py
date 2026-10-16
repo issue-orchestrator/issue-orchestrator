@@ -14,7 +14,6 @@ human-facing workflow for running two local orchestrators on one repo.
 """
 
 import asyncio
-import os
 import shutil
 import subprocess
 import time
@@ -26,10 +25,8 @@ import httpx
 import pytest
 
 from issue_orchestrator.infra.config import Config
-from issue_orchestrator.testing.support.test_data import (
-    create_issue,
-    cleanup_issues_by_label,
-)
+from tests.e2e.fixtures.cleanup import close_run_issue
+from tests.e2e.fixtures.data_factory import create_run_issue
 
 from .fixtures import (
     find_free_port,
@@ -38,7 +35,6 @@ from .fixtures import (
     control_api_headers,
     env_token_name,
     get_issue_labels,
-    get_test_repo,
     keep_artifacts,
 )
 
@@ -197,12 +193,6 @@ def e2e_project_root() -> Path:
 
 
 @pytest.fixture
-def repo_name() -> str:
-    """Repository name for E2E tests."""
-    return os.environ.get("E2E_REPO", get_test_repo())
-
-
-@pytest.fixture
 def dual_orchestrator_configs(
     e2e_project_root: Path,
     tmp_path: Path,
@@ -288,11 +278,8 @@ def claim_test_issue(
     repo_name: str, claim_test_label: str
 ) -> Generator[int, None, None]:
     """Create a test issue for claim coordination tests."""
-    # Clean up any existing test issues
-    cleanup_issues_by_label(repo_name, claim_test_label)
-
-    # Create a new test issue
-    issue_number = create_issue(
+    # Create a new test issue (an earlier run's are reported, never closed here)
+    issue_number = create_run_issue(
         repo_name,
         "[E2E-CLAIM] Coordination test issue",
         ["agent:e2e-test", claim_test_label],
@@ -304,7 +291,7 @@ def claim_test_issue(
 
     # Cleanup
     print(f"\n[CLAIM E2E] Cleaning up test issue #{issue_number}")
-    cleanup_issues_by_label(repo_name, claim_test_label)
+    close_run_issue(repo_name, issue_number, "Closed by claim coordination e2e cleanup")
 
 
 @pytest.mark.e2e

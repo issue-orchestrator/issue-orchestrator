@@ -5,12 +5,13 @@ still owes effects, oldest first, it asks the policy what each finding needs
 (:func:`~..control.improver_effects.plan_effect`) and does it through the
 repository-host port, recording the receipt on the run as it goes.
 
-Open issues are listed once per application, so a finding an open issue
-already carries (filed by an earlier run, or by this one before a crash lost
-its receipt) is commented there, never filed twice. A comment is posted only
-if its marker is not already on the issue. A rate limit stops the batch with
-the rest pending; any other failure stops it too, kept as the receipt's
-``error`` until an application succeeds.
+Open issues are read once per application, each with the defect its body
+records (#8986), so a finding an open issue already carries (filed by an
+earlier run, or by this one before a crash lost its receipt), or one about
+the defect of an issue an earlier run filed, is commented there, never filed
+twice. A comment is posted only if its marker is not already on the issue. A
+rate limit stops the batch with the rest pending; any other failure stops it
+too, kept as the receipt's ``error`` until an application succeeds.
 """
 
 from __future__ import annotations
@@ -26,14 +27,9 @@ from ..contracts.improver_run import (
     ImproverRunRecord,
     RunOutcome,
 )
-from ..control.improver_effects import (
-    IMPROVER_LABEL,
-    CommentImproverEvidence,
-    plan_effect,
-    title_token,
-)
+from ..control.improver_effects import CommentImproverEvidence, OpenIssues, plan_effect
 from ..domain.improver_champion import CHANGE_ID
-from ..ports.engine_audit import OpenIssueLabels
+from ..ports.engine_audit import OpenIssueBody
 from ..ports.improver import ImproverRunStore
 from ..ports.repository_host import host_rate_limit_of
 
@@ -49,13 +45,13 @@ class ImproverIssueHost(Protocol):
 
     def issue_comment_marker_present(self, issue_number: int, marker: str) -> bool: ...
 
-    def list_open_issue_labels_complete(self) -> Sequence[OpenIssueLabels]: ...
-
     def find_issue_by_marker(
         self, *, title: str, marker: str, authoritative: bool = False
     ) -> int | None: ...
 
-    def find_open_issue_by_marker(self, *, marker: str) -> int | None: ...
+    def find_open_issue_by_marker(self, *, marker: str) -> OpenIssueBody | None: ...
+
+    def list_open_issue_bodies_complete(self) -> Sequence[OpenIssueBody]: ...
 
 
 class ImproverEffects:
@@ -94,7 +90,7 @@ class ImproverEffects:
         if not owing:
             return ()
         try:
-            open_issues = {i.number: i for i in self._host.list_open_issue_labels_complete()}
+            open_issues = OpenIssues.read(self._host.list_open_issue_bodies_complete())
         except Exception as error:
             first = owing[0]
             return (self._stopped(first, first.effects.index(first.pending_effects[0]), error),)
@@ -116,7 +112,7 @@ class ImproverEffects:
         ]
 
     def _apply_run(
-        self, run: ImproverRunRecord, open_issues: dict[int, OpenIssueLabels]
+        self, run: ImproverRunRecord, open_issues: OpenIssues
     ) -> tuple[ImproverRunRecord, bool]:
         accepted = self._store.accepted_findings(run)
         # Ids are unique across both lists (the validator's rule).
@@ -162,65 +158,70 @@ class ImproverEffects:
         run: ImproverRunRecord,
         finding: Finding | DesignFinding | ImproverChange,
         receipt: EffectReceipt,
-        open_issues: dict[int, OpenIssueLabels],
+        open_issues: OpenIssues,
         persist: Callable[[EffectReceipt], None],
-        *,
-        proven: dict[int, OpenIssueLabels] | None = None,
     ) -> EffectReceipt:
         # A challenger's issue is identified only by its body marker (proven
-        # below before any POST), never by the listing's titles: an approval
+        # below before any POST), never by the open issues read: an approval
         # on it can replace the champion (#8001).
         marker_only = isinstance(finding, ImproverChange)
-        listing = proven if proven is not None else ({} if marker_only else open_issues)
-        command = plan_effect(run, finding, receipt.key, listing)
+        command = plan_effect(run, finding, receipt, OpenIssues() if marker_only else open_issues)
         if isinstance(command, CommentImproverEvidence):
-            if not self._host.issue_comment_marker_present(command.issue_number, command.marker):
-                self._host.add_comment(command.issue_number, command.body)
-            target = command.issue_number
-            return receipt.model_copy(
-                update={
-                    "status": EffectStatus.COMMENTED, "issue_number": target,
-                    "at": self._clock(), "detail": "", "error": None,
-                }
-            )
+            return self._commented(receipt, command)
+        # An uncached, complete read of every open issue's body settles
+        # whether one carries the finding before any POST: another run may
+        # have filed it after the application's read, an operator may have
+        # retitled it, or this receipt's own POST may have filed it before
+        # its result was lost. What it proves joins the open issues, defect
+        # and all, for every receipt after this one.
+        found = self._host.find_open_issue_by_marker(marker=command.marker)
+        if found is not None:
+            open_issues.add(found)
+            if receipt.create_attempted_at is not None:
+                return _filed(receipt, found.number, self._clock())
+            again = plan_effect(run, finding, receipt, OpenIssues.read((found,)) if marker_only else open_issues)
+            if not isinstance(again, CommentImproverEvidence):
+                raise RuntimeError(f"open issue #{found.number} carries {receipt.finding_id}'s marker, yet it plans a new issue")
+            return self._commented(receipt, again)
         if receipt.create_attempted_at is not None:
-            # An earlier POST's result was lost. Prove by the body marker,
-            # over every issue open or closed, whether it filed one.
-            number = self._host.find_issue_by_marker(
+            # The earlier POST's result was lost and no open issue carries
+            # it: prove over every issue whether it filed one. One found
+            # only there is not proven open, so it is never an open issue a
+            # later finding's evidence is commented on.
+            recovered = self._host.find_issue_by_marker(
                 title=command.title, marker=command.marker, authoritative=True
             )
-        else:
-            # Another run may have filed the same finding a moment ago (the
-            # open listing need not show it yet), or an operator may have
-            # retitled or relabelled it: an uncached, complete read of every
-            # open issue's body settles it before any POST.
-            number = self._host.find_open_issue_by_marker(marker=command.marker)
-            if number is not None:
-                carrying = {number: _carrying(number, receipt.key)}
-                if marker_only:
-                    return self._apply(run, finding, receipt, open_issues, persist, proven=carrying)
-                return self._apply(run, finding, receipt, {**open_issues, **carrying}, persist)
-        if number is None:
-            persist(receipt.model_copy(update={"create_attempted_at": self._clock()}))
-            created = self._host.create_issue(
-                title=command.title, body=command.body, labels=list(command.labels)
-            )
-            if not created or not isinstance(created.get("number"), int):
-                raise RuntimeError(f"creating the improver issue for {receipt.finding_id} returned no issue number")
-            number = created["number"]
-        open_issues[number] = OpenIssueLabels(number=number, title=command.title, labels=command.labels)
+            if recovered is not None:
+                return _filed(receipt, recovered, self._clock())
+        persist(receipt.model_copy(update={"create_attempted_at": self._clock()}))
+        created = self._host.create_issue(title=command.title, body=command.body, labels=list(command.labels))
+        if not created or not isinstance(created.get("number"), int):
+            raise RuntimeError(f"creating the improver issue for {receipt.finding_id} returned no issue number")
+        number = created["number"]
+        open_issues.add(OpenIssueBody(number=number, title=command.title, labels=command.labels, body=command.body))
+        return _filed(receipt, number, self._clock())
+
+    def _commented(self, receipt: EffectReceipt, command: CommentImproverEvidence) -> EffectReceipt:
+        """``receipt`` done by ``command``, posted unless its marker is on the issue already."""
+        if not self._host.issue_comment_marker_present(command.issue_number, command.marker):
+            self._host.add_comment(command.issue_number, command.body)
         return receipt.model_copy(
             update={
-                "status": EffectStatus.FILED, "issue_number": number,
+                "status": EffectStatus.COMMENTED, "issue_number": command.issue_number,
                 "at": self._clock(), "detail": "", "error": None,
-                "create_attempted_at": receipt.create_attempted_at or self._clock(),
             }
         )
 
 
-def _carrying(number: int, key: str) -> OpenIssueLabels:
-    """An open issue known (by its body marker) to carry the finding ``key``."""
-    return OpenIssueLabels(number=number, title=title_token(key), labels=(IMPROVER_LABEL,))
+def _filed(receipt: EffectReceipt, number: int, now: datetime) -> EffectReceipt:
+    """``receipt`` done: its finding's issue is ``number``."""
+    return receipt.model_copy(
+        update={
+            "status": EffectStatus.FILED, "issue_number": number,
+            "at": now, "detail": "", "error": None,
+            "create_attempted_at": receipt.create_attempted_at or now,
+        }
+    )
 
 
 def _replaced(

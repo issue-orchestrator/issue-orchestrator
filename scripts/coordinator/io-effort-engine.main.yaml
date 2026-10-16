@@ -301,6 +301,10 @@ goal_pilot:
   agent: agent:goal-pilot
 
 e2e:
+  # io's own tests/e2e is collected only with IO_E2E=1 and runs only against
+  # E2E_TEST_REPO, never this repository (#9523). Before enabling, export both
+  # in the engine's environment (agent sessions never satisfy IO_E2E) or use
+  # runner_kind: command with [make, test-e2e], which sets IO_E2E itself.
   enabled: false
   auto_run_interval_minutes: 240
   # occupies_session_slot: true  # Make E2E a first-class worker workload: it

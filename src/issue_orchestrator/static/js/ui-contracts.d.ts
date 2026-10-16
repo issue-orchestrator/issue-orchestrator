@@ -167,19 +167,35 @@ export interface ConfigDialogPayload {
   title: string;
 }
 
+export interface ControlCenterTechLeadAvailableRepoPayload {
+  availability: "available";
+  detail: string;
+  name: string;
+  repo_key: string;
+  section: TechLeadPageSectionPayload;
+}
+
+export interface ControlCenterTechLeadLastKnownRepoPayload {
+  availability: "last_known";
+  detail: string;
+  name: string;
+  repo_key: string;
+  section: TechLeadPageSectionPayload;
+}
+
 export interface ControlCenterTechLeadPayload {
   generated_at: string;
   repos: ControlCenterTechLeadRepoPayload[];
   unreported_count: number;
-  waiting_count: number;
+  waiting_count: number | null;
 }
 
-export interface ControlCenterTechLeadRepoPayload {
-  availability: "available" | "engine_not_running" | "unavailable";
+export interface ControlCenterTechLeadUnreportedRepoPayload {
+  availability: "unavailable" | "engine_not_running";
   detail: string;
   name: string;
   repo_key: string;
-  section: TechLeadPageSectionPayload | null;
+  section: null;
 }
 
 export interface CopySessionRecordingCommandPayload {
@@ -1805,7 +1821,7 @@ export interface TechLeadWaitingItemPayload {
 }
 
 export interface TechLeadWaitingMessage {
-  count: number;
+  count: number | null;
   text: string;
   type: "cc-tech-lead-waiting";
 }
@@ -1970,6 +1986,8 @@ export interface WorktreeAuditResponsePayload {
 export type CodingAttemptPayload = RunningCodingAttemptPayload | CompletedCodingAttemptPayload | PublishFailedCodingAttemptPayload | BlockedCodingAttemptPayload | FailedCodingAttemptPayload | MissingCodingEvidencePayload;
 
 export type ControlCenterRecoveryRowsPayload = RecoveryAvailablePayload | RecoveryEmptyPayload | RecoveryUnavailablePayload;
+
+export type ControlCenterTechLeadRepoPayload = ControlCenterTechLeadAvailableRepoPayload | ControlCenterTechLeadLastKnownRepoPayload | ControlCenterTechLeadUnreportedRepoPayload;
 
 export type DialogActionCommandPayload = OpenPathCommandPayload | OpenSessionRecordingCommandPayload | CopySessionRecordingCommandPayload | ViewClaudeLogCommandPayload | OpenOrchestratorLogCommandPayload | OpenSessionDiagnosticsCommandPayload;
 

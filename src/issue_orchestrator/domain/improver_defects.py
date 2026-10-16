@@ -26,6 +26,12 @@ thing). Neither is enough alone: one function can hold two defects, and
 one item can show two. Two stall findings are never related here: a stall
 finding's identity is its effect key, and two stall findings asking for
 different things (an exam case and a fix) are two deliverables.
+
+The rule holds across runs too (#8986): a filed finding's issue records its
+profile as a later run compares it (:func:`profile_record`: every site and
+all evidence but toolbox answers, whose call numbers name an answer only
+within their own run), and a later finding about the same defect as an open
+issue's (:func:`recorded_profile`) is evidence for that issue, not a new one.
 """
 
 from __future__ import annotations
@@ -37,6 +43,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from ..contracts.improver_findings import DesignFinding, Finding, ToolCitation
+from ..contracts.improver_run import CitedLineRecord, CodeSiteRecord, DefectProfileRecord
 from .improver_citations import LINE_SLACK, normalized
 
 #: Where a staged engine source file sits in the run directory.
@@ -232,6 +239,36 @@ def design_profile(design: DesignFinding, source: EngineSource) -> DefectProfile
     )
 
 
+def profile_record(profile: DefectProfile) -> DefectProfileRecord:
+    """``profile`` as a later run compares it: its sites and evidence, but no
+    toolbox answer, since a call number names one answer only within the
+    run that made the call (its quote stays among the quotes)."""
+    return DefectProfileRecord(
+        design=profile.is_design,
+        sites=tuple(CodeSiteRecord(module=s.module, symbol=s.symbol) for s in profile.sites),
+        items=tuple(sorted(profile.items)),
+        records=tuple(sorted(profile.records)),
+        cited=tuple(
+            CitedLineRecord(path=c.path, line=c.line, quote=c.quote) for c in profile.cited if c.path is not None
+        ),
+        quotes=profile.quotes,
+    )
+
+
+def recorded_profile(record: DefectProfileRecord, finding_id: str) -> DefectProfile:
+    """A recorded profile, as :func:`same_defect` compares it, for the
+    finding ``finding_id`` (an open issue's finding is ``#N``: no slug is)."""
+    return DefectProfile(
+        finding_id=finding_id,
+        is_design=record.design,
+        sites=tuple(CodeSite(module=s.module, symbol=s.symbol) for s in record.sites),
+        items=frozenset(record.items),
+        records=frozenset(record.records),
+        cited=tuple(_Cited(path=c.path, line=c.line, quote=c.quote) for c in record.cited),
+        quotes=record.quotes,
+    )
+
+
 def _names(quote: str, record: str) -> bool:
     """Whether ``quote`` names the record id whole (r6 F1: ``D1`` is not
     ``D10``)."""
@@ -250,6 +287,8 @@ __all__ = [
     "code_site",
     "design_profile",
     "module_path",
+    "profile_record",
+    "recorded_profile",
     "resolved_owner",
     "same_defect",
     "stall_profile",

@@ -1,11 +1,11 @@
 """E2E GitHub utility functions."""
 
 import os
-import shutil
-import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 from issue_orchestrator.adapters.github import resolve_github_token
+from issue_orchestrator.entrypoints.setup_wizard_common import detect_repo
 from tests.fixtures.live_agent_cli import (
     is_claude_authenticated,
     is_claude_available,
@@ -102,42 +102,68 @@ def is_github_reachable(repo: str) -> bool:
         return False
 
 
+#: The checkout this harness runs from.
+_HARNESS_CHECKOUT = Path(__file__).parent.parent.parent.parent
+
+
+class E2ETargetRepoError(RuntimeError):
+    """The live e2e suite has no safe repository to run against."""
+
+
 def get_repo_from_git() -> str:
-    """Get repo owner/name from git remote."""
-    result = subprocess.run(
-        ["git", "remote", "get-url", "origin"],
-        capture_output=True,
-        text=True,
-        cwd=Path(__file__).parent.parent.parent.parent,
-    )
-    if result.returncode != 0:
-        return "test/repo"
+    """The repository this checkout belongs to: its GitHub ``origin`` remote.
 
-    url = result.stdout.strip()
-    # Parse git@github.com:owner/repo.git or https://github.com/owner/repo.git
-    if url.startswith("git@"):
-        # git@github.com:owner/repo.git
-        parts = url.split(":")[-1]
-    else:
-        # https://github.com/owner/repo.git
-        parts = "/".join(url.split("/")[-2:])
+    That is the repository the engine developing this code manages, so the
+    live suite must never target it. Unreadable means unknown, and unknown is
+    refused rather than guessed.
+    """
+    repo = detect_repo(cwd=_HARNESS_CHECKOUT)
+    if repo is None:
+        raise E2ETargetRepoError(
+            f"Cannot read a GitHub origin remote for this checkout ({_HARNESS_CHECKOUT}), "
+            "so the live e2e suite cannot prove E2E_TEST_REPO is not the "
+            "production repository."
+        )
+    return repo
 
-    return parts.replace(".git", "")
+
+def resolve_test_repo(configured: str | None, production_repo: Callable[[], str]) -> str:
+    """The live suite's target: ``configured``, unless it is unset or production.
+
+    The suite creates, edits and closes real issues and PRs (#9523), so it
+    never falls back to the checkout's own repository: it must be named
+    explicitly, and it must not be that repository. ``production_repo`` is
+    read only once a target is named, so an unset one is reported as such.
+    """
+    repo = (configured or "").strip()
+    if not repo:
+        raise E2ETargetRepoError(
+            "E2E_TEST_REPO is not set. The live e2e suite creates, edits and "
+            "closes real GitHub issues and PRs, so it runs only against a "
+            "dedicated test repository: set E2E_TEST_REPO=<owner>/<test-repo>."
+        )
+    owner, _, name = repo.partition("/")
+    if not owner or not name or "/" in name:
+        raise E2ETargetRepoError(f"E2E_TEST_REPO must be 'owner/name', got {repo!r}")
+    if repo.casefold() == production_repo().casefold():
+        raise E2ETargetRepoError(
+            f"E2E_TEST_REPO={repo} is this checkout's own repository, the one "
+            "the engine manages. The live e2e suite never runs against it: "
+            "point E2E_TEST_REPO at a dedicated test repository."
+        )
+    return repo
 
 
 def get_test_repo() -> str:
-    """Get the repo to use for e2e tests.
+    """The repository the live e2e suite runs against: ``E2E_TEST_REPO``.
 
-    Order of precedence:
-    1. E2E_TEST_REPO environment variable (e.g., "myuser/my-test-repo")
-    2. Current repo from git remote (for local development)
-
-    For open-source contributors:
-    - Fork the repo or create your own test repo
+    Required, and never this checkout's own repository (see
+    ``resolve_test_repo``). For open-source contributors:
+    - Create a test repository (or a fork you do not develop in)
     - Set E2E_TEST_REPO=youruser/yourrepo
-    - Run e2e tests against your repo
+    - Run e2e tests against it
     """
-    return os.environ.get("E2E_TEST_REPO", get_repo_from_git())
+    return resolve_test_repo(os.environ.get("E2E_TEST_REPO"), get_repo_from_git)
 
 
 def env_token_name() -> str | None:

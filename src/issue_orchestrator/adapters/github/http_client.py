@@ -9,6 +9,7 @@ import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from collections.abc import Callable, Sequence
 from typing import Any, Iterator, Literal, cast
 from urllib.parse import quote
@@ -2522,8 +2523,8 @@ class GitHubHttpClient:
         pagination does. Every node is validated; a malformed node, a missing
         connection or a walk longer than ``page_cap`` pages raises
         ``GitHubScanIncompleteError``. Each PR carries its labels (REST shape),
-        and a PR with more labels than one page holds raises too: a caller
-        deciding from a label's absence never reads a truncated set (#9499).
+        read whole through ``_complete_label_names``: a caller deciding from a
+        label's absence never reads a truncated set (#9499).
         """
         owner, repo = self._config.repo.split("/", 1)
         query = """
@@ -2534,12 +2535,12 @@ class GitHubHttpClient:
                     pageInfo { hasNextPage endCursor }
                     nodes {
                         number title url body headRefName headRefOid baseRefName isDraft
-                        labels(first: 100) { pageInfo { hasNextPage } nodes { name } }
+                        %s
                     }
                 }
             }
         }
-        """
+        """ % self._COMPLETE_LABELS
         prs: list[dict[str, Any]] = []
         after: str | None = None
         for _page in range(page_cap):
@@ -2562,9 +2563,11 @@ class GitHubHttpClient:
                     and type(node.get("isDraft")) is bool
                 ):
                     raise self._incomplete_open_prs(f"returned a malformed node: {node!r}")
+                labels = self._complete_label_names(node, self._incomplete_open_prs)
                 # ``draft`` is the REST spelling ``_pr_info_from_api`` reads;
                 # an open PR is always one or the other (#7490).
-                prs.append({**node, "state": "open", "draft": node["isDraft"], "labels": self._pr_node_labels(node)})
+                prs.append({**node, "state": "open", "draft": node["isDraft"],
+                            "labels": [{"name": name} for name in labels]})
             page_info = connection.get("pageInfo")
             if not isinstance(page_info, dict) or type(page_info.get("hasNextPage")) is not bool:
                 raise self._incomplete_open_prs("returned no pageInfo.hasNextPage")
@@ -2575,18 +2578,124 @@ class GitHubHttpClient:
                 raise self._incomplete_open_prs("reported another page without a cursor")
         raise self._incomplete_open_prs(f"exceeded the {page_cap * 100}-PR page cap")
 
-    def _pr_node_labels(self, node: dict[str, Any]) -> list[dict[str, str]]:
-        """One open-PR node's labels in REST shape, or an error: never a truncated set."""
+    # The one labels selection every complete GraphQL read asks for, and
+    # ``_complete_label_names`` its one reader: ``totalCount`` is what proves
+    # the page holds every label (#9499, #9523).
+    _COMPLETE_LABELS = "labels(first: 100) { totalCount nodes { name } }"
+
+    @staticmethod
+    def _complete_label_names(
+        node: dict[str, Any], incomplete: Callable[[str], GitHubScanIncompleteError]
+    ) -> list[str]:
+        """Every label name on one ``_COMPLETE_LABELS`` node, or ``incomplete``'s
+        error: never a malformed or truncated set. ``node`` has an int number."""
         labels = node.get("labels")
-        page_info = labels.get("pageInfo") if isinstance(labels, dict) else None
-        names = labels.get("nodes") if isinstance(labels, dict) else None
-        if not isinstance(page_info, dict) or not isinstance(names, list) or not all(
-            isinstance(label, dict) and isinstance(label.get("name"), str) for label in names
+        if not (
+            isinstance(labels, dict)
+            and isinstance(labels.get("nodes"), list)
+            and all(isinstance(entry, dict) and isinstance(entry.get("name"), str)
+                    for entry in labels["nodes"])
         ):
-            raise self._incomplete_open_prs(f"returned PR #{node['number']} without readable labels")
-        if page_info.get("hasNextPage") is not False:
-            raise self._incomplete_open_prs(f"returned PR #{node['number']} with more labels than one page")
-        return [{"name": label["name"]} for label in names]
+            raise incomplete(f"returned #{node['number']} without readable labels")
+        if labels.get("totalCount") != len(labels["nodes"]):
+            raise incomplete(f"truncated the labels of #{node['number']}")
+        return [entry["name"] for entry in labels["nodes"]]
+
+    _LABELED_PR_STATES = {
+        "open": ["OPEN"],
+        "closed": ["CLOSED", "MERGED"],
+        "all": ["OPEN", "CLOSED", "MERGED"],
+    }
+
+    def list_prs_with_label_complete(
+        self, label: str, *, state: str = "open", page_cap: int = 50
+    ) -> list[dict[str, Any]]:
+        """Every PR carrying ``label`` in ``state``, or an error: never partial.
+
+        For destructive decisions that a missed PR would make wrong (#9523:
+        deleting a label that is a PR's only provenance). Unlike
+        ``get_prs_with_label_graphql``, which stops at a limit and reads a
+        missing connection as "no PRs", this walks by cursor to the end and
+        validates everything: a missing connection or pageInfo, a malformed
+        node, a node whose labels were truncated, another page without a
+        cursor, or a walk longer than ``page_cap`` pages raises
+        ``GitHubScanIncompleteError``. ``state`` is ``open``, ``closed``
+        (closed or merged) or ``all``. Returns REST-shaped dicts for
+        ``_pr_info_from_api``.
+        """
+        if state not in self._LABELED_PR_STATES:
+            raise ValueError(f"unsupported PR state {state!r}")
+        owner, repo = self._config.repo.split("/", 1)
+        query = """
+        query($owner: String!, $repo: String!, $label: String!, $states: [PullRequestState!], $after: String) {
+            repository(owner: $owner, name: $repo) {
+                pullRequests(labels: [$label], states: $states, first: 100, after: $after,
+                             orderBy: {field: CREATED_AT, direction: ASC}) {
+                    pageInfo { hasNextPage endCursor }
+                    nodes {
+                        number title url body state isDraft
+                        headRefName headRefOid baseRefName
+                        %s
+                    }
+                }
+            }
+        }
+        """ % self._COMPLETE_LABELS
+        variables: dict[str, Any] = {
+            "owner": owner, "repo": repo, "label": label,
+            "states": self._LABELED_PR_STATES[state], "after": None,
+        }
+        prs: list[dict[str, Any]] = []
+        for _page in range(page_cap):
+            result = self._graphql(query, variables, caller="list_prs_with_label_complete")
+            connection = ((result.get("data") or {}).get("repository") or {}).get("pullRequests")
+            if not isinstance(connection, dict) or not isinstance(connection.get("nodes"), list):
+                raise self._incomplete_labeled_prs(label, "returned no pullRequests connection")
+            for node in connection["nodes"]:
+                prs.append(self._labeled_pr_from_node(label, node))
+            page_info = connection.get("pageInfo")
+            if not isinstance(page_info, dict) or type(page_info.get("hasNextPage")) is not bool:
+                raise self._incomplete_labeled_prs(label, "returned no pageInfo.hasNextPage")
+            if not page_info["hasNextPage"]:
+                return prs
+            after = page_info.get("endCursor")
+            if not isinstance(after, str) or not after:
+                raise self._incomplete_labeled_prs(label, "reported another page without a cursor")
+            variables["after"] = after
+        raise self._incomplete_labeled_prs(label, f"exceeded the {page_cap * 100}-PR page cap")
+
+    def _labeled_pr_from_node(self, label: str, node: object) -> dict[str, Any]:
+        """One validated node of ``list_prs_with_label_complete``, REST-shaped."""
+        if not (
+            isinstance(node, dict)
+            and type(node.get("number")) is int
+            and node["number"] > 0
+            and isinstance(node.get("headRefName"), str)
+            and isinstance(node.get("headRefOid"), str)
+            and isinstance(node.get("baseRefName"), str)
+            and node.get("state") in ("OPEN", "CLOSED", "MERGED")
+            and type(node.get("isDraft")) is bool
+        ):
+            raise self._incomplete_labeled_prs(label, f"returned a malformed node: {node!r}")
+        names = self._complete_label_names(node, partial(self._incomplete_labeled_prs, label))
+        return {
+            "number": node["number"],
+            "title": node.get("title") or "",
+            "html_url": node.get("url") or "",
+            "body": node.get("body") or "",
+            "state": node["state"].lower(),
+            "draft": node["isDraft"],
+            "head": {"ref": node["headRefName"], "sha": node["headRefOid"]},
+            "base": {"ref": node["baseRefName"]},
+            "labels": [{"name": name} for name in names],
+        }
+
+    def _incomplete_labeled_prs(self, label: str, why: str) -> GitHubScanIncompleteError:
+        return GitHubScanIncompleteError(
+            f"Listing pull requests labelled {label!r} {why}; refusing to treat it as complete",
+            method="POST",
+            url="/graphql",
+        )
 
     def list_prs_numbered_above(
         self, number_floor: int, *, page_cap: int = 20
@@ -2630,12 +2739,37 @@ class GitHubHttpClient:
     ) -> list[tuple[int, str, tuple[str, ...]]]:
         """Every open issue's number, title and labels, or an error: never a partial list.
 
-        Walks GraphQL ``issues(states: OPEN)`` by CURSOR, like
-        :meth:`list_open_prs_complete`: an issue closing mid-walk cannot shift
-        another past a page boundary the way offset pagination does (#7490).
         An issue with more labels than one page carries is refused rather than
         reported with some of them.
         """
+        return [
+            self._open_issue_labels(node)
+            for node in self._open_issue_nodes(
+                f"number title {self._COMPLETE_LABELS}",
+                page_cap=page_cap, caller="list_open_issue_labels_complete",
+            )
+        ]
+
+    def list_open_issue_bodies_complete(
+        self, *, page_cap: int = 20
+    ) -> list[tuple[int, str, tuple[str, ...], str]]:
+        """Every open issue's number, title, labels and body, or an error:
+        never a partial list (#8986). Read fresh, so an issue filed a moment
+        ago is seen; what an authoritative open-issue marker lookup walks."""
+        return [
+            (*self._open_issue_labels(node), self._open_issue_body(node))
+            for node in self._open_issue_nodes(
+                f"number title body {self._COMPLETE_LABELS}",
+                page_cap=page_cap, caller="list_open_issue_bodies_complete",
+            )
+        ]
+
+    def _open_issue_nodes(self, fields: str, *, page_cap: int, caller: str) -> Iterator[object]:
+        """Every open issue's ``fields``, walking GraphQL ``issues(states: OPEN)``
+        by CURSOR, like :meth:`list_open_prs_complete`: an issue closing
+        mid-walk cannot shift another past a page boundary the way offset
+        pagination does (#7490). A missing connection, a page without a
+        cursor or a walk longer than ``page_cap`` pages raises."""
         owner, repo = self._config.repo.split("/", 1)
         query = """
         query($owner: String!, $repo: String!, $after: String) {
@@ -2643,32 +2777,32 @@ class GitHubHttpClient:
                 issues(states: OPEN, first: 100, after: $after,
                        orderBy: {field: CREATED_AT, direction: ASC}) {
                     pageInfo { hasNextPage endCursor }
-                    nodes { number title labels(first: 100) { totalCount nodes { name } } }
+                    nodes { %s }
                 }
             }
         }
-        """
-        issues: list[tuple[int, str, tuple[str, ...]]] = []
+        """ % fields
         after: str | None = None
         for _page in range(page_cap):
-            result = self._graphql(
-                query, {"owner": owner, "repo": repo, "after": after},
-                caller="list_open_issue_labels_complete",
-            )
+            result = self._graphql(query, {"owner": owner, "repo": repo, "after": after}, caller=caller)
             connection = ((result.get("data") or {}).get("repository") or {}).get("issues")
             if not isinstance(connection, dict) or not isinstance(connection.get("nodes"), list):
                 raise self._incomplete_open_issues("returned no issues connection")
-            for node in connection["nodes"]:
-                issues.append(self._open_issue_labels(node))
+            yield from connection["nodes"]
             page_info = connection.get("pageInfo")
             if not isinstance(page_info, dict) or type(page_info.get("hasNextPage")) is not bool:
                 raise self._incomplete_open_issues("returned no pageInfo.hasNextPage")
             if not page_info["hasNextPage"]:
-                return issues
+                return
             after = page_info.get("endCursor")
             if not isinstance(after, str) or not after:
                 raise self._incomplete_open_issues("reported another page without a cursor")
         raise self._incomplete_open_issues(f"exceeded the {page_cap * 100}-issue page cap")
+
+    def _open_issue_body(self, node: object) -> str:
+        if not isinstance(node, dict) or not isinstance(node.get("body"), str):
+            raise self._incomplete_open_issues(f"returned a node without its body: {node!r}")
+        return node["body"]
 
     def _open_issue_labels(self, node: object) -> tuple[int, str, tuple[str, ...]]:
         if (
@@ -2677,17 +2811,8 @@ class GitHubHttpClient:
             or not isinstance(node.get("title"), str)
         ):
             raise self._incomplete_open_issues(f"returned a malformed node: {node!r}")
-        labels = node.get("labels")
-        if not isinstance(labels, dict) or not isinstance(labels.get("nodes"), list):
-            raise self._incomplete_open_issues(f"returned a malformed node: {node!r}")
-        names = [n.get("name") for n in labels["nodes"] if isinstance(n, dict)]
-        if len(names) != len(labels["nodes"]) or not all(isinstance(n, str) for n in names):
-            raise self._incomplete_open_issues(f"returned a malformed node: {node!r}")
-        if labels.get("totalCount") != len(names):
-            raise self._incomplete_open_issues(
-                f"returned issue #{node['number']} with only some of its labels"
-            )
-        return node["number"], node["title"], tuple(str(n) for n in names)
+        names = self._complete_label_names(node, self._incomplete_open_issues)
+        return node["number"], node["title"], tuple(names)
 
     def _incomplete_open_issues(self, why: str) -> GitHubScanIncompleteError:
         return GitHubScanIncompleteError(
