@@ -1838,15 +1838,18 @@ class GitHubHttpClient:
         """The account id GitHub records as the author of the PRs this engine
         opens (#9499): its App's bot account, or its token's user. Read once."""
         if self._engine_account_id is None:
-            bot = self.app_bot_account()
-            if bot is not None:
-                self._engine_account_id = bot.user_id
-            else:
-                actor = self._request_json("GET", "/user", use_cache=False, caller="engine_account_id")
-                if not isinstance(actor, dict) or type(actor.get("id")) is not int or actor["id"] <= 0:
-                    raise GitHubAuthError("GitHub's authenticated user carries no account id")
-                self._engine_account_id = actor["id"]
+            self._engine_account_id = self._read_engine_account_id()
         return self._engine_account_id
+
+    def _read_engine_account_id(self) -> int:
+        bot = self.app_bot_account()
+        if bot is not None:
+            return bot.user_id
+        actor = self._request_json("GET", "/user", use_cache=False, caller="engine_account_id")
+        account_id = actor.get("id") if isinstance(actor, dict) else None
+        if type(account_id) is not int or account_id <= 0:
+            raise GitHubAuthError("GitHub's authenticated user carries no account id")
+        return account_id
 
     def repository_role(self, login: str) -> str | None:
         """``login``'s repository role, or None when GitHub knows no such user.
