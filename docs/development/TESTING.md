@@ -129,8 +129,9 @@ that, each of three safeguards fails closed on its own (#9523):
   refused. Inside an orchestrator agent session
   (`ISSUE_ORCHESTRATOR_SESSION_ID` set) the opt-in never applies.
 - **Never the production repository.** `E2E_TEST_REPO` is required and must
-  not be this checkout's own `origin` repository. There is no git-remote
-  fallback.
+  not be this checkout's own `origin` repository, nor that of any checkout in
+  the io repo registry (`~/.config/issue-orchestrator/repos.json`), since an
+  io engine manages each of them (#9529). There is no git-remote fallback.
 - **Cleanup removes only what a scope proves is this run's.** Every PR close,
   branch delete, issue close and label delete goes through one owner
   (`tests/e2e/fixtures/artifact_cleanup.py`). A run closes only the issues it
