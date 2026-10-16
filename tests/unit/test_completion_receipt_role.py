@@ -1,6 +1,7 @@
 """Receipt consumers retain allocation-owned role and enforce Tech Lead policy."""
 
 import json
+from contextlib import nullcontext
 import sqlite3
 from unittest.mock import Mock
 
@@ -82,7 +83,7 @@ def role_boundary(
     runner = Mock(spec=CommandRunner)
     runner.run.return_value = CommandResult(returncode=0, stdout="validated", stderr="")
     workspace = Mock(spec=CompletionValidationWorkspace)
-    workspace.checkout.side_effect = lambda run, head, entry: run.worktree_path
+    workspace.checkout.side_effect = lambda run, head, entry: nullcontext(run.worktree_path)
     validator = ConfiguredCompletionEvidenceValidator(
         working_copy, runner, workspace, command="configured-check", timeout_seconds=30
     )
