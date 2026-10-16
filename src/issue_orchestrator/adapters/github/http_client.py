@@ -9,6 +9,7 @@ import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from collections.abc import Callable, Sequence
 from typing import Any, Iterator, Literal, cast
 from urllib.parse import quote
@@ -574,6 +575,7 @@ class GitHubHttpClient:
         self._config = config
         self._etag_cache = _ETagCache()
         self._app_bot_account: GitHubAppBotAccount | None = None
+        self._engine_account_id: int | None = None
         if config.auth is not None:
             self._auth = config.auth
         elif config.token_provider is not None:
@@ -1832,6 +1834,23 @@ class GitHubHttpClient:
             self._app_bot_account = GitHubAppBotAccount.from_user_payload(login, payload)
         return self._app_bot_account
 
+    def engine_account_id(self) -> int:
+        """The account id GitHub records as the author of the PRs this engine
+        opens (#9499): its App's bot account, or its token's user. Read once."""
+        if self._engine_account_id is None:
+            self._engine_account_id = self._read_engine_account_id()
+        return self._engine_account_id
+
+    def _read_engine_account_id(self) -> int:
+        bot = self.app_bot_account()
+        if bot is not None:
+            return bot.user_id
+        actor = self._request_json("GET", "/user", use_cache=False, caller="engine_account_id")
+        account_id = actor.get("id") if isinstance(actor, dict) else None
+        if type(account_id) is not int or account_id <= 0:
+            raise GitHubAuthError("GitHub's authenticated user carries no account id")
+        return account_id
+
     def repository_role(self, login: str) -> str | None:
         """``login``'s repository role, or None when GitHub knows no such user.
 
@@ -2521,7 +2540,10 @@ class GitHubHttpClient:
         mid-walk cannot shift another one past a page boundary the way offset
         pagination does. Every node is validated; a malformed node, a missing
         connection or a walk longer than ``page_cap`` pages raises
-        ``GitHubScanIncompleteError``.
+        ``GitHubScanIncompleteError``. Each PR carries its labels (REST shape),
+        read whole through ``_complete_label_names``: a caller deciding from a
+        label's absence never reads a truncated set (#9499). And each carries
+        its author (REST ``user``, ``_pr_author_user``): whether io opened it.
         """
         owner, repo = self._config.repo.split("/", 1)
         query = """
@@ -2530,11 +2552,15 @@ class GitHubHttpClient:
                 pullRequests(states: OPEN, first: 100, after: $after,
                              orderBy: {field: CREATED_AT, direction: ASC}) {
                     pageInfo { hasNextPage endCursor }
-                    nodes { number title url body headRefName headRefOid baseRefName isDraft }
+                    nodes {
+                        number title url body headRefName headRefOid baseRefName isDraft
+                        %s
+                        %s
+                    }
                 }
             }
         }
-        """
+        """ % (self._COMPLETE_LABELS, self._PR_AUTHOR)
         prs: list[dict[str, Any]] = []
         after: str | None = None
         for _page in range(page_cap):
@@ -2557,9 +2583,12 @@ class GitHubHttpClient:
                     and type(node.get("isDraft")) is bool
                 ):
                     raise self._incomplete_open_prs(f"returned a malformed node: {node!r}")
+                labels = self._complete_label_names(node, self._incomplete_open_prs)
                 # ``draft`` is the REST spelling ``_pr_info_from_api`` reads;
                 # an open PR is always one or the other (#7490).
-                prs.append({**node, "state": "open", "draft": node["isDraft"]})
+                prs.append({**node, "state": "open", "draft": node["isDraft"],
+                            "labels": [{"name": name} for name in labels],
+                            "user": self._pr_author_user(node, self._incomplete_open_prs)})
             page_info = connection.get("pageInfo")
             if not isinstance(page_info, dict) or type(page_info.get("hasNextPage")) is not bool:
                 raise self._incomplete_open_prs("returned no pageInfo.hasNextPage")
@@ -2569,6 +2598,59 @@ class GitHubHttpClient:
             if not isinstance(after, str) or not after:
                 raise self._incomplete_open_prs("reported another page without a cursor")
         raise self._incomplete_open_prs(f"exceeded the {page_cap * 100}-PR page cap")
+
+    # The one labels selection every complete GraphQL read asks for, and
+    # ``_complete_label_names`` its one reader: ``totalCount`` is what proves
+    # the page holds every label (#9499, #9523).
+    _COMPLETE_LABELS = "labels(first: 100) { totalCount nodes { name } }"
+
+    @staticmethod
+    def _complete_label_names(
+        node: dict[str, Any], incomplete: Callable[[str], GitHubScanIncompleteError]
+    ) -> list[str]:
+        """Every label name on one ``_COMPLETE_LABELS`` node, or ``incomplete``'s
+        error: never a malformed or truncated set. ``node`` has an int number.
+
+        ``totalCount`` must be a real non-negative int before it is compared:
+        Python's ``True == 1`` would otherwise prove one label whole."""
+        labels = node.get("labels")
+        if not (
+            isinstance(labels, dict)
+            and isinstance(labels.get("nodes"), list)
+            and all(isinstance(entry, dict) and isinstance(entry.get("name"), str)
+                    for entry in labels["nodes"])
+        ):
+            raise incomplete(f"returned #{node['number']} without readable labels")
+        total = labels.get("totalCount")
+        if type(total) is not int or total < 0:
+            raise incomplete(f"returned #{node['number']} with a malformed label count {total!r}")
+        if total != len(labels["nodes"]):
+            raise incomplete(f"truncated the labels of #{node['number']}")
+        return [entry["name"] for entry in labels["nodes"]]
+
+    # The one author selection every complete GraphQL PR read asks for, and
+    # ``_pr_author_user`` its one reader: GitHub's account id for the PR's
+    # author, which nothing on the PR can edit (#9499 review F1).
+    _PR_AUTHOR = "author { __typename login ... on User { databaseId } ... on Bot { databaseId } }"
+
+    @staticmethod
+    def _pr_author_user(
+        node: dict[str, Any], incomplete: Callable[[str], GitHubScanIncompleteError]
+    ) -> dict[str, Any] | None:
+        """One ``_PR_AUTHOR`` node's author in REST shape (``user``), or None
+        when GitHub names no account (a deleted one); ``incomplete``'s error
+        for an author it cannot read. ``node`` has an int number."""
+        author = node.get("author")
+        if author is None:
+            return None
+        if not (
+            isinstance(author, dict)
+            and isinstance(author.get("login"), str)
+            and type(author.get("databaseId")) is int
+            and author["databaseId"] > 0
+        ):
+            raise incomplete(f"returned #{node['number']} with an unreadable author")
+        return {"id": author["databaseId"], "login": author["login"], "type": author.get("__typename")}
 
     _LABELED_PR_STATES = {
         "open": ["OPEN"],
@@ -2604,12 +2686,13 @@ class GitHubHttpClient:
                     nodes {
                         number title url body state isDraft
                         headRefName headRefOid baseRefName
-                        labels(first: 100) { totalCount nodes { name } }
+                        %s
+                        %s
                     }
                 }
             }
         }
-        """
+        """ % (self._COMPLETE_LABELS, self._PR_AUTHOR)
         variables: dict[str, Any] = {
             "owner": owner, "repo": repo, "label": label,
             "states": self._LABELED_PR_STATES[state], "after": None,
@@ -2635,7 +2718,6 @@ class GitHubHttpClient:
 
     def _labeled_pr_from_node(self, label: str, node: object) -> dict[str, Any]:
         """One validated node of ``list_prs_with_label_complete``, REST-shaped."""
-        labels = node.get("labels") if isinstance(node, dict) else None
         if not (
             isinstance(node, dict)
             and type(node.get("number")) is int
@@ -2645,16 +2727,10 @@ class GitHubHttpClient:
             and isinstance(node.get("baseRefName"), str)
             and node.get("state") in ("OPEN", "CLOSED", "MERGED")
             and type(node.get("isDraft")) is bool
-            and isinstance(labels, dict)
-            and isinstance(labels.get("nodes"), list)
-            and all(isinstance(entry, dict) and isinstance(entry.get("name"), str)
-                    for entry in labels["nodes"])
         ):
             raise self._incomplete_labeled_prs(label, f"returned a malformed node: {node!r}")
-        if labels.get("totalCount") != len(labels["nodes"]):
-            raise self._incomplete_labeled_prs(
-                label, f"truncated the labels of PR #{node['number']}"
-            )
+        incomplete = partial(self._incomplete_labeled_prs, label)
+        names = self._complete_label_names(node, incomplete)
         return {
             "number": node["number"],
             "title": node.get("title") or "",
@@ -2664,7 +2740,8 @@ class GitHubHttpClient:
             "draft": node["isDraft"],
             "head": {"ref": node["headRefName"], "sha": node["headRefOid"]},
             "base": {"ref": node["baseRefName"]},
-            "labels": [{"name": entry["name"]} for entry in labels["nodes"]],
+            "labels": [{"name": name} for name in names],
+            "user": self._pr_author_user(node, incomplete),
         }
 
     def _incomplete_labeled_prs(self, label: str, why: str) -> GitHubScanIncompleteError:
@@ -2722,7 +2799,7 @@ class GitHubHttpClient:
         return [
             self._open_issue_labels(node)
             for node in self._open_issue_nodes(
-                "number title labels(first: 100) { totalCount nodes { name } }",
+                f"number title {self._COMPLETE_LABELS}",
                 page_cap=page_cap, caller="list_open_issue_labels_complete",
             )
         ]
@@ -2736,7 +2813,7 @@ class GitHubHttpClient:
         return [
             (*self._open_issue_labels(node), self._open_issue_body(node))
             for node in self._open_issue_nodes(
-                "number title body labels(first: 100) { totalCount nodes { name } }",
+                f"number title body {self._COMPLETE_LABELS}",
                 page_cap=page_cap, caller="list_open_issue_bodies_complete",
             )
         ]
@@ -2788,17 +2865,8 @@ class GitHubHttpClient:
             or not isinstance(node.get("title"), str)
         ):
             raise self._incomplete_open_issues(f"returned a malformed node: {node!r}")
-        labels = node.get("labels")
-        if not isinstance(labels, dict) or not isinstance(labels.get("nodes"), list):
-            raise self._incomplete_open_issues(f"returned a malformed node: {node!r}")
-        names = [n.get("name") for n in labels["nodes"] if isinstance(n, dict)]
-        if len(names) != len(labels["nodes"]) or not all(isinstance(n, str) for n in names):
-            raise self._incomplete_open_issues(f"returned a malformed node: {node!r}")
-        if labels.get("totalCount") != len(names):
-            raise self._incomplete_open_issues(
-                f"returned issue #{node['number']} with only some of its labels"
-            )
-        return node["number"], node["title"], tuple(str(n) for n in names)
+        names = self._complete_label_names(node, self._incomplete_open_issues)
+        return node["number"], node["title"], tuple(names)
 
     def _incomplete_open_issues(self, why: str) -> GitHubScanIncompleteError:
         return GitHubScanIncompleteError(
@@ -3498,11 +3566,12 @@ class GitHubHttpClient:
                 labels(first: 20) {
                   nodes { name }
                 }
+                %s
               }
             }
           }
         }
-        """
+        """ % self._PR_AUTHOR
         all_prs: list[dict[str, Any]] = []
         cursor: str | None = None
         remaining = limit
@@ -3542,6 +3611,7 @@ class GitHubHttpClient:
                     "state": node.get("state", "OPEN").lower(),
                     "labels": labels,
                     "draft": node.get("isDraft"),
+                    "user": self._pr_author_user(node, partial(self._incomplete_labeled_prs, label)),
                 }
                 all_prs.append(pr_dict)
 

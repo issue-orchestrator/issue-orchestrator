@@ -26,6 +26,12 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TypeAlias
 
+from .external_pr_adoption import (
+    AdoptExternalPullRequest,
+    ReportRefusedExternalPullRequest,
+    ReturnExternalPullRequestToReview,
+)
+
 #: The marker on the delivery PR's body naming the integration tip it lists.
 DELIVERY_MARKER_PREFIX = "<!-- io:integration-delivery tip="
 _DELIVERY_MARKER = re.compile(r"<!-- io:integration-delivery tip=([0-9a-f]{40}) -->")
@@ -209,21 +215,35 @@ IntegrationStep: TypeAlias = (
     | SyncIntegrationFromDefault
     | OpenDeliveryPullRequest
     | RefreshDeliveryPullRequest
+    | AdoptExternalPullRequest
+    | ReportRefusedExternalPullRequest
+    | ReturnExternalPullRequestToReview
 )
 
 #: Steps that act on one issue's PR (the applier verifies the issue's claim).
-PULL_REQUEST_STEPS: tuple[type, ...] = (MergeIntoIntegration, UpdatePullRequestBranch)
+PULL_REQUEST_STEPS: tuple[type, ...] = (
+    MergeIntoIntegration, UpdatePullRequestBranch, AdoptExternalPullRequest, ReturnExternalPullRequestToReview,
+)
 
 
 def step_issue_number(step: IntegrationStep) -> int | None:
-    """The issue whose PR *step* acts on; None for a branch-level step."""
-    if isinstance(step, (MergeIntoIntegration, UpdatePullRequestBranch)):
+    """The issue whose PR *step* acts on; None for a branch-level step.
+
+    A refusal report writes only its PR, never the issue it references: io
+    holds no claim on that issue for it.
+    """
+    if isinstance(step, (
+        MergeIntoIntegration, UpdatePullRequestBranch, AdoptExternalPullRequest, ReturnExternalPullRequestToReview,
+    )):
         return step.issue_number
     return None
 
 
 def step_pr_number(step: IntegrationStep) -> int | None:
-    if isinstance(step, (MergeIntoIntegration, UpdatePullRequestBranch, RefreshDeliveryPullRequest)):
+    if isinstance(step, (
+        MergeIntoIntegration, UpdatePullRequestBranch, AdoptExternalPullRequest,
+        RefreshDeliveryPullRequest, ReportRefusedExternalPullRequest, ReturnExternalPullRequestToReview,
+    )):
         return step.pr_number
     return None
 
@@ -243,6 +263,13 @@ def describe_step(step: IntegrationStep) -> str:
         return f"merge {step.default_branch} ({step.default_tip[:8]}) into {step.branch} ({step.integration_tip[:8]})"
     if isinstance(step, OpenDeliveryPullRequest):
         return f"open the delivery PR {step.head} -> {step.base} at {step.integration_tip[:8]}"
+    if isinstance(step, AdoptExternalPullRequest):
+        return f"adopt external PR #{step.pr_number} for issue #{step.issue_number} into {step.integration_branch}"
+    if isinstance(step, ReportRefusedExternalPullRequest):
+        return f"report external PR #{step.pr_number} refused ({step.refusal.value})"
+    if isinstance(step, ReturnExternalPullRequestToReview):
+        return (f"return adopted PR #{step.pr_number} to review: io never approved its head"
+                f" {step.head_sha[:8]}")
     return f"refresh delivery PR #{step.pr_number} for tip {step.integration_tip[:8]}"
 
 

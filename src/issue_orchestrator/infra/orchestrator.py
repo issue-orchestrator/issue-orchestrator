@@ -55,7 +55,6 @@ from ..domain.models import (
     PendingRework,
     PendingTechLeadReview,
     AgentConfig,
-    ORCHESTRATOR_PR_MARKER,
 )
 from ..observation.observer import SessionObserver
 from ..control.scheduler import Scheduler
@@ -74,6 +73,7 @@ from ..domain.state_machines.session_machine import SessionStateMachine
 from ..domain.state_machines.review_machine import ReviewStateMachine
 from ..control.session_completion import handle_session_completion as _handle_session_completion, process_active_sessions as _process_active_sessions, unprocessed_session_policy
 from ..control.session_launcher import SessionLauncher
+from ..control.external_pr_launch import launch_gate
 from ..control.board_snapshot_builder import StateBoardSnapshotProvider
 from ..control.tech_lead_run_wiring import (
     TechLeadRunAdmission,
@@ -328,6 +328,7 @@ class Orchestrator:
             get_review_machine=self._get_review_machine,
             refresh_issue_fn=self._refresh_issue,
             dependency_evaluator=self.scheduler.dependency_evaluator,
+            external_admission=launch_gate(self.config, self.deps.repository_host, lambda: self.state),  # #9499
         )
 
     @cached_property
@@ -1121,7 +1122,7 @@ class Orchestrator:
         self._github_workflow.scan_needs_rework_prs(self.state)
 
     def reconcile_orphaned_pr_labels(self) -> int:
-        return self._github_workflow.reconcile_orphaned_pr_labels(ORCHESTRATOR_PR_MARKER)
+        return self._github_workflow.reconcile_orphaned_pr_labels()
 
     def launch_rework_session(self, rework: PendingRework) -> Optional[Session]:
         return _launch_rework_session(rework, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims).session

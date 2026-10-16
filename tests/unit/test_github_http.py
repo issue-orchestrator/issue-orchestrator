@@ -2912,10 +2912,11 @@ def _graphql_body(request: httpx.Request) -> dict:
     return _json.loads(request.content)
 
 
-def _pr_node(number: int, *, draft: bool = False) -> dict:
+def _pr_node(number: int, *, draft: bool = False, labels: tuple[str, ...] = (), more_labels: bool = False) -> dict:
     return {"number": number, "title": f"PR {number}", "url": "u", "body": "",
             "headRefName": f"{number}-work", "headRefOid": "a" * 40, "baseRefName": "main",
-            "isDraft": draft}
+            "isDraft": draft, "labels": {"totalCount": len(labels) + (101 if more_labels else 0),
+                                         "nodes": [{"name": name} for name in labels]}}
 
 
 def test_list_open_prs_complete_walks_by_cursor_without_search() -> None:
@@ -2993,6 +2994,90 @@ def test_list_open_prs_complete_refuses_a_node_without_its_draft_flag() -> None:
     client = _client_with_transport(httpx.MockTransport(handler))
 
     with pytest.raises(GitHubScanIncompleteError, match="malformed node"):
+        client.list_open_prs_complete()
+
+
+def test_list_open_prs_complete_carries_each_pr_s_labels() -> None:
+    """External-PR adoption reads the origin label off this one listing (#9499)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "labels(first: 100) { totalCount nodes { name } }" in _graphql_body(request)["query"]
+        return httpx.Response(200, json={"data": {"repository": {"pullRequests": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+            "nodes": [_pr_node(1, labels=("origin:external", "needs-code-review")), _pr_node(2)],
+        }}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    assert [pr["labels"] for pr in client.list_open_prs_complete()] == [
+        [{"name": "origin:external"}, {"name": "needs-code-review"}],
+        [],
+    ]
+
+
+def test_list_open_prs_complete_carries_each_pr_s_author() -> None:
+    """#9499 review F1: whether io opened a PR is GitHub's record of its author."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "author { __typename login ... on User { databaseId } ... on Bot { databaseId } }" in (
+            _graphql_body(request)["query"])
+        return httpx.Response(200, json={"data": {"repository": {"pullRequests": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+            "nodes": [
+                {**_pr_node(1), "author": {"__typename": "Bot", "login": "io-bot", "databaseId": 301493143}},
+                {**_pr_node(2), "author": None},  # the opening account was deleted
+            ],
+        }}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    assert [pr["user"] for pr in client.list_open_prs_complete()] == [
+        {"id": 301493143, "login": "io-bot", "type": "Bot"},
+        None,
+    ]
+
+
+@pytest.mark.parametrize(
+    "author",
+    [{"__typename": "User", "login": "x"}, {"__typename": "User", "login": "x", "databaseId": True}, "x"],
+    ids=["no-id", "boolean-id", "not-an-object"],
+)
+def test_complete_pr_listings_refuse_an_author_they_cannot_read(author: object) -> None:
+    def open_prs(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"repository": {"pullRequests": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": [{**_pr_node(1), "author": author}],
+        }}}})
+
+    labeled = {"data": {"repository": {"pullRequests": {"pageInfo": {"hasNextPage": False}, "nodes": [
+        {**_labeled_pr_node(1), "author": author},
+    ]}}}}
+
+    with pytest.raises(GitHubScanIncompleteError, match="unreadable author"):
+        _client_with_transport(httpx.MockTransport(open_prs)).list_open_prs_complete()
+    with pytest.raises(GitHubScanIncompleteError, match="unreadable author"):
+        _client_with_transport(httpx.MockTransport(
+            lambda request: httpx.Response(200, json=labeled))).list_prs_with_label_complete("io:e2e-run-a")
+
+
+@pytest.mark.parametrize(
+    ("damage", "why"),
+    [("more_labels", "truncated the labels of #1"), ("no_labels", "#1 without readable labels")],
+)
+def test_list_open_prs_complete_refuses_a_pr_whose_labels_it_cannot_read_whole(damage: str, why: str) -> None:
+    """A caller deciding from a label's absence never reads a truncated set."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        node = _pr_node(1, more_labels=damage == "more_labels")
+        if damage == "no_labels":
+            del node["labels"]
+        return httpx.Response(200, json={"data": {"repository": {"pullRequests": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+            "nodes": [node],
+        }}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match=why):
         client.list_open_prs_complete()
 
 
@@ -3661,6 +3746,7 @@ def _labeled_pr_node(number: int, *, state: str = "OPEN", labels: tuple[str, ...
         "state": state, "isDraft": False, "headRefName": f"{number}-work",
         "headRefOid": f"{number:040d}", "baseRefName": "main",
         "labels": {"totalCount": len(labels), "nodes": [{"name": name} for name in labels]},
+        "author": {"__typename": "User", "login": "a-person", "databaseId": 7},
     }
 
 
@@ -3700,6 +3786,7 @@ def test_labeled_prs_complete_walks_every_page_by_cursor() -> None:
         "state": "merged", "draft": False,
         "head": {"ref": "101-work", "sha": f"{101:040d}"}, "base": {"ref": "main"},
         "labels": [{"name": "io:e2e-run-a"}],
+        "user": {"id": 7, "login": "a-person", "type": "User"},
     }
 
 
@@ -3727,6 +3814,66 @@ def test_labeled_prs_complete_refuses_anything_it_cannot_prove(payload, why) -> 
 
     with pytest.raises(GitHubScanIncompleteError, match=why):
         client.list_prs_with_label_complete("io:e2e-run-a")
+
+
+#: Label counts no complete read may accept: ``True == 1`` and ``False == 0``
+#: in Python, so a Boolean would otherwise prove one label, or none, whole.
+_MALFORMED_LABEL_COUNTS = [
+    pytest.param(True, ("io:e2e-run-a",), id="true-for-one-label"),
+    pytest.param(False, (), id="false-for-no-labels"),
+    pytest.param("1", ("io:e2e-run-a",), id="string"),
+    pytest.param(1.0, ("io:e2e-run-a",), id="float"),
+    pytest.param(-1, (), id="negative"),
+    pytest.param(None, (), id="null"),
+]
+
+
+def _miscounted(node: dict, count: object, labels: tuple[str, ...]) -> dict:
+    return {**node, "labels": {"totalCount": count, "nodes": [{"name": name} for name in labels]}}
+
+
+@pytest.mark.parametrize(("count", "labels"), _MALFORMED_LABEL_COUNTS)
+def test_open_prs_complete_refuses_a_malformed_label_count(count: object, labels: tuple[str, ...]) -> None:
+    """#9499 review F2: the count is proven an int before it proves the labels whole."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"repository": {"pullRequests": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+            "nodes": [_miscounted(_pr_node(1), count, labels)],
+        }}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match="malformed label count"):
+        client.list_open_prs_complete()
+
+
+@pytest.mark.parametrize(("count", "labels"), _MALFORMED_LABEL_COUNTS)
+def test_labeled_prs_complete_refuses_a_malformed_label_count(count: object, labels: tuple[str, ...]) -> None:
+    payload = {"data": {"repository": {"pullRequests": {"pageInfo": {"hasNextPage": False}, "nodes": [
+        _miscounted(_labeled_pr_node(1), count, labels),
+    ]}}}}
+    client = _client_with_transport(httpx.MockTransport(lambda request: httpx.Response(200, json=payload)))
+
+    with pytest.raises(GitHubScanIncompleteError, match="malformed label count"):
+        client.list_prs_with_label_complete("io:e2e-run-a")
+
+
+@pytest.mark.parametrize("read", ["list_open_issue_labels_complete", "list_open_issue_bodies_complete"])
+@pytest.mark.parametrize(("count", "labels"), _MALFORMED_LABEL_COUNTS)
+def test_open_issues_complete_refuse_a_malformed_label_count(
+    read: str, count: object, labels: tuple[str, ...],
+) -> None:
+    node = _miscounted({**_issue_node(1), "body": "b"}, count, labels)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"repository": {"issues": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": [node],
+        }}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubScanIncompleteError, match="malformed label count"):
+        getattr(client, read)()
 
 
 def test_labeled_prs_complete_raises_past_its_page_cap() -> None:

@@ -61,10 +61,10 @@ from .session_history import (
     SessionHistoryOwner,
 )
 from .transition_log import log_transition
+from .external_pr_launch import QueuedWorkAdmission, queued_work_admission
 from ..domain.models import (
     BLOCKED_HISTORY_STATUSES,
     PendingRetrospectiveReview,
-    PendingReview, PendingRework,
 )
 
 logger = logging.getLogger(__name__)
@@ -80,6 +80,7 @@ def init_orchestrator_components(orch: "Orchestrator") -> None:
     Helpers are exposed via @cached_property on Orchestrator - no fields set here.
     """
     from ..observation.observer import SessionObserver
+    from .external_pr_adoption import write_gate
     from .session_history import SessionHistoryOwner
 
     # Wire up the scheduler from the planner
@@ -98,6 +99,10 @@ def init_orchestrator_components(orch: "Orchestrator") -> None:
             ),
             None,
         )
+    )
+    # A write's external-PR gate (#9499): bound to live state, read fresh per step.
+    orch.deps.action_applier.external_pr_gate = lambda: write_gate(
+        orch.config, orch.repository_host, lambda: orch.state,
     )
     # Bind to live state (not the current list object): recovery/retry paths
     # replace ``state.session_history`` wholesale, and a captured list would go
@@ -469,16 +474,16 @@ class OrchestratorSupport:
                 if not (c.issue_number == a.issue_number and c.scratch_worktree)
             ]
 
+    @property
+    def _queued_work(self) -> QueuedWorkAdmission:
+        """THE queue boundary for review and rework (#9499): every item carries its complete authority."""
+        return queued_work_admission(self.config, self.repository_host, lambda: self.state)
+
     def _handle_queue_review(self, action: "Action", result: "ActionResult") -> None:
         from .actions import QueueReviewAction
         a = cast(QueueReviewAction, action)
-        if not self.state.queue_pending_review(
-            PendingReview(
-                issue_key=self.repository_host.create_issue_key(a.issue_number),
-                pr_number=a.pr_number, pr_url=a.pr_url, branch_name=a.branch_name,
-                _issue_number=a.issue_number, agent_label=a.agent_label, issue_labels=a.issue_labels,
-            )
-        ):
+        review = self._queued_work.review(a.pending(self.repository_host.create_issue_key(a.issue_number)))
+        if review is None or not self.state.queue_pending_review(review):
             return
         log_transition("review", a.pr_number, "CREATED", "QUEUED", f"from #{a.issue_number}")
         self.get_review_machine(a.pr_number, a.issue_number)
@@ -512,17 +517,8 @@ class OrchestratorSupport:
         from .actions import QueueReworkAction
         a = cast(QueueReworkAction, action)
         agent = next((r.agent_type for r in self.state.discovered_reworks if r.issue_number == a.issue_number), "agent:developer")
-        if not self.state.queue_pending_rework(
-            PendingRework(
-                self.repository_host.create_issue_key(a.issue_number),
-                agent,
-                a.rework_cycle,
-                issue_number=a.issue_number,
-                pr_number=a.pr_number or None,
-                source=a.source,
-                feedback=a.feedback, scoped_request_keys=a.scoped_request_keys,
-            )
-        ):
+        rework = self._queued_work.rework(a.pending(self.repository_host.create_issue_key(a.issue_number), agent))
+        if rework is None or not self.state.queue_pending_rework(rework):
             return
         log_transition("rework", a.issue_number, "CREATED", "QUEUED", f"cycle {a.rework_cycle}")
 

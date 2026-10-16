@@ -46,6 +46,7 @@ from .session_launch_types import LaunchStep, launch_step_result
 
 if TYPE_CHECKING:
     from .background_job_supervisor import BackgroundJobSupervisor
+    from .external_pr_adoption import ExternalPullRequestGate
     from .label_manager import LabelManager
     from .review_exchange_lifecycle import IssueRuntimeTermination
     from .review_exchange_lifecycle import PublishRetryAbandoner
@@ -215,9 +216,7 @@ class ActionApplier:
     publish_recovery: Optional["PublishRetryAbandoner"] = None
     completion_intake: "CompletionIntakeRuntime | None" = None
     runtime_lifecycle: IssueRuntimeLifecycleOwners = field(init=False, repr=False)
-    # Callback for worktree removal notifications
-    # Used by async completion processing to mark jobs as WORKTREE_GONE
-    # Returns the number of jobs marked as worktree_gone
+    # Worktree-removal callback: async completion marks its jobs WORKTREE_GONE and returns how many.
     on_worktree_removed: Optional[Callable[[str], int]] = None
     # Owner for controlled in-memory history mutations.
     history_owner: Optional["SessionHistoryOwner"] = None
@@ -243,6 +242,7 @@ class ActionApplier:
     # lane is only ever planned when tech_lead.findings is enabled.
     promotion_target: Optional["PromotionTargetHost"] = None
     standing_rulings: Optional["StandingRulings"] = None  # #8141's owner; integration merges re-judge by it (#8144)
+    external_pr_gate: Optional[Callable[[], "ExternalPullRequestGate"]] = None  # a write's gate, per step (#9499)
     # Expedite-lane owner seam (#6870), wired post-construction; unwired = no-op.
     expedite_lane: Optional["ExpediteLane"] = None
     # Cross-engine tech-lead run ownership (#6994 R2 F3). Unwired means anchor

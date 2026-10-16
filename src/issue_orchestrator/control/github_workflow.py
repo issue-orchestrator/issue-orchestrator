@@ -40,6 +40,10 @@ from ..domain.models import (
 from ..ports import EventSink, make_trace_event, RepositoryHost
 from .awaiting_merge_reconciler import AwaitingMergeReconciler
 from .ci_failure_triage import CiFailureTriage
+from ..domain.external_pr_adoption import LAUNCH_ADMITTED, LaunchAdmission, LaunchRequest, LaunchVerdict
+from ..domain.session_kind import SessionKind
+from .external_pr_adoption import ExternalPullRequestAdoption, routing_gate
+from .external_pr_launch import pr_admission
 from .integration_branch import IntegrationBranchOwner
 from .merge_queue_coordinator import MergeQueueCoordinator
 from .retrospective_review import discover_retrospective_review_issues
@@ -175,8 +179,14 @@ class GitHubWorkflow:
             BlockedPRLane.REVIEW, scan.blocked, at=datetime.now(UTC)
         )
         for r in scan.reviews:
+            admission = self._admitted(state, LaunchRequest(
+                SessionKind.REVIEW, r.issue_number, r.pr_number, None, r.agent_label))
+            if admission is None:
+                continue
+            authority = admission.authority  # the admitted issue's agent picks the reviewer
             state.discovered_reviews.append(
-                DiscoveredReview(r.issue_number, r.pr_number, r.pr_url, r.branch_name)
+                DiscoveredReview(r.issue_number, r.pr_number, r.pr_url, r.branch_name,
+                                 agent_label=authority.agent if authority else r.agent_label, authority=authority)
             )
 
     def scan_needs_rework_prs(
@@ -208,6 +218,10 @@ class GitHubWorkflow:
                     r.issue_key,
                 )
                 continue
+            admission = self._admitted(state, LaunchRequest(
+                SessionKind.REWORK, issue_number, r.pr_number, None, r.agent_type)) if r.pr_number else LAUNCH_ADMITTED
+            if admission is None:
+                continue
             state.discovered_reworks.append(
                 DiscoveredRework(
                     issue_number,
@@ -216,8 +230,21 @@ class GitHubWorkflow:
                     r.agent_type,
                     r.rework_cycle,
                     feedback=r.feedback, scoped_request_keys=r.scoped_request_keys,
+                    authority=admission.authority,
                 )
             )
+
+    def _admitted(self, state: "OrchestratorState", request: LaunchRequest) -> LaunchAdmission | None:
+        """THE admission rule before a review or rework of a PR the integration
+        effort governs is queued (#9499): the admission, carrying the authority
+        the work is queued under; None when it is not admitted. The launch asks
+        again, against that unchanged authority, before its effects."""
+        admission = pr_admission(routing_gate(self.config, self.repository_host, state), request)
+        if admission.verdict is LaunchVerdict.ADMITTED:
+            return admission
+        logger.info("[SCANNER] %s of PR #%d for issue #%d not queued (%s): %s", request.kind.value,
+                    request.pr_number, request.issue_number, admission.verdict.value, admission.reason)
+        return None
 
     def scan_pending_pr_work(
         self,
@@ -233,12 +260,20 @@ class GitHubWorkflow:
         """
         if include_general_scans:
             issue_branches = self.pr_scanner.load_issue_branches()
+            self.adopt_external_prs(state, issue_branches=issue_branches)
             self.scan_needs_code_review_prs(state, issue_branches=issue_branches)
             self.scan_needs_rework_prs(state, issue_branches=issue_branches)
             self.scan_retrospective_review_issues(state)
         self.scan_awaiting_merge_followups(state)
 
-    def _integration_owner(self) -> IntegrationBranchOwner | None:
+    def adopt_external_prs(self, state: "OrchestratorState", *, issue_branches: dict[int, str]) -> None:
+        """Adopt or refuse externally authored PRs into the integration effort (#9499)."""
+        if not self.config.integration.enabled:
+            return
+        adoption = ExternalPullRequestAdoption(self.config, self.repository_host)
+        state.discovered_integration_steps.extend(adoption.discover(state, issue_branches=issue_branches))
+
+    def _integration_owner(self, state: "OrchestratorState") -> IntegrationBranchOwner | None:
         """This pass's integration-branch owner when the mode is on (#8144)."""
         if not self.config.integration.enabled:
             return None
@@ -250,6 +285,7 @@ class GitHubWorkflow:
             label_manager=self.label_manager,
             standing_rulings=self.standing_rulings,
             clock=self.clock,
+            external=routing_gate(self.config, self.repository_host, state),
         )
 
     def _merge_queue_coordinator(self) -> MergeQueueCoordinator | None:
@@ -270,7 +306,7 @@ class GitHubWorkflow:
 
     def scan_awaiting_merge_followups(self, state: "OrchestratorState") -> None:
         """Discover post-approval PR follow-up work for awaiting-merge issues."""
-        integration = self._integration_owner()
+        integration = self._integration_owner(state)
         result = AwaitingMergeReconciler(
             self.repository_host,
             label_manager=self.label_manager,
@@ -356,7 +392,7 @@ class GitHubWorkflow:
 
         state.dependency_problems = new
 
-    def reconcile_orphaned_pr_labels(self, orchestrator_pr_marker: str) -> int:
+    def reconcile_orphaned_pr_labels(self) -> int:
         """Reconcile orphaned PR labels at startup.
 
         Returns the number of labels reconciled.
@@ -372,7 +408,6 @@ class GitHubWorkflow:
         return self.label_sync.reconcile_orphaned_pr_labels(
             self.config.code_review_label,
             self.config.code_reviewed_label,
-            orchestrator_pr_marker,
             is_pr_in_scope=scope_checker.is_pr_in_scope,
         )
 

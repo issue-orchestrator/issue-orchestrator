@@ -108,6 +108,7 @@ from .launch_transaction import (
     abandon_claim_unless_spawned,
 )
 from .recovery_review_hold import NO_RECOVERY_HOLDS, RecoveryHolds
+from .external_pr_launch import NO_INTEGRATION_EFFORT, ExternalLaunchAdmission, LaunchRequest
 from .tech_lead_approval import unapproved_proposal_launch
 from .session_launch_types import (
     ClaimAcquisitionResult,
@@ -215,12 +216,14 @@ class SessionLauncher:
         # The validated-work recovery owner's holds (#7455): a review waits only
         # for a hold that owner confirms, never for a lingering label alone.
         recovery_holds: RecoveryHolds = NO_RECOVERY_HOLDS,
+        external_admission: ExternalLaunchAdmission = NO_INTEGRATION_EFFORT,  # re-asked at each launch (#9499)
         # The blocked items a health review must triage (#7593).
         blocked_item_triage: BlockedItemTriageAgenda = NO_BLOCKED_ITEM_TRIAGE,
     ):
         self.config = config
         self._blocked_item_triage = blocked_item_triage
         self._recovery_holds = recovery_holds
+        self._external_admission = external_admission
         self.events = events
         self.repository_host = repository_host
         self._action_applier = action_applier
@@ -1571,6 +1574,9 @@ class SessionLauncher:
         """Launch a code review session for a PR."""
         if result := callback_endpoint_not_ready(self._agent_callback_endpoint):
             return result
+        if result := self._external_admission.refuse(LaunchRequest(  # first stateful decision (#9499)
+                SessionKind.REVIEW, review.issue_number, review.pr_number, review.authority, review.agent_label)):
+            return result
         # Get the reviewer for this agent (per-agent override or default)
         agent_label = self.config.get_reviewer_for_agent(review.agent_label) if review.agent_label else self.config.code_review_agent
         if not agent_label:
@@ -2172,7 +2178,7 @@ class SessionLauncher:
             resolve_stack_decision=self._dependency_gate.stack_base_decision_for_issue,
             launch_prompt=self._launch_prompt,
             scoped_rework=ScopedReworkLaunch(self._tech_lead_authority, self.repository_host, self._action_applier.apply),
-            refuse_unapproved=self._refuse_unapproved,
+            refuse_unapproved=self._refuse_unapproved, external_admission=self._external_admission,
         )
         return launch_rework_flow(
             rework, active_sessions, deps, work_claim=work_claim

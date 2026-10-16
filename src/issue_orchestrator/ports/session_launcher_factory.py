@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from ..domain.state_machines.session_machine import SessionStateMachine
     from .blocked_item_triage import BlockedItemTriageAgenda
     from .board_snapshot_provider import BoardSnapshotProvider
+    from ..control.external_pr_launch import ExternalLaunchAdmission
     from .issue import Issue as IssueProtocol
 
 
@@ -72,5 +73,6 @@ class SessionLauncherFactory(Protocol):
             Callable[[int], Optional["IssueProtocol"]]
         ],
         dependency_evaluator: Optional["DependencyEvaluator"],
+        external_admission: "ExternalLaunchAdmission",
     ) -> "SessionLauncher":
         ...
