@@ -11,6 +11,7 @@ import sys
 
 import pytest
 
+from issue_orchestrator.domain.launch_prompt_delivery import LaunchCommand, PreparedSessionCommand
 from issue_orchestrator.domain.models import Issue, AgentConfig
 from issue_orchestrator.execution.agent_runner import AgentRunner, AgentSpec
 from issue_orchestrator.ports.working_copy import (
@@ -26,6 +27,7 @@ from issue_orchestrator.ports.working_copy import (
 )
 from issue_orchestrator.ports.worktree_manager import RegisteredWorktree, WorktreeInfo
 from issue_orchestrator.infra.config import Config
+from tests.launch_prompt_helpers import prepared_as_given
 from tests.conftest import (
     MockGitHubAdapter,
     MockEventSink,
@@ -125,15 +127,19 @@ class ScriptSessionRunner:
         self._last_output: dict[str, str] = {}
         self._runner = AgentRunner()
 
+    def prepare_session(self, command: LaunchCommand, working_dir: Path) -> PreparedSessionCommand:
+        """The command as given: this runner execs it through its own ``bash -c``."""
+        return prepared_as_given(command, working_dir)
+
     def create_session(
         self,
         session_id: int,
-        command: str,
-        working_dir: str,
+        prepared: PreparedSessionCommand,
         title: str | None,
         session_name: str,
         secret_env: dict[str, str] | None = None,
     ) -> bool:
+        command, working_dir = prepared.launch.text, str(prepared.working_dir)
         python_bin_dir = str(Path(sys.executable).parent)
 
         # Extract run_dir from command to determine log/output paths.
@@ -214,15 +220,19 @@ class FastScriptSessionRunner:
     def __init__(self) -> None:
         self._last_output: dict[str, str] = {}
 
+    def prepare_session(self, command: LaunchCommand, working_dir: Path) -> PreparedSessionCommand:
+        """The command as given: this runner execs it through its own ``bash -c``."""
+        return prepared_as_given(command, working_dir)
+
     def create_session(
         self,
         session_id: int,
-        command: str,
-        working_dir: str,
+        prepared: PreparedSessionCommand,
         title: str | None,
         session_name: str,
         secret_env: dict[str, str] | None = None,
     ) -> bool:
+        command, working_dir = prepared.launch.text, str(prepared.working_dir)
         python_bin_dir = str(Path(sys.executable).parent)
 
         match = _RUN_DIR_RE.search(command)
