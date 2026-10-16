@@ -320,6 +320,18 @@ PYTEST ?= .venv/bin/pytest
 PYTEST_DURATIONS ?= 10
 PYTEST_DURATIONS_MIN ?= 1.0
 PYTEST_TIMINGS ?= --durations=$(PYTEST_DURATIONS) --durations-min=$(PYTEST_DURATIONS_MIN)
+# `-q` alone is not quiet in this repo: pyproject's `log_cli = true` makes
+# pytest force verbose=1 for the whole run (_pytest/logging.py), so every
+# test id is printed - twice under xdist. At ~21k unit tests that is over
+# 5 MB, past the 4 MiB completion custody limit
+# (domain/completion_custody.py), and a green validate-quick is refused.
+# Every lane that wants quiet asks through this one variable, never a bare
+# `-q`; ad-hoc runs and the `-v -s` e2e lanes keep their live logs.
+PYTEST_QUIET ?= -q -o log_cli=false
+# The live e2e suite (tests/e2e) is collected only on this opt-in (#9523): it
+# creates, edits and closes real GitHub issues and PRs. Its targets also need
+# E2E_TEST_REPO naming a dedicated test repository, never this one.
+LIVE_E2E := IO_E2E=1
 
 # Per-lane verdict caching rides TIMED_RUN because it is the one
 # wrapper every gate lane — scheduler-backed and host-side alike —
@@ -574,17 +586,17 @@ ifeq ($(LANE_EXECUTOR),condor)
 			$(GMAKE) test-unit LANE_EXECUTOR=direct UNIT_PARALLEL=$(UNIT_PARALLEL))
 else ifeq ($(UNIT_PARALLEL),0)
 	$(call TIMED_RUN,test-unit,\
-		$(PYTEST) tests/unit packages/agent_runner/tests -m "not live_agent and not live_codex and not live_deepseek" -x -q --tb=short $(PYTEST_TIMINGS))
+		$(PYTEST) tests/unit packages/agent_runner/tests -m "not live_agent and not live_codex and not live_deepseek" -x $(PYTEST_QUIET) --tb=short $(PYTEST_TIMINGS))
 else
 	$(call TIMED_RUN,test-unit,\
-		$(PYTEST) tests/unit packages/agent_runner/tests -m "not live_agent and not live_codex and not live_deepseek" -x -q --tb=short -n $(UNIT_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS))
+		$(PYTEST) tests/unit packages/agent_runner/tests -m "not live_agent and not live_codex and not live_deepseek" -x $(PYTEST_QUIET) --tb=short -n $(UNIT_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS))
 endif
 
 test-simulated: sync-deps
 ifeq ($(SIMULATED_PARALLEL),0)
-	$(PYTEST) tests/simulated_scenarios -x -q --tb=short $(PYTEST_TIMINGS)
+	$(PYTEST) tests/simulated_scenarios -x $(PYTEST_QUIET) --tb=short $(PYTEST_TIMINGS)
 else
-	$(PYTEST) tests/simulated_scenarios -x -q --tb=short -n $(SIMULATED_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS)
+	$(PYTEST) tests/simulated_scenarios -x $(PYTEST_QUIET) --tb=short -n $(SIMULATED_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS)
 endif
 
 test-simulated-core: sync-deps
@@ -595,11 +607,11 @@ ifeq ($(LANE_EXECUTOR),condor)
 			$(GMAKE) test-simulated-core LANE_EXECUTOR=direct)
 else ifeq ($(SIMULATED_PARALLEL),0)
 	$(call TIMED_RUN,test-simulated-core,\
-		$(PYTEST) tests/simulated_scenarios -x -q --tb=short \
+		$(PYTEST) tests/simulated_scenarios -x $(PYTEST_QUIET) --tb=short \
 			-m "not live_agent and not live_codex and not live_deepseek" $(PYTEST_TIMINGS))
 else
 	$(call TIMED_RUN,test-simulated-core,\
-		$(PYTEST) tests/simulated_scenarios -x -q --tb=short -n $(SIMULATED_PARALLEL) --dist=loadgroup \
+		$(PYTEST) tests/simulated_scenarios -x $(PYTEST_QUIET) --tb=short -n $(SIMULATED_PARALLEL) --dist=loadgroup \
 			-m "not live_agent and not live_codex and not live_deepseek" $(PYTEST_TIMINGS))
 endif
 
@@ -612,21 +624,21 @@ ifeq ($(LANE_EXECUTOR),condor)
 			$(GMAKE) test-simulated-agent LANE_EXECUTOR=direct)
 else ifeq ($(SIMULATED_PARALLEL),0)
 	$(call TIMED_RUN,test-simulated-agent,\
-		$(PYTEST) $(SIMULATED_AGENT_FILES) -x -q --tb=short $(PYTEST_TIMINGS))
+		$(PYTEST) $(SIMULATED_AGENT_FILES) -x $(PYTEST_QUIET) --tb=short $(PYTEST_TIMINGS))
 else
 	$(call TIMED_RUN,test-simulated-agent,\
-		$(PYTEST) $(SIMULATED_AGENT_FILES) -x -q --tb=short -n $(SIMULATED_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS))
+		$(PYTEST) $(SIMULATED_AGENT_FILES) -x $(PYTEST_QUIET) --tb=short -n $(SIMULATED_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS))
 endif
 
 test-unit-cov: sync-deps
-	$(PYTEST) tests/unit packages/agent_runner/tests --cov=src/issue_orchestrator --cov=packages/agent_runner/src --cov-report=term-missing -x -q --tb=short $(PYTEST_TIMINGS)
+	$(PYTEST) tests/unit packages/agent_runner/tests --cov=src/issue_orchestrator --cov=packages/agent_runner/src --cov-report=term-missing -x $(PYTEST_QUIET) --tb=short $(PYTEST_TIMINGS)
 
 test-unit-cov-html: sync-deps
-	$(PYTEST) tests/unit packages/agent_runner/tests --cov=src/issue_orchestrator --cov=packages/agent_runner/src --cov-report=html -x -q --tb=short $(PYTEST_TIMINGS)
+	$(PYTEST) tests/unit packages/agent_runner/tests --cov=src/issue_orchestrator --cov=packages/agent_runner/src --cov-report=html -x $(PYTEST_QUIET) --tb=short $(PYTEST_TIMINGS)
 	@echo "Coverage report: open htmlcov/index.html"
 
 test-integration: sync-deps
-	$(PYTEST) tests/integration -x -q --tb=short $(PYTEST_TIMINGS)
+	$(PYTEST) tests/integration -x $(PYTEST_QUIET) --tb=short $(PYTEST_TIMINGS)
 
 # Integration tests excluding those that require external infrastructure (GitHub token, etc.)
 # Used in pre-push validation where full infra may not be available
@@ -640,17 +652,17 @@ ifeq ($(LANE_EXECUTOR),condor)
 			$(GMAKE) test-integration-core-local LANE_EXECUTOR=direct)
 else ifeq ($(INTEGRATION_PARALLEL),0)
 	$(call TIMED_RUN,test-integration-core,\
-		$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra and not live_agent and not live_codex and not live_deepseek" \
+		$(PYTEST) tests/integration -x $(PYTEST_QUIET) --tb=short -m "not requires_infra and not live_agent and not live_codex and not live_deepseek" \
 			$(PYTEST_TIMINGS))
 else
 	$(call TIMED_RUN,test-integration-core,\
-		$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra and not live_agent and not live_codex and not live_deepseek" -n $(INTEGRATION_PARALLEL) --dist=loadgroup \
+		$(PYTEST) tests/integration -x $(PYTEST_QUIET) --tb=short -m "not requires_infra and not live_agent and not live_codex and not live_deepseek" -n $(INTEGRATION_PARALLEL) --dist=loadgroup \
 			$(PYTEST_TIMINGS))
 endif
 
 test-integration-core-live-codex: sync-deps
 	$(call TIMED_RUN,test-integration-core-live-codex,\
-		$(PYTEST) tests/integration -x -q --tb=short -m "live_codex and not requires_infra" \
+		$(PYTEST) tests/integration -x $(PYTEST_QUIET) --tb=short -m "live_codex and not requires_infra" \
 			--ignore=tests/integration/test_claude_execution.py \
 			--ignore=tests/integration/test_codex_execution.py \
 			--ignore=tests/integration/test_live_agent_chain.py \
@@ -667,10 +679,10 @@ ifeq ($(LANE_EXECUTOR),condor)
 			$(GMAKE) test-integration-agent LANE_EXECUTOR=direct)
 else ifeq ($(INTEGRATION_AGENT_PARALLEL),0)
 	$(call TIMED_RUN,test-integration-agent,\
-		$(PYTEST) $(INTEGRATION_AGENT_FILES) -x -q --tb=short $(PYTEST_TIMINGS))
+		$(PYTEST) $(INTEGRATION_AGENT_FILES) -x $(PYTEST_QUIET) --tb=short $(PYTEST_TIMINGS))
 else
 	$(call TIMED_RUN,test-integration-agent,\
-		$(PYTEST) $(INTEGRATION_AGENT_FILES) -x -q --tb=short -n $(INTEGRATION_AGENT_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS))
+		$(PYTEST) $(INTEGRATION_AGENT_FILES) -x $(PYTEST_QUIET) --tb=short -n $(INTEGRATION_AGENT_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS))
 endif
 
 # Condor-mode suite slices. Each is a full lane: the condor branch
@@ -688,7 +700,7 @@ else
 		if [ -z "$$targets" ]; then \
 			echo "lane_slices: slice $* selects no tests"; \
 		else \
-			$(PYTEST) $$targets -x -q --tb=short -m "not requires_infra and not live_agent and not live_codex and not live_deepseek" \
+			$(PYTEST) $$targets -x $(PYTEST_QUIET) --tb=short -m "not requires_infra and not live_agent and not live_codex and not live_deepseek" \
 				-p $(SLICE_DURATIONS_PLUGIN) \
 				-n $(LANE_WORKERS_INTEGRATION_SLICE) --dist=loadgroup $(PYTEST_TIMINGS); \
 		fi)
@@ -705,7 +717,7 @@ ifeq ($$(LANE_EXECUTOR),condor)
 			$$(GMAKE) test-integration-agent-$(1) LANE_EXECUTOR=direct)
 else
 	$$(call TIMED_RUN,test-integration-agent-$(1),\
-		$$(PYTEST) $(2) -x -q --tb=short -n $$(LANE_WORKERS_AGENT_SLICE) --dist=loadgroup $$(PYTEST_TIMINGS))
+		$$(PYTEST) $(2) -x $$(PYTEST_QUIET) --tb=short -n $$(LANE_WORKERS_AGENT_SLICE) --dist=loadgroup $$(PYTEST_TIMINGS))
 endif
 endef
 
@@ -716,9 +728,9 @@ $(eval $(call AGENT_SLICE_RULE,chain,tests/integration/test_live_agent_chain.py)
 # Full integration tests including infrastructure-dependent ones (run in CI)
 test-integration-full: sync-deps
 ifeq ($(PARALLEL),0)
-	$(PYTEST) tests/integration -x -q --tb=short $(PYTEST_TIMINGS)
+	$(PYTEST) tests/integration -x $(PYTEST_QUIET) --tb=short $(PYTEST_TIMINGS)
 else
-	$(PYTEST) tests/integration -x -q --tb=short -n $(PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS)
+	$(PYTEST) tests/integration -x $(PYTEST_QUIET) --tb=short -n $(PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS)
 endif
 
 # E2E tests stop on first failure by default. Use NOFAST=1 to run all tests.
@@ -726,13 +738,13 @@ endif
 #        make test-e2e NOFAST=1  (runs all tests even if some fail)
 test-e2e: sync-deps
 ifdef NOFAST
-	$(PYTEST) tests/e2e -v -s --tb=short $(PYTEST_TIMINGS)
+	$(LIVE_E2E) $(PYTEST) tests/e2e -v -s --tb=short $(PYTEST_TIMINGS)
 else
-	$(PYTEST) tests/e2e -v -s --tb=short -x $(PYTEST_TIMINGS)
+	$(LIVE_E2E) $(PYTEST) tests/e2e -v -s --tb=short -x $(PYTEST_TIMINGS)
 endif
 
 test-e2e-heavy: sync-deps
-	$(PYTEST) tests/integration tests/e2e -m heavy_e2e -v -s --tb=short -x $(PYTEST_TIMINGS)
+	$(LIVE_E2E) $(PYTEST) tests/integration tests/e2e -m heavy_e2e -v -s --tb=short -x $(PYTEST_TIMINGS)
 
 # Live tech-lead exam (#7304): real GitHub, real engine, real tech lead.
 # Writes JSON scorecards to EXAM_OUT (below; override with EXAM_OUT=<dir>).
@@ -745,7 +757,7 @@ EXAM_ENGINE_REF ?= HEAD
 # when the target does.
 EXAM_OUT ?= $(shell git rev-parse --path-format=absolute --git-common-dir)/io-tech-lead-exam
 test-tech-lead-exam: sync-deps
-	E2E_TECH_LEAD_EXAM=1 E2E_EXAM_OUT=$(EXAM_OUT) E2E_EXAM_ENGINE_REF=$(EXAM_ENGINE_REF) $(if $(EXAM_BASE_REF),E2E_EXAM_BASE_REF=$(EXAM_BASE_REF),) $(PYTEST) tests/e2e/test_tech_lead_exam.py -m tech_lead_exam -v -s --tb=short $(if $(EXAM_CASE),-k "case-$(EXAM_CASE)-",) $(PYTEST_TIMINGS)
+	E2E_TECH_LEAD_EXAM=1 E2E_EXAM_OUT=$(EXAM_OUT) E2E_EXAM_ENGINE_REF=$(EXAM_ENGINE_REF) $(if $(EXAM_BASE_REF),E2E_EXAM_BASE_REF=$(EXAM_BASE_REF),) $(LIVE_E2E) $(PYTEST) tests/e2e/test_tech_lead_exam.py -m tech_lead_exam -v -s --tb=short $(if $(EXAM_CASE),-k "case-$(EXAM_CASE)-",) $(PYTEST_TIMINGS)
 
 # Live improver exam (#7490 step 4): the real improver model on each planted
 # improver-data fixture (case IM1, blocked items the tech lead ignored; IM2,
@@ -798,7 +810,7 @@ tech-lead-improver: sync-deps
 		--agent-timeout-minutes $(IMPROVER_AGENT_TIMEOUT_MINUTES)
 
 test-e2e-onboarding-live: sync-deps
-	E2E_AGENT_GUIDED_ONBOARDING=1 $(PYTEST) tests/e2e/test_agent_guided_onboarding.py -v -s --tb=short -x $(PYTEST_TIMINGS)
+	E2E_AGENT_GUIDED_ONBOARDING=1 $(LIVE_E2E) $(PYTEST) tests/e2e/test_agent_guided_onboarding.py -v -s --tb=short -x $(PYTEST_TIMINGS)
 
 # Real Claude tests - layered for incremental debugging
 # test-real-claude-dev: dev agent only (faster, good for basic sanity)
@@ -808,18 +820,18 @@ test-real-claude-dev: sync-deps
 	@echo "Testing agent-done invocation from Claude..."
 	$(PYTEST) tests/integration/test_claude_execution.py::TestAgentDoneInvocation -v -s --tb=short -x $(PYTEST_TIMINGS)
 	@echo "Testing real Claude execution in tmux mode..."
-	E2E_DRY_RUN_PUSH=false $(PYTEST) tests/e2e/test_terminal_adapter.py::TestTerminalAdapterExecution -v -s --tb=short -x $(PYTEST_TIMINGS)
+	E2E_DRY_RUN_PUSH=false $(LIVE_E2E) $(PYTEST) tests/e2e/test_terminal_adapter.py::TestTerminalAdapterExecution -v -s --tb=short -x $(PYTEST_TIMINGS)
 	@echo "✓ Dev agent tests passed!"
 
 test-real-claude-review: sync-deps
 	@echo "Testing full pipeline: dev agent -> review agent..."
 	@echo "Note: This test creates REAL PRs (not dry-run)"
-	E2E_DRY_RUN_PUSH=false $(PYTEST) tests/e2e/test_review_agent.py::TestReviewAgentExecution -v -s --tb=short -x $(PYTEST_TIMINGS)
+	E2E_DRY_RUN_PUSH=false $(LIVE_E2E) $(PYTEST) tests/e2e/test_review_agent.py::TestReviewAgentExecution -v -s --tb=short -x $(PYTEST_TIMINGS)
 	@echo "✓ Review agent tests passed!"
 
 test-real-gh-labels: sync-deps
 	@echo "Testing label write verification against real GitHub..."
-	E2E_DRY_RUN_PUSH=false $(PYTEST) tests/e2e/test_label_write_verification.py::TestLabelWriteVerification -v -s --tb=short -x $(PYTEST_TIMINGS)
+	E2E_DRY_RUN_PUSH=false $(LIVE_E2E) $(PYTEST) tests/e2e/test_label_write_verification.py::TestLabelWriteVerification -v -s --tb=short -x $(PYTEST_TIMINGS)
 	@echo "✓ Label write verification passed!"
 
 test-real-gh: test-real-claude-dev test-real-claude-review test-real-gh-labels
@@ -838,9 +850,9 @@ test-real-gh-plus-e2e-subprocess:
 # E2E tests stop on first failure by default
 test-e2e-one: sync-deps
 ifdef NOFAST
-	$(PYTEST) tests/e2e -v -s --tb=short -k "$(TEST)" $(PYTEST_TIMINGS)
+	$(LIVE_E2E) $(PYTEST) tests/e2e -v -s --tb=short -k "$(TEST)" $(PYTEST_TIMINGS)
 else
-	$(PYTEST) tests/e2e -v -s --tb=short -x -k "$(TEST)" $(PYTEST_TIMINGS)
+	$(LIVE_E2E) $(PYTEST) tests/e2e -v -s --tb=short -x -k "$(TEST)" $(PYTEST_TIMINGS)
 endif
 
 # Run e2e tests with REAL PR creation on GitHub (no dry run)
@@ -851,13 +863,13 @@ test-e2e-live: sync-deps
 	@echo "   This will create actual PRs and branches on GitHub."
 	@echo ""
 ifdef TEST
-	E2E_DRY_RUN_PUSH= $(PYTEST) tests/e2e -v -s --tb=short -x -k "$(TEST)" $(PYTEST_TIMINGS)
+	E2E_DRY_RUN_PUSH= $(LIVE_E2E) $(PYTEST) tests/e2e -v -s --tb=short -x -k "$(TEST)" $(PYTEST_TIMINGS)
 else
-	E2E_DRY_RUN_PUSH= $(PYTEST) tests/e2e -v -s --tb=short -x $(PYTEST_TIMINGS)
+	E2E_DRY_RUN_PUSH= $(LIVE_E2E) $(PYTEST) tests/e2e -v -s --tb=short -x $(PYTEST_TIMINGS)
 endif
 
 test: sync-deps
-	$(PYTEST) tests/ -x -q --tb=short $(PYTEST_TIMINGS)
+	$(PYTEST) tests/ -x $(PYTEST_QUIET) --tb=short $(PYTEST_TIMINGS)
 
 # Playwright browser smoke tests for Flow-first web UI
 test-web: sync-deps
@@ -1066,7 +1078,7 @@ FORCE:
 # The coordinator owns serialization across worktrees, cadence, and live verdicts.
 test-agent-live: sync-deps
 	$(PYTEST) tests/unit packages/agent_runner/tests tests/integration tests/simulated_scenarios \
-		-m "(live_agent or live_codex or live_deepseek) and not requires_infra" -x -q --tb=short \
+		-m "(live_agent or live_codex or live_deepseek) and not requires_infra" -x $(PYTEST_QUIET) --tb=short \
 		-p scripts.agent_test_report
 
 agent-test-status: sync-deps

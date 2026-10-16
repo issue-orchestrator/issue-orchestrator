@@ -60,7 +60,7 @@ def seed_pull_request(
     slug: str,
     labels: list[str],
     draft: bool,
-    register_branch: Callable[[str], None],
+    record_branch: Callable[[str, str], object],
 ) -> SeededPullRequest:
     """Push a one-file commit on top of ``repo``'s main and open a PR for it.
 
@@ -74,7 +74,7 @@ def seed_pull_request(
     content = f"tech-lead exam seed for #{issue_number} at {time.ctime()}\n"
     return _push_seed(
         repo=repo, repo_root=repo_root, issue_number=issue_number, slug=slug, labels=labels,
-        draft=draft, register_branch=register_branch, base=base, path="exam-output.txt", content=content,
+        draft=draft, record_branch=record_branch, base=base, path="exam-output.txt", content=content,
     )
 
 
@@ -86,7 +86,7 @@ def seed_conflicting_pull_request(
     slug: str,
     labels: list[str],
     draft: bool,
-    register_branch: Callable[[str], None],
+    record_branch: Callable[[str, str], object],
 ) -> SeededPullRequest:
     """Open a PR that GitHub reports as conflicting with main, without touching main.
 
@@ -112,7 +112,7 @@ def seed_conflicting_pull_request(
     )
     return _push_seed(
         repo=repo, repo_root=repo_root, issue_number=issue_number, slug=slug, labels=labels,
-        draft=draft, register_branch=register_branch, base=_git(repo_root, "rev-parse", f"{changed}^"),
+        draft=draft, record_branch=record_branch, base=_git(repo_root, "rev-parse", f"{changed}^"),
         path=paths[0], content=content,
     )
 
@@ -125,7 +125,7 @@ def _push_seed(
     slug: str,
     labels: list[str],
     draft: bool,
-    register_branch: Callable[[str], None],
+    record_branch: Callable[[str, str], object],
     base: str,
     path: str,
     content: str,
@@ -151,10 +151,14 @@ def _push_seed(
     commit = _git(repo_root, "commit-tree", tree, "-p", base, stdin=message)
     # The engine pushes e2e branches with hooks skipped (E2E_SKIP_PUSH_HOOKS);
     # a seeded test-data branch is pushed the same way.
-    # Register BEFORE pushing: a push that lands but reports failure, or a
-    # create_pr that fails after it, must still leave cleanup the branch.
-    register_branch(branch)
-    _git(repo_root, "push", "--no-verify", "--quiet", remote, f"{commit}:refs/heads/{branch}")
+    # Record the push however it ends: one that lands but reports failure, or
+    # a create_pr that fails after it, must still leave cleanup the branch.
+    # The ledger keeps it only if the remote holds this commit on a branch
+    # that did not exist before the run (#9523).
+    try:
+        _git(repo_root, "push", "--no-verify", "--quiet", remote, f"{commit}:refs/heads/{branch}")
+    finally:
+        record_branch(branch, commit)
     adapter = _github_adapter(repo)
     pr = adapter.create_pr(
         title=f"#{issue_number}: exam seed",

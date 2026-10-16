@@ -6,5 +6,6 @@ They require:
 - `claude` CLI available
 - Network access to GitHub
 
-Run with: pytest tests/e2e/ -v
+Run with: E2E_TEST_REPO=<owner>/<test-repo> make test-e2e
+(collected only with IO_E2E=1, never in an agent session: tests/live_e2e_gate.py)
 """

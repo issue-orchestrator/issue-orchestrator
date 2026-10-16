@@ -36,7 +36,6 @@ from issue_orchestrator.contracts.ui_openapi_models import (
     ValidationPassedPayload,
 )
 from issue_orchestrator.infra.config import AgentConfig
-from issue_orchestrator.testing.support.test_data import close_issue
 from tests.e2e.conftest import e2e_label, find_free_port
 from tests.e2e.fixtures.wait_helpers import wait_for_review_exchange_completed
 from tests.e2e.flows import E2EFlow, start_orchestrator_runtime
@@ -692,11 +691,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
                 pass
         if flow and issue_number is not None:
             try:
-                close_issue(
-                    repo_name,
-                    issue_number,
-                    "Closed by production-parity 4057 e2e cleanup",
-                )
+                flow.close_issue(issue_number, "Closed by production-parity 4057 e2e cleanup")
             except Exception:
                 pass
         if runtime is not None:

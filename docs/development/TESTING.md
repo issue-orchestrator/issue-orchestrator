@@ -8,7 +8,7 @@ pytest tests/unit/              # Run unit tests
 pytest tests/unit/ -v           # Verbose
 pytest tests/unit/ --cov        # With coverage (90%+)
 pytest tests/integration/       # Integration tests (requires Claude CLI)
-pytest tests/e2e/ -v            # Live e2e tests (requires gh auth)
+E2E_TEST_REPO=youruser/your-test-repo make test-e2e   # Live e2e tests (see E2E Tests)
 ```
 
 ## Test Structure
@@ -119,28 +119,57 @@ def test_cmd_start(self):
 
 ## E2E Tests
 
-Live tests that create real GitHub issues:
+Live tests that create, edit and close real GitHub issues and PRs. Because of
+that, each of three safeguards fails closed on its own (#9523):
+
+- **Opt-in only.** `tests/e2e` is collected only with `IO_E2E=1`. A bare
+  `pytest`, an empty path list or `pytest tests/` skips it, and naming a path
+  inside it without the opt-in is a usage error. The suite's own conftest
+  refuses too, so a run that skips the root conftest (`--confcutdir`) is still
+  refused. Inside an orchestrator agent session
+  (`ISSUE_ORCHESTRATOR_SESSION_ID` set) the opt-in never applies.
+- **Never the production repository.** `E2E_TEST_REPO` is required and must
+  not be this checkout's own `origin` repository. There is no git-remote
+  fallback.
+- **Cleanup removes only what a scope proves is this run's.** Every PR close,
+  branch delete, issue close and label delete goes through one owner
+  (`tests/e2e/fixtures/artifact_cleanup.py`). A run closes only the issues it
+  recorded creating (or that carry a label it minted with its own random id)
+  and their PRs carrying an e2e label, and deletes no label. A branch goes
+  only as an admitted PR's head, or with a receipt proving the run created it
+  (absent when the run started, holding the run's commit, still its head) --
+  never by name, and only when every open PR it heads or is the base of (read
+  completely, uncached) is admitted too. No run can prove another has ended,
+  so other runs' open e2e PRs and issues are only reported; an operator who
+  knows no run is live removes them, and the e2e labels, explicitly:
+  `IO_E2E=1 E2E_TEST_REPO=<repo> python -m tests.e2e.reconcile
+  --no-live-run-against <repo>`. A label is how the next reconciliation finds
+  what carries it, so labels go last and only once complete reads prove
+  nothing still depends on them (no open issue or PR, no closed PR whose
+  branch survives); an unfinished reconciliation keeps them and exits
+  non-zero for a retry. Workflow labels such as `needs-code-review`
+  never put anything in scope.
 
 ```bash
-# Run e2e tests (requires gh auth + write access)
-pytest tests/e2e/ -v
+# Run e2e tests (make sets IO_E2E=1; requires gh auth + write access to the test repo)
+E2E_TEST_REPO=youruser/your-test-repo make test-e2e
+
+# Run one e2e file directly
+IO_E2E=1 E2E_TEST_REPO=youruser/your-test-repo pytest tests/e2e/test_live_orchestrator.py -v
 
 # Run e2e tests with subprocess terminal backend
-E2E_TERMINAL_ADAPTER=subprocess pytest tests/e2e/test_terminal_adapter_subprocess.py -v
-
-# Skip e2e tests
-pytest tests/ --ignore=tests/e2e/
+IO_E2E=1 E2E_TEST_REPO=youruser/your-test-repo E2E_TERMINAL_ADAPTER=subprocess pytest tests/e2e/test_terminal_adapter_subprocess.py -v
 ```
 
 **Prerequisites:**
-- `gh` CLI authenticated with write access
+- `gh` CLI authenticated with write access to the test repository
 - `claude` CLI available
 - Network access to GitHub
 
-**For contributors (no write access):**
-1. Fork the repo or create your own test repo
+**Test repository:**
+1. Create a dedicated test repository (or a fork you do not develop in)
 2. Set: `E2E_TEST_REPO=youruser/yourrepo`
-3. Run e2e tests against your repo
+3. Run e2e tests against it
 
 ## Native Stack CI Coverage
 

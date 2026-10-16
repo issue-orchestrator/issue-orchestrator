@@ -11,7 +11,6 @@ from typing import Callable, Iterable
 
 import httpx
 
-from issue_orchestrator.control.review_scope import pr_fields_reference_issue
 from issue_orchestrator.domain.issue_key import IssueKey, GitHubIssueKey
 
 logger = logging.getLogger(__name__)
@@ -22,11 +21,8 @@ from issue_orchestrator.testing.asyncdsl import (
     HTTPReplayProvider,
     WatcherConfig,
 )
-from issue_orchestrator.testing.support.test_data import close_issue, _ensure_label
+from issue_orchestrator.testing.support.test_data import _ensure_label
 from tests.e2e.conftest import (
-    DEFAULT_E2E_FILTER_LABEL,
-    E2E_RUN_LABEL_PREFIX,
-    E2E_TEST_LABEL_PREFIX,
     inflight_create,
     inflight_update,
     register_inflight_issue,
@@ -37,9 +33,9 @@ from tests.e2e.conftest import (
     wait_for_issue_label_snapshot,
     get_issue_comments,
     OrchestratorProcess,
-    _github_adapter,
     poll_issue_label,
 )
+from tests.e2e.fixtures.artifact_cleanup import E2EArtifactCleanup, RunOwnedScope
 
 
 def review_timeout_from_config(config, default_s: float = 240.0) -> float:
@@ -106,103 +102,6 @@ async def create_watcher_for_port(port: int) -> tuple[OrchestratorWatcher, SSEEv
         config=WatcherConfig(),
     )
     return watcher, stream
-
-
-def close_pr(repo: str, pr_number: int) -> None:
-    """Close a PR and delete its branch."""
-    adapter = _github_adapter(repo)
-    pr = adapter.get_pr(pr_number)
-    if not pr:
-        return
-    # PRInfo has .branch attribute directly
-    branch = pr.branch
-    adapter.close_pr(pr_number)
-    if branch:
-        try:
-            adapter.delete_branch(branch)
-        except Exception:
-            pass
-
-
-def _is_e2e_cleanup_label(label: str) -> bool:
-    return (
-        label == DEFAULT_E2E_FILTER_LABEL
-        or label.startswith(E2E_TEST_LABEL_PREFIX)
-        or label.startswith(E2E_RUN_LABEL_PREFIX)
-    )
-
-
-def _pr_matches_issue(
-    branch: str | None, title: str, body: str, issue_numbers: set[int], repo: str
-) -> bool:
-    return pr_fields_reference_issue(
-        branch=branch,
-        title=title,
-        body=body,
-        issue_numbers=issue_numbers,
-        repo_slug=repo,
-    )
-
-
-def cleanup_test_prs_for_issues(
-    repo: str,
-    issue_numbers: Iterable[int],
-    labels: Iterable[str],
-) -> int:
-    """Close e2e PRs matching created issue numbers and e2e artifact labels."""
-    issue_number_set = set(issue_numbers)
-    if not issue_number_set:
-        return 0
-
-    cleanup_labels = sorted({label for label in labels if _is_e2e_cleanup_label(label)})
-    if not cleanup_labels:
-        return 0
-
-    closed_prs: set[int] = set()
-    adapter = _github_adapter(repo)
-    for label in cleanup_labels:
-        try:
-            prs = adapter.get_prs_with_label(label, state="open")
-        except Exception:
-            logger.warning("[E2E CLEANUP] Failed listing PRs for label '%s'", label)
-            prs = []
-        for pr in prs:
-            pr_num = pr.number
-            if not pr_num or pr_num in closed_prs:
-                continue
-            if not _pr_matches_issue(pr.branch, pr.title, pr.body, issue_number_set, repo):
-                continue
-            try:
-                adapter.close_pr(pr_num)
-                closed_prs.add(pr_num)
-                if pr.branch:
-                    try:
-                        adapter.delete_branch(pr.branch)
-                    except Exception:
-                        pass
-                logger.info("[E2E CLEANUP] Closed PR #%d for test issue", pr_num)
-            except Exception:
-                logger.warning("[E2E CLEANUP] Failed closing PR #%d", pr_num)
-
-    return len(closed_prs)
-
-
-def cleanup_test_prs(repo: str, labels: Iterable[str]) -> int:
-    """Close test PRs matching any of the provided labels."""
-    closed_prs: set[int] = set()
-    adapter = _github_adapter(repo)
-    for label in labels:
-        try:
-            prs = adapter.get_prs_with_label(label, state="open")
-        except Exception:
-            prs = []
-        for pr in prs:
-            # PRInfo has .number attribute
-            pr_num = pr.number
-            if pr_num and pr_num not in closed_prs:
-                close_pr(repo, pr_num)
-                closed_prs.add(pr_num)
-    return len(closed_prs)
 
 
 async def wait_for_any_pr_label(
@@ -452,25 +351,29 @@ class E2EFlow:
         """GitHub numbers of the issues this flow created, in creation order."""
         return tuple(self._created_issues)
 
+    @property
+    def cleanup_scope(self) -> RunOwnedScope:
+        """What this flow's cleanup may remove: PRs of the issues it created."""
+        labels = {label for labels in self._created_issue_labels.values() for label in labels}
+        return RunOwnedScope.of(self._created_issues, labels)
+
     def cleanup_created_prs(self) -> int:
-        """Close PRs created for issues owned by this flow."""
-        labels: set[str] = set()
-        for issue_labels in self._created_issue_labels.values():
-            labels.update(issue_labels)
-        return cleanup_test_prs_for_issues(self.repo, self._created_issues, labels)
+        """Close the open e2e PRs of issues this flow created."""
+        if not self._created_issues:
+            return 0
+        return E2EArtifactCleanup.for_test_repo(self.repo).sweep(self.cleanup_scope)
 
     def cleanup_created_issues(self) -> None:
         """Close PRs and issues created by this flow."""
-        from issue_orchestrator.testing.support.test_data import close_issue
         self.cleanup_created_prs()
+        if not self._created_issues:
+            return
+        cleanup = E2EArtifactCleanup.for_test_repo(self.repo)
         for issue_number in self._created_issues:
             try:
-                close_issue(self.repo, issue_number)
+                cleanup.close_issue(self.cleanup_scope, issue_number)
             except Exception as e:
-                import logging
-                logging.getLogger(__name__).warning(
-                    "Failed to close issue #%d: %s", issue_number, e
-                )
+                logger.warning("Failed to close issue #%d: %s", issue_number, e)
 
     def update_issue(
         self,
@@ -597,11 +500,17 @@ class E2EFlow:
         )
 
     def close_pr(self, pr_number: int) -> None:
-        close_pr(self.repo, pr_number)
+        """Close a PR of an issue this flow created, and delete its branch.
+
+        Refused (CleanupRefusedError) for any other PR, before anything is written.
+        """
+        E2EArtifactCleanup.for_test_repo(self.repo).close_pr(self.cleanup_scope, pr_number)
 
     def close_issue(self, issue_number: int, comment: str) -> None:
-        """Close an issue by its GitHub issue number."""
-        close_issue(self.repo, issue_number, comment)
+        """Close an issue this flow created (refused for any other)."""
+        E2EArtifactCleanup.for_test_repo(self.repo).close_issue(
+            self.cleanup_scope, issue_number, comment
+        )
 
     def ensure_labels(self, labels: Iterable[str]) -> None:
         for label in labels:

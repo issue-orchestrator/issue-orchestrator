@@ -1296,6 +1296,14 @@ class GitHubAdapter(GitHubIntegrationBranchMixin):
         """Every open PR; raises rather than returning a partial list."""
         return [self._pr_info_from_api(pr) for pr in self._client.list_open_prs_complete()]
 
+    def get_prs_with_label_complete(self, label: str, state: str = "open") -> list[PRInfo]:
+        """Every PR carrying ``label`` in ``state``; raises rather than
+        returning a partial list. See the client method."""
+        return [
+            self._pr_info_from_api(pr)
+            for pr in self._client.list_prs_with_label_complete(label, state=state)
+        ]
+
     def merged_prs_referencing_issues(self, issue_numbers: Sequence[int]) -> frozenset[int]:
         """Merged PRs that reference one of ``issue_numbers`` (closing or partial)."""
         return self._client.merged_prs_referencing_issues(issue_numbers)

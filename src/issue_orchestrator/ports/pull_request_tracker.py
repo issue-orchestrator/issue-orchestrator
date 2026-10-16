@@ -553,6 +553,24 @@ class PullRequestTracker(Protocol):
         """
         ...
 
+    def get_prs_with_label_complete(self, label: str, state: str = "open") -> list[PRInfo]:
+        """EVERY pull request carrying ``label`` in ``state``.
+
+        For decisions a missed PR would make wrong, such as deleting a label
+        that is some PR's only provenance (#9523). ``get_prs_with_label`` may
+        stop at a limit; this never does.
+
+        Args:
+            label: The label name to filter by.
+            state: "open", "closed" (closed or merged) or "all".
+
+        Raises:
+            RepositoryError: If any page cannot be read, any PR or its labels
+                come back incomplete, or the listing cannot be proven
+                complete. Never returns a truncated list.
+        """
+        ...
+
     def list_open_prs_complete(self) -> list[PRInfo]:
         """List EVERY open pull request.
 
