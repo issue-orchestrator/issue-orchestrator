@@ -17,7 +17,6 @@ from ..ports import EventSink,  make_trace_event
 from ..infra import gh_audit
 from ..ports.label_set import LabelSet
 from ..ports.pull_request_tracker import PullRequestTracker
-from ..ports.repository_host import RepositoryHostError
 from .pull_request_provenance import PullRequestProvenance
 
 if TYPE_CHECKING:
@@ -302,12 +301,7 @@ class LabelSync:
 
         for pr in prs:
             # Only reconcile PRs io opened (and never adopted)
-            try:
-                own = provenance.io_owned(pr, labels=pr.labels)
-            except RepositoryHostError as e:
-                logger.warning("[LABEL_SYNC] PR #%d's provenance unreadable; not reconciled: %s", pr.number, e)
-                continue
-            if not own:
+            if not provenance.proven_io_owned(pr):
                 continue
 
             # Check if it already has a review label

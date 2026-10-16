@@ -23,14 +23,18 @@ integration owner's routing, update and merge gates.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from ..domain.external_pr_adoption import Authorship, io_owned, marker_hint
+from ..ports.repository_host import RepositoryHostError
 
 if TYPE_CHECKING:
     from ..ports.pull_request_tracker import PRInfo
+
+logger = logging.getLogger(__name__)
 
 
 class EngineAccount(Protocol):
@@ -56,6 +60,17 @@ class PullRequestProvenance:
     def io_owned(self, pr: "PRInfo", *, labels: Iterable[str]) -> bool:
         """io's own PR: io opened it, and it was never adopted (*labels* as the boundary read them)."""
         return io_owned(self.authorship(pr), labels)
+
+    def proven_io_owned(self, pr: "PRInfo") -> bool:
+        """:meth:`io_owned`, on the labels *pr* was listed with, for a boundary
+        that leaves every PR not PROVEN io's own alone (startup recovery, the
+        orphaned-label reconcile): an unreadable account proves nothing, so
+        the PR is not io's own there."""
+        try:
+            return self.io_owned(pr, labels=pr.labels)
+        except RepositoryHostError as error:
+            logger.warning("PR #%d is not proven io's own; io's account is unreadable: %s", pr.number, error)
+            return False
 
 
 __all__ = ["EngineAccount", "PullRequestProvenance"]

@@ -70,3 +70,14 @@ def test_once_adopted_not_even_a_pr_io_opened_is_io_s_own() -> None:
     assert provenance.io_owned(_pr(), labels=["needs-code-review"])
     assert not provenance.io_owned(_pr(), labels=["origin:external"])
     assert not provenance.io_owned(_pr(author=HAND_AUTHOR), labels=[])
+
+
+def test_a_boundary_that_leaves_unproven_prs_alone_reads_an_unreadable_account_as_not_io_s() -> None:
+    """Startup recovery and the orphaned-label reconcile act only on PROVEN io work."""
+    unreadable = PullRequestProvenance(_Account(RepositoryHostError("502 /user")))
+
+    assert not unreadable.proven_io_owned(_pr())
+    assert PullRequestProvenance(_Account()).proven_io_owned(_pr())
+    adopted = _pr()
+    adopted.labels.append("origin:external")
+    assert not PullRequestProvenance(_Account()).proven_io_owned(adopted)

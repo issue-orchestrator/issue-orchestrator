@@ -69,7 +69,6 @@ from .validation_retry_recovery import ValidationRetryRecovery
 from .worker_budget import worker_slot_free
 from ..events import EventName
 from ..ports import EventSink, SessionRunner, make_trace_event, RepositoryHost
-from ..ports.repository_host import RepositoryHostError
 from ..ports.session_runner import DiscoveredSession
 from ..infra import gh_audit
 from ..infra.repo_identity import get_repo_head_sha
@@ -669,21 +668,14 @@ class StartupManager:
         # Caller ensures code_review_label is set before calling this method
         assert self.config.code_review_label is not None
         prs = self.repository_host.get_prs_with_label(self.config.code_review_label)
-        provenance = PullRequestProvenance(self.repository_host)
         for pr in prs:
             pr_number = pr.number
             pr_url = pr.url
 
             issue_number = extract_issue_number_from_pr(pr, repo_slug=require_repo(self.config))
 
-            # io's own PR only (io's account opened it, never adopted): any
-            # other is left to the gated review scan (#9499)
-            try:
-                own = provenance.io_owned(pr, labels=pr.labels)
-            except RepositoryHostError as error:
-                logger.warning("PR #%d: provenance unreadable, left to the review scan: %s", pr_number, error)
-                continue
-            if not own:
+            # io's own PR only (opened by io's account, never adopted): any other is left to the gated scan (#9499)
+            if not PullRequestProvenance(self.repository_host).proven_io_owned(pr):
                 logger.debug(f"PR #{pr_number}: Not io's own (not opened by io, or adopted)")
                 continue
 
