@@ -10,7 +10,10 @@ ONE identity policy, shared with the GitHub effects (the caller's
 :class:`FindingIdentity`, the owner of the effect keys):
 
 * two findings are the same finding exactly when they have the same effect
-  key (the keys their issues are deduplicated by);
+  key (the keys their issues are deduplicated by) and claim the same: a
+  design finding all of its claim (:func:`_claim`), a stall finding the same
+  cause (:func:`_cause`: its root-cause owner and its reproduction, #8985),
+  since one output on the same anomalies can be two defects;
 * a design finding is the SAME DEFECT as another finding of any kind (#8700)
   when the identity's :func:`~.improver_defects.same_defect` says so: one
   code site and overlapping evidence. It is folded into that finding
@@ -27,6 +30,10 @@ What cannot be merged is surfaced, never silently dropped
 * a design finding with the same key but a different claim (summary or
   proposed change) is support for neither; its claim is recorded as a
   conflict on the kept finding;
+* a stall finding with the same key but another root-cause owner or
+  another reproduction is another defect on the same anomalies (#8985): it
+  is support for neither; its claim (root cause, reproduction, proposal) is
+  recorded as a conflict on the kept finding;
 * a stall finding proposing a new exam case id another, different finding
   already proposes (a case id names one case) is recorded as a conflict on
   the finding that kept the id.
@@ -41,6 +48,7 @@ The merged document is validated again by the caller, like any answer.
 
 from __future__ import annotations
 
+import posixpath
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Protocol, TypeVar
@@ -48,7 +56,7 @@ from typing import Protocol, TypeVar
 from ..contracts.improver_findings import DesignFinding, Finding, ImproverFindings
 from .improver_champion import CHANGE_ID
 from .improver_citations import normalized
-from .improver_defects import DefectProfile, same_defect
+from .improver_defects import CodeSite, DefectProfile, code_site, same_defect
 
 _F = TypeVar("_F", Finding, DesignFinding)
 
@@ -125,7 +133,7 @@ class _Merge:
         self._designs = list(primary.findings.design_findings)
         self._taken = {f.id for f in self._stalls} | {d.id for d in self._designs}
         self._support: dict[str, list[int]] = {i: [primary.heat] for i in self._taken}
-        self._by_stall_key = {stall_key(f): f.id for f in self._stalls}
+        self._by_stall_key = {stall_key(f): f for f in self._stalls}
         self._by_case = {c: f.id for f in self._stalls if (c := _case_id(f)) is not None}
         self._by_design_key = {design_key(d): d for d in self._designs}
         self._conflicts: list[HeatConflict] = []
@@ -148,8 +156,18 @@ class _Merge:
 
     def _add_stall(self, heat: int, finding: Finding) -> None:
         key = self._identity.stall_key(finding)
-        if key in self._by_stall_key:
-            self._back(self._by_stall_key[key], heat)
+        same = self._by_stall_key.get(key)
+        if same is not None:
+            difference = _cause(self._identity, same).difference(_cause(self._identity, finding))
+            if difference is None:
+                self._back(same.id, heat)
+                return
+            # One output on the same anomalies, another defect (#8985).
+            self._conflicts.append(HeatConflict(
+                finding_id=same.id, heat=heat,
+                reason=f"a different finding ({finding.id}) on the same anomalies names {difference}",
+                claim=_stall_claim(finding),
+            ))
             return
         case = _case_id(finding)
         if case is not None and case in self._by_case:
@@ -161,7 +179,7 @@ class _Merge:
             return
         kept = self._kept(finding, heat)
         self._stalls.append(kept)
-        self._by_stall_key[key] = kept.id
+        self._by_stall_key[key] = kept
         if case is not None:
             self._by_case[case] = kept.id
 
@@ -275,6 +293,64 @@ def _same_defect_folds(
 def _qualifying(profile: DefectProfile, groups: list[list[DefectProfile]]) -> list[list[DefectProfile]]:
     """The groups whose every member is the same defect as ``profile``."""
     return [g for g in groups if all(same_defect(profile, m) for m in g)]
+
+
+@dataclass(frozen=True)
+class _Cause:
+    """What a stall finding claims beyond its effect key (#8985): where the
+    defect lives and how it is reproduced. Two heats word one cause their
+    own way, so only these are compared, never the prose."""
+
+    #: The root-cause owner: the one staged definition it names, else the
+    #: site as written, else its text; None without a root cause.
+    owner: CodeSite | str | None
+    #: The reproduction's kind and harness (its path spelled one way).
+    reproduction: tuple[str, str] | None
+
+    def difference(self, other: _Cause) -> str | None:
+        """What ``other`` names that this cause does not; None when they are one cause."""
+        named: list[str] = []
+        if self.owner != other.owner:
+            named.append("another root-cause owner")
+        if self.reproduction != other.reproduction:
+            named.append("another reproduction")
+        return " and ".join(named) or None
+
+
+def _cause(identity: FindingIdentity, finding: Finding) -> _Cause:
+    owner: CodeSite | str | None = None
+    if finding.root_cause is not None:
+        written = finding.root_cause.owner
+        # Resolved, one owner however it is written; unresolved, only the
+        # same site as written is one (nothing guesses).
+        owner = next(iter(identity.stall_profile(finding).sites), None) or code_site(written) or normalized(written)
+    repro = finding.reproduction
+    return _Cause(
+        owner=owner,
+        reproduction=None if repro is None else (repro.kind, posixpath.normpath(normalized(repro.harness))),
+    )
+
+
+def _stall_claim(finding: Finding) -> str:
+    """All a stall finding claims beyond its effect key, as its own issue
+    would say it, so nothing it said is lost."""
+    parts = [f"{finding.id} (`{finding.output}`, stalled at `{finding.stall_point}`)."]
+    if (cause := finding.root_cause) is not None:
+        parts.append(f"Root cause: `{cause.owner}`: {cause.why}")
+        if cause.same_shape_sites:
+            parts.append("Same-shape sites: " + ", ".join(f"`{s}`" for s in cause.same_shape_sites) + ".")
+    if (repro := finding.reproduction) is not None:
+        parts.append(
+            f"Reproduction: {repro.kind} in `{repro.harness}`"
+            + (f", case id `{repro.case_id}`" if repro.case_id else "")
+            + f", fails on `{repro.fails_on}`. Planted state: {repro.planted_state} Asserts: "
+            + "; ".join(repro.assertions)
+        )
+    if finding.proposal is not None:
+        parts.append(f"Proposal: {finding.proposal}")
+    if finding.missing_evidence:
+        parts.append("Missing evidence: " + "; ".join(finding.missing_evidence))
+    return " ".join(parts)
 
 
 def _case_id(finding: Finding) -> str | None:
