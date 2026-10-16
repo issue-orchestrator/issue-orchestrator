@@ -51,6 +51,7 @@ from .session_manager import SessionManager
 
 if TYPE_CHECKING:
     from ..domain.launch_prompt_delivery import PreparedSessionCommand
+    from ..ports.session_launcher_factory import CreateSessionFn
     from ..domain.models import OrchestratorState
     from .claim_quarantine import ClaimQuarantineOwner
     from ..domain.state_machines.session_machine import SessionStateMachine
@@ -558,6 +559,25 @@ def create_session(
             secret_env=secret_env,
         )
     )
+
+
+def session_starter(session_manager: SessionManager, events: EventSink) -> "CreateSessionFn":
+    """:func:`create_session` bound to *session_manager*, the one that prepares each launch's command (#9012).
+
+    The composition root hands it to the session launcher, so a launch's
+    preflight and its start are the same terminal's and the facade relays
+    neither.
+    """
+
+    def start(
+        name: str,
+        prepared: "PreparedSessionCommand",
+        title: str | None = None,
+        secret_env: dict[str, str] | None = None,
+    ) -> bool:
+        return create_session(name, prepared, title, session_manager, events, secret_env)
+
+    return start
 
 
 def session_exists(

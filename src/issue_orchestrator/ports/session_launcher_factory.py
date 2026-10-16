@@ -59,7 +59,6 @@ class SessionLauncherFactory(Protocol):
         board_snapshot_provider: "BoardSnapshotProvider",
         blocked_item_triage: "BlockedItemTriageAgenda",
         session_exists_fn: Callable[[str], bool],
-        create_session_fn: "CreateSessionFn",
         get_issue_machine: Callable[
             ["IssueProtocol"], Optional["IssueStateMachine"]
         ],

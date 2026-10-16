@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, Iterable
 
 from ..domain.issue_run_allocation import IssueRunAllocation
 from ..domain.issue_run_evidence import IssueRunEvidenceUnavailable
@@ -26,6 +26,7 @@ from .launch_guards import callback_endpoint_not_ready
 from .launch_terminal import LaunchTerminal
 from .session_manager import SessionRef
 from .session_rework_launcher import PromptPersister, ProviderReadinessChecker, SessionEnvBuilder
+from .worktree_manager import get_worktree_path
 
 if TYPE_CHECKING:
     from ..domain.models import AgentConfig
@@ -78,6 +79,20 @@ class _DebugTarget:
             status, self.request.issue_number, self.session_name, self.request.worktree_path,
             self.agent_label, reason,
         )
+
+
+def debug_session_request(
+    config: "Config", issue_number: int, queued_issues: Iterable["IssueProtocol"],
+) -> DebugSessionRequest:
+    """The operator's request for *issue_number*'s debug session.
+
+    Its worktree, and the issue as the engine's queue cache holds it, so a
+    queued issue launches without a host read; a miss leaves the launch to read
+    it from the host. The facade builds it under its state lock, which guards
+    that cache, and launches outside it.
+    """
+    cached = next((issue for issue in queued_issues if issue.number == issue_number), None)
+    return DebugSessionRequest(issue_number, get_worktree_path(config, issue_number), cached)
 
 
 def launch_debug_session(deps: DebugLaunchDependencies, request: DebugSessionRequest) -> DebugSessionOutcome:

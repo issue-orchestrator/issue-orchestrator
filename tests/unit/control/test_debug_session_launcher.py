@@ -15,10 +15,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from issue_orchestrator.control.debug_session_launcher import debug_session_request
 from issue_orchestrator.control.launch_prompt import IssueLaunchPrompt
 from issue_orchestrator.control.session_launcher import SessionLauncher
 from issue_orchestrator.control.session_manager import SessionManager
-from issue_orchestrator.control.session_routing import create_session, session_exists
+from issue_orchestrator.control.session_routing import session_exists, session_starter
+from issue_orchestrator.control.worktree_manager import get_worktree_path
 from issue_orchestrator.domain.issue_run_evidence import IssueRunEvidenceUnavailable
 from issue_orchestrator.domain.launch_prompt import LaunchPromptUnavailable
 from issue_orchestrator.domain.launch_prompt_delivery import LaunchCommand, PreparedSessionCommand
@@ -135,11 +137,9 @@ def _rig(tmp_path: Path, *, labels=("agent:deepseek",), endpoint=None, launch_pr
         session_output=session_output,
         manifest_downloader=MagicMock(),
         tech_lead_authority=MagicMock(),
-        # The facade's own callbacks, as the orchestrator wires them.
+        # As the facade (session_exists) and the composition root (the start) wire them.
         session_exists_fn=lambda name: session_exists(name, manager, events),
-        create_session_fn=lambda name, prepared, title=None, secret_env=None: create_session(
-            name, prepared, title, manager, events, secret_env,
-        ),
+        create_session_fn=session_starter(manager, events),
         get_issue_machine=lambda issue: MagicMock(),
         get_session_machine=lambda *args: MagicMock(),
         get_review_machine=lambda *args: MagicMock(),
@@ -235,6 +235,27 @@ def test_an_issue_missing_from_the_cache_is_read_from_the_host(tmp_path: Path) -
     assert rig.launch(cached=False).launched
 
     rig.host.get_issue.assert_called_once_with(123)
+
+
+def test_the_request_carries_the_queued_issue_and_the_issues_worktree(tmp_path: Path) -> None:
+    """The facade lends its queue cache; the owner picks the issue out of it."""
+    config = Config(repo="example/repo", repo_root=tmp_path)
+    queued = Issue(number=123, title="Queued", labels=["agent:deepseek"], repo="example/repo")
+    neighbour = Issue(number=7, title="Neighbour", labels=["agent:deepseek"], repo="example/repo")
+
+    request = debug_session_request(config, 123, [neighbour, queued])
+
+    assert request == DebugSessionRequest(123, get_worktree_path(config, 123), queued)
+
+
+def test_an_issue_off_the_queue_is_requested_without_a_cached_copy(tmp_path: Path) -> None:
+    """A cache miss leaves the launch to read the issue from the host."""
+    config = Config(repo="example/repo", repo_root=tmp_path)
+    neighbour = Issue(number=7, title="Neighbour", labels=["agent:deepseek"], repo="example/repo")
+
+    request = debug_session_request(config, 123, [neighbour])
+
+    assert request == DebugSessionRequest(123, get_worktree_path(config, 123), None)
 
 
 def test_an_issue_the_host_cannot_read_is_not_found(tmp_path: Path) -> None:

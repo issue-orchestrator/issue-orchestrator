@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Callable, Optional
 from ..control.needs_human_block import SharedNeedsHumanBlock
 from ..control.recovery_review_hold import NO_RECOVERY_HOLDS, RecoveryHolds
 from ..control.session_launcher import SessionLauncher
+from ..control.session_routing import session_starter
 from ..control.launch_prompt import NO_LAUNCH_PROMPT
 from ..ports.launch_prompt import LaunchPromptProvider
 from ..ports.provider_credentials import (
@@ -33,10 +34,7 @@ if TYPE_CHECKING:
     from ..ports.blocked_item_triage import BlockedItemTriageAgenda
     from ..ports.board_snapshot_provider import BoardSnapshotProvider
     from ..ports.issue import Issue as IssueProtocol
-    from ..ports.session_launcher_factory import (
-        CreateSessionFn,
-        SessionLauncherFactory,
-    )
+    from ..ports.session_launcher_factory import SessionLauncherFactory
 
 
 def build_session_launcher_factory(
@@ -67,12 +65,14 @@ def build_session_launcher_factory(
 ) -> "SessionLauncherFactory":
     """Bind the application dependencies; return the facade-facing factory."""
 
+    # Each session starts on the SessionManager that prepared its command (#9012).
+    start_session = session_starter(session_manager, events)
+
     def _factory(
         *,
         board_snapshot_provider: "BoardSnapshotProvider",
         blocked_item_triage: "BlockedItemTriageAgenda",
         session_exists_fn: Callable[[str], bool],
-        create_session_fn: "CreateSessionFn",
         get_issue_machine: Callable[
             ["IssueProtocol"], Optional["IssueStateMachine"]
         ],
@@ -88,7 +88,7 @@ def build_session_launcher_factory(
             worktree_manager, working_copy, command_runner, session_output,
             manifest_downloader, tech_lead_authority,
             session_exists_fn,
-            create_session_fn, get_issue_machine, get_session_machine,
+            start_session, get_issue_machine, get_session_machine,
             get_review_machine, refresh_issue_fn, dependency_evaluator,
             claim_manager=claim_manager,
             provider_resilience=provider_resilience,

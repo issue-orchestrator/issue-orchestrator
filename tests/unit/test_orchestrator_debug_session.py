@@ -1,8 +1,9 @@
 """The orchestrator facade's debug-session command (#9012 review r1 F3).
 
 The facade adds only what is its own - the queue cache, read under its lock -
-and the launcher launches the session through the facade's own terminal
-callbacks, down to the session runner.
+and the launcher launches the session through the terminal the composition
+root binds to the same SessionManager that prepared it, down to the session
+runner (#9012 rework: the facade no longer relays session starts).
 """
 
 from __future__ import annotations
