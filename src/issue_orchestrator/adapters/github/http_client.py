@@ -2588,7 +2588,10 @@ class GitHubHttpClient:
         node: dict[str, Any], incomplete: Callable[[str], GitHubScanIncompleteError]
     ) -> list[str]:
         """Every label name on one ``_COMPLETE_LABELS`` node, or ``incomplete``'s
-        error: never a malformed or truncated set. ``node`` has an int number."""
+        error: never a malformed or truncated set. ``node`` has an int number.
+
+        ``totalCount`` must be a real non-negative int before it is compared:
+        Python's ``True == 1`` would otherwise prove one label whole."""
         labels = node.get("labels")
         if not (
             isinstance(labels, dict)
@@ -2597,7 +2600,10 @@ class GitHubHttpClient:
                     for entry in labels["nodes"])
         ):
             raise incomplete(f"returned #{node['number']} without readable labels")
-        if labels.get("totalCount") != len(labels["nodes"]):
+        total = labels.get("totalCount")
+        if type(total) is not int or total < 0:
+            raise incomplete(f"returned #{node['number']} with a malformed label count {total!r}")
+        if total != len(labels["nodes"]):
             raise incomplete(f"truncated the labels of #{node['number']}")
         return [entry["name"] for entry in labels["nodes"]]
 
