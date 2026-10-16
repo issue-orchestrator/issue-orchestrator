@@ -277,6 +277,83 @@ def test_io_s_own_prs_drafts_and_the_delivery_pr_are_not_external_work(kind: str
     assert world.host.add_label_calls == [] and world.host.comments == []
 
 
+# -- provenance: io's own PRs are the ones io opened (review F1) --------------------
+
+
+def _marker_pasting(world: _World, *, labels: tuple[str, ...] = ()) -> PRInfo:
+    """A hand-opened PR whose author pasted io's marker into its body from the start."""
+    world.effort_issue(231)
+    return world.pr(321, issue=231, body=f"Closes #231\n\n*{ORCHESTRATOR_PR_MARKER}*", labels=labels)
+
+
+def test_a_hand_opened_pr_pasting_io_s_marker_is_adopted_into_exact_head_custody() -> None:
+    """The body is its author's to write: only io's account as the PR's author
+    makes it io's own. Pasted, the marker buys nothing - the PR is adopted,
+    approved only at the head io's review read, and a later push is not merged."""
+    world = _World()
+    pr = _marker_pasting(world, labels=("code-reviewed",))  # an approval io never gave, too
+
+    [step] = world.discover()
+    assert isinstance(step, AdoptExternalPullRequest) and step.pr_number == 321
+    world.apply(step)
+    world.adopt_round()
+    assert set(pr.labels) == {"needs-code-review", "origin:external"}
+    assert world.review_queue() == [321]
+
+    world.approve(pr, 231)  # io's review read HEAD
+    assert world.comments_on(321) == [reviewed_head_receipt(321, HEAD)]
+    pr.head_sha = PUSHED  # its author pushes again after the approval
+    world.current(PUSHED)
+
+    write = world.apply(world.merge_step(pr, 231, head=PUSHED))
+    assert _skipped(write) and "unreviewed_head" in write.details["skip_reason"]  # type: ignore[attr-defined]
+    _returned_to_review(world, pr, PUSHED)
+
+
+def test_a_marker_pasting_pr_approved_before_adoption_is_never_merged() -> None:
+    """The attack review F1 named: approved in io's ordinary lane as if io had
+    opened it, then pushed. Not io's own, it is not admitted until adopted -
+    and the adoption drops the approval it was given before."""
+    world = _World()
+    pr = _marker_pasting(world, labels=("needs-code-review",))
+    world.approve(pr, 231)  # no receipt: nothing adopted it yet
+    pr.head_sha = PUSHED
+    world.current(PUSHED)
+
+    steps, result = world.merge_pass()
+    assert steps == [] and result.reworks == ()
+    write = world.apply(world.merge_step(pr, 231, head=PUSHED))
+    assert _skipped(write) and "not_admitted" in write.details["skip_reason"]  # type: ignore[attr-defined]
+
+    world.adopt_round()
+    assert set(pr.labels) == {"needs-code-review", "origin:external"}  # back in io's review lane
+    assert world.merge_pass()[0] == [] and world.host.pr_merges == []
+
+
+def test_a_pr_io_opened_without_its_marker_is_external_work() -> None:
+    """The marker is the hint that lets every other PR skip the account read:
+    a PR io's account opened whose body lost it is judged as anyone's."""
+    world = _World()
+    world.effort_issue(231)
+    world.pr(321, issue=231, author=IO_AUTHOR)
+
+    [step] = world.discover()
+
+    assert isinstance(step, AdoptExternalPullRequest)
+
+
+def test_a_scan_whose_provenance_cannot_be_read_adopts_and_refuses_nothing() -> None:
+    world = _World()
+    world.effort_issue(231)
+    world.io_pr(320, issue=231)
+    world.effort_issue(232)
+    world.pr(321, issue=232)
+    world.host.integration_failures["engine_account_id"] = RepositoryHostError("502 /user")
+
+    assert world.discover() == []
+    assert world.host.add_label_calls == [] and world.host.comments == []
+
+
 def test_a_candidate_past_the_first_hundred_open_prs_is_adopted() -> None:
     """F3: the scan reads EVERY open PR, never a first page that repeats forever."""
     world = _World()

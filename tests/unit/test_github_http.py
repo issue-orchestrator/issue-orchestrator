@@ -3015,6 +3015,50 @@ def test_list_open_prs_complete_carries_each_pr_s_labels() -> None:
     ]
 
 
+def test_list_open_prs_complete_carries_each_pr_s_author() -> None:
+    """#9499 review F1: whether io opened a PR is GitHub's record of its author."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "author { __typename login ... on User { databaseId } ... on Bot { databaseId } }" in (
+            _graphql_body(request)["query"])
+        return httpx.Response(200, json={"data": {"repository": {"pullRequests": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+            "nodes": [
+                {**_pr_node(1), "author": {"__typename": "Bot", "login": "io-bot", "databaseId": 301493143}},
+                {**_pr_node(2), "author": None},  # the opening account was deleted
+            ],
+        }}}})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    assert [pr["user"] for pr in client.list_open_prs_complete()] == [
+        {"id": 301493143, "login": "io-bot", "type": "Bot"},
+        None,
+    ]
+
+
+@pytest.mark.parametrize(
+    "author",
+    [{"__typename": "User", "login": "x"}, {"__typename": "User", "login": "x", "databaseId": True}, "x"],
+    ids=["no-id", "boolean-id", "not-an-object"],
+)
+def test_complete_pr_listings_refuse_an_author_they_cannot_read(author: object) -> None:
+    def open_prs(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"repository": {"pullRequests": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": [{**_pr_node(1), "author": author}],
+        }}}})
+
+    labeled = {"data": {"repository": {"pullRequests": {"pageInfo": {"hasNextPage": False}, "nodes": [
+        {**_labeled_pr_node(1), "author": author},
+    ]}}}}
+
+    with pytest.raises(GitHubScanIncompleteError, match="unreadable author"):
+        _client_with_transport(httpx.MockTransport(open_prs)).list_open_prs_complete()
+    with pytest.raises(GitHubScanIncompleteError, match="unreadable author"):
+        _client_with_transport(httpx.MockTransport(
+            lambda request: httpx.Response(200, json=labeled))).list_prs_with_label_complete("io:e2e-run-a")
+
+
 @pytest.mark.parametrize(
     ("damage", "why"),
     [("more_labels", "truncated the labels of #1"), ("no_labels", "#1 without readable labels")],

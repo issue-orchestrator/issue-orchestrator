@@ -31,7 +31,7 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.tech_lead_session import TechLeadSessionFlavor
 from tests.conftest import operator_paused_state
-from tests.conftest import IO_ACCOUNT_ID, IO_AUTHOR
+from tests.conftest import HAND_AUTHOR, IO_ACCOUNT_ID, IO_AUTHOR
 
 
 def _startup_worktree_reconciler() -> MagicMock:
@@ -802,6 +802,42 @@ class TestStartupManagerCodeReviewRecovery:
             state="open",
         )
         mock_repository_host.get_prs_with_label.return_value = [pr]
+
+        await startup_manager.run_startup(sample_state)
+
+        assert sample_state.pending_reviews == []
+        mock_repository_host.get_issue.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("account", ["someone_else", "unreadable"])
+    async def test_a_hand_opened_pr_pasting_io_s_marker_is_not_recovered_as_io_s_own(
+        self,
+        startup_manager,
+        sample_state,
+        mock_repository_host,
+        mock_config,
+        account,
+    ):
+        """#9499 review F1: the marker is the body's say-so; GitHub's record of
+        who opened the PR decides, and an unreadable one decides nothing."""
+        mock_config.agents = {}
+        mock_config.code_review_agent = "agent:reviewer"
+        mock_config.code_review_label = "needs-code-review"
+
+        from issue_orchestrator.ports import PRInfo
+        pr = PRInfo(
+            number=10,
+            url="https://github.com/owner/repo/pull/10",
+            title="Hand-made PR",
+            branch="1-feature",
+            labels=["needs-code-review"],
+            body=f"Closes #1\n\n{ORCHESTRATOR_PR_MARKER}",
+            author=HAND_AUTHOR if account == "someone_else" else IO_AUTHOR,
+            state="open",
+        )
+        mock_repository_host.get_prs_with_label.return_value = [pr]
+        if account == "unreadable":
+            mock_repository_host.engine_account_id.side_effect = RepositoryHostError("502 /user")
 
         await startup_manager.run_startup(sample_state)
 
