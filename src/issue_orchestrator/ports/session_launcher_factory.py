@@ -50,7 +50,9 @@ class SessionLauncherFactory(Protocol):
     """Builds a launcher from facade-owned callbacks.
 
     The implementation closes over the application dependencies; callers
-    pass only what the facade owns.
+    pass only what the facade owns. The terminal a launch prepares on, checks
+    for conflicts on, and starts on is not among them: the implementation
+    binds all three to one SessionManager (#9012).
     """
 
     def __call__(
@@ -58,7 +60,6 @@ class SessionLauncherFactory(Protocol):
         *,
         board_snapshot_provider: "BoardSnapshotProvider",
         blocked_item_triage: "BlockedItemTriageAgenda",
-        session_exists_fn: Callable[[str], bool],
         get_issue_machine: Callable[
             ["IssueProtocol"], Optional["IssueStateMachine"]
         ],

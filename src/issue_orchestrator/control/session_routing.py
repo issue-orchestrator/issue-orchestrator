@@ -587,6 +587,17 @@ def session_exists(
     return session_manager.exists(parse_session_ref(name, "exists", events))
 
 
+def session_presence(session_manager: SessionManager, events: EventSink) -> Callable[[str], bool]:
+    """:func:`session_exists` bound to *session_manager*, the one that prepares and starts each launch (#9012 review r3).
+
+    The composition root hands it to the session launcher beside
+    :func:`session_starter`, so a launch's conflict and duplicate checks ask
+    the very terminal its session would start on, and no caller can point
+    them at another.
+    """
+    return lambda name: session_exists(name, session_manager, events)
+
+
 def kill_session(name: str, session_manager: SessionManager, events: EventSink) -> None:
     """Stop a terminal session through SessionManager."""
     session_manager.stop(parse_session_ref(name, "kill", events))

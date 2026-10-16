@@ -326,7 +326,6 @@ class Orchestrator:
         return self.deps.session_launcher_factory(
             board_snapshot_provider=StateBoardSnapshotProvider(self.deps.board_snapshot_builder, lambda: self.state),
             blocked_item_triage=build_blocked_item_triage(self.config, self.deps, lambda: self.state),
-            session_exists_fn=lambda name: _session_exists(name, self.deps.session_manager, self.deps.events),
             get_issue_machine=self._get_issue_machine,
             get_session_machine=self._get_session_machine,
             get_review_machine=self._get_review_machine,

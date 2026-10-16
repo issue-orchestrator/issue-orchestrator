@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Callable, Optional
 from ..control.needs_human_block import SharedNeedsHumanBlock
 from ..control.recovery_review_hold import NO_RECOVERY_HOLDS, RecoveryHolds
 from ..control.session_launcher import SessionLauncher
-from ..control.session_routing import session_starter
+from ..control.session_routing import session_presence, session_starter
 from ..control.launch_prompt import NO_LAUNCH_PROMPT
 from ..ports.launch_prompt import LaunchPromptProvider
 from ..ports.provider_credentials import (
@@ -65,14 +65,15 @@ def build_session_launcher_factory(
 ) -> "SessionLauncherFactory":
     """Bind the application dependencies; return the facade-facing factory."""
 
-    # Each session starts on the SessionManager that prepared its command (#9012).
+    # One terminal per launch (#9012): the SessionManager that prepares its
+    # command is the one its conflict checks ask and its session starts on.
+    session_present = session_presence(session_manager, events)
     start_session = session_starter(session_manager, events)
 
     def _factory(
         *,
         board_snapshot_provider: "BoardSnapshotProvider",
         blocked_item_triage: "BlockedItemTriageAgenda",
-        session_exists_fn: Callable[[str], bool],
         get_issue_machine: Callable[
             ["IssueProtocol"], Optional["IssueStateMachine"]
         ],
@@ -87,7 +88,7 @@ def build_session_launcher_factory(
             config, events, repository_host, action_applier, session_manager,
             worktree_manager, working_copy, command_runner, session_output,
             manifest_downloader, tech_lead_authority,
-            session_exists_fn,
+            session_present,
             start_session, get_issue_machine, get_session_machine,
             get_review_machine, refresh_issue_fn, dependency_evaluator,
             claim_manager=claim_manager,
