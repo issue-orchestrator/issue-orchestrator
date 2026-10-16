@@ -39,7 +39,7 @@ from ..domain.tech_lead_run import (
     TechLeadRunScope,
     TechLeadRunTrigger,
 )
-from ..infra.tech_lead_proposal_facade import TechLeadPageNotObserved
+from ..infra.tech_lead_page_snapshot import TechLeadPageNotObserved
 from .engine_custody import off_loop
 from .web_session_context import WebOrchestratorDependency
 
@@ -135,7 +135,12 @@ async def request_tech_lead_run(
 
 @web_tech_lead_router.get("/api/tech-lead/page", response_model=TechLeadPageSectionPayload)
 async def get_tech_lead_page_section(orchestrator: WebOrchestratorDependency) -> TechLeadPageSectionPayload:
-    """This engine's section of the Control Center's Tech lead page (#7763)."""
+    """This engine's section of the Control Center's Tech lead page (#7763).
+
+    Served from the tick's last publication without the state lock (#8988), so
+    a planning cycle in flight never makes the Control Center's read time out.
+    Off the event loop only for the merge-held PRs' cached GitHub reads.
+    """
     if orchestrator is None:
         raise HTTPException(status_code=503, detail="Repository Engine is not running")
     try:

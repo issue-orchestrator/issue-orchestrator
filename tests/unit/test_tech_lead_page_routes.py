@@ -1,7 +1,8 @@
 """Engine side of the Tech lead page (#7763): both sides of the command boundary.
 
 * producer -> payload: the engine's section route serves the page facade's
-  projection, and the facade reads only engine-held state (no GitHub calls);
+  projection of what the tick last published (#8988), and the facade reads
+  only engine-held state (no GitHub calls);
 * command payload -> owner: the typed POST reaches the ONE approval owner and
   writes exactly the approval it records, and the retired rework-proposal
   routes are gone.
@@ -21,8 +22,10 @@ from issue_orchestrator.adapters.github.github_issue import GitHubIssue
 from issue_orchestrator.control.merge_hold_status import MergeHoldStatuses
 from issue_orchestrator.domain.scoped_rework import TechLeadProposalCommand
 from issue_orchestrator.domain.tech_lead_approval import APPROVED_LABEL, ApprovalVerdictKind
+from issue_orchestrator.infra.tech_lead_page_snapshot import TechLeadPageSnapshot
 from issue_orchestrator.infra.tech_lead_proposal_facade import (
     proposal_command,
+    publish_tech_lead_page,
     tech_lead_page_section,
 )
 from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthorityStore
@@ -67,6 +70,7 @@ def _engine(issue: GitHubIssue, scope_label: str | None = None):
     authority = InMemoryTechLeadAuthorityStore()
     orchestrator = SimpleNamespace(
         state_lock=threading.RLock(),
+        tech_lead_page=TechLeadPageSnapshot(),
         config=SimpleNamespace(filtering=SimpleNamespace(label=scope_label)),
         state=SimpleNamespace(tech_lead_approval_scan_at=123.0),
         deps=SimpleNamespace(
@@ -170,7 +174,7 @@ class _WeakReferenceable:
         self.__dict__.update(fields)
 
 
-def _page_engine(approvals):
+def _page_engine(approvals, host=None):
     from issue_orchestrator.control.label_manager import LabelManager
     from issue_orchestrator.infra.config import Config
 
@@ -180,9 +184,11 @@ def _page_engine(approvals):
     claims.list_needs_human_causes.return_value = ()
     return _WeakReferenceable(
         state_lock=threading.RLock(),
+        tech_lead_page=TechLeadPageSnapshot(),
         config=Config(repo=REPO),
         state=SimpleNamespace(
             cached_scope_issues=[], cached_queue_issues=[], last_health_review_at=0.0, integration_delivery=None,
+            tech_lead_approval_scan_at=123.0,
         ),
         tech_lead_run_history=history,
         deps=SimpleNamespace(
@@ -193,10 +199,16 @@ def _page_engine(approvals):
             standing_rulings=rulings_owner(),
             fact_gatherer=SimpleNamespace(board_publisher=None),
             action_liveness=SimpleNamespace(owner=SimpleNamespace(parked=lambda: ())),
-            repository_host=MagicMock(),
+            repository_host=host or MagicMock(),
             merge_hold_statuses=MergeHoldStatuses(host=MagicMock(), needs_human_label="needs-human"),
         ),
     )
+
+
+def _ticked(orchestrator):
+    """The engine after a tick: it published what the page is built from."""
+    publish_tech_lead_page(orchestrator)
+    return orchestrator
 
 
 def test_page_facade_reads_engine_state_only() -> None:
@@ -218,6 +230,7 @@ def test_page_facade_reads_engine_state_only() -> None:
     liveness = SimpleNamespace(owner=SimpleNamespace(parked=lambda: ()))
     orchestrator = _WeakReferenceable(
         state_lock=threading.RLock(),
+        tech_lead_page=TechLeadPageSnapshot(),
         config=Config(repo=REPO),
         state=SimpleNamespace(
             cached_scope_issues=[], cached_queue_issues=[], last_health_review_at=0.0,
@@ -240,7 +253,7 @@ def test_page_facade_reads_engine_state_only() -> None:
             merge_hold_statuses=MergeHoldStatuses(host=host, needs_human_label="needs-human"),
         ),
     )
-    section = tech_lead_page_section(orchestrator)
+    section = tech_lead_page_section(_ticked(orchestrator))
     assert [(item.number, item.kind) for item in section.waiting] == [(600, "proposal"), (700, "delivery_pr")]
     assert host.mock_calls == []
 
@@ -250,9 +263,9 @@ def test_an_unobserved_scope_is_unavailable_never_an_all_clear(client, tmp_path)
     """#7763 review r10 F1: before its first complete approval-scope
     observation the engine answers 503, which the Control Center counts as
     not reporting; afterwards an empty scope is a real, empty section."""
-    from issue_orchestrator.execution.control_center_tech_lead import ControlCenterTechLead
+    from issue_orchestrator.execution.control_center_tech_lead import ControlCenterTechLead, TechLeadSectionMemory
     from issue_orchestrator.infra.repo_registry import RegisteredRepo
-    from issue_orchestrator.infra.tech_lead_proposal_facade import TechLeadPageNotObserved
+    from issue_orchestrator.infra.tech_lead_page_snapshot import TechLeadPageNotObserved
     from issue_orchestrator.ports.repository_engine_supervisor import (
         MultiInstanceStatus,
         SupervisorStatus,
@@ -263,8 +276,10 @@ def test_an_unobserved_scope_is_unavailable_never_an_all_clear(client, tmp_path)
     orchestrator = _page_engine(approvals)
     engine.tech_lead_page_section.side_effect = lambda: tech_lead_page_section(orchestrator)
 
-    with pytest.raises(TechLeadPageNotObserved):
+    with pytest.raises(TechLeadPageNotObserved):  # no tick yet
         tech_lead_page_section(orchestrator)
+    with pytest.raises(TechLeadPageNotObserved):  # a tick, but the scope is unobserved
+        tech_lead_page_section(_ticked(orchestrator))
     response = http.get("/api/tech-lead/page")
     assert response.status_code == 503
 
@@ -277,14 +292,17 @@ def test_an_unobserved_scope_is_unavailable_never_an_all_clear(client, tmp_path)
     supervisor.status_all_instances.side_effect = lambda path, *a, **k: MultiInstanceStatus(
         repo_root=str(path), instances=[SupervisorStatus(state="running", port=8001)])
     (tmp_path / "a").mkdir()
-    cc = ControlCenterTechLead(supervisor, lambda: [RegisteredRepo(path=str(tmp_path / "a"), name="a")], _Transport())
+    cc = ControlCenterTechLead(supervisor, lambda: [RegisteredRepo(path=str(tmp_path / "a"), name="a")], _Transport(),
+                               TechLeadSectionMemory())
 
     page = cc.page()
-    assert page.unreported_count == 1 and page.waiting_count == 0
+    assert page.unreported_count == 1 and page.waiting_count is None  # unknown, never 0 (#8988)
 
     approvals.record_scope((), {})  # the first observation: genuinely empty
+    publish_tech_lead_page(orchestrator)  # ...which the next tick publishes
     assert http.get("/api/tech-lead/page").status_code == 200
-    assert cc.page().unreported_count == 0
+    page = cc.page()
+    assert page.unreported_count == 0 and page.waiting_count == 0
 
 
 
@@ -314,7 +332,7 @@ def test_a_known_proposal_stripped_of_everything_still_waits_on_the_page() -> No
     edited = GitHubIssue(number=730, repo=REPO, title="p", labels=("agent:backend",), body="edited")
     approvals.record_scope((edited,), {})
 
-    section = tech_lead_page_section(_page_engine(approvals))
+    section = tech_lead_page_section(_ticked(_page_engine(approvals)))
 
     assert section.waiting_count == 1 and [item.number for item in section.waiting] == [730]
 
@@ -326,9 +344,11 @@ def test_a_scope_marked_unavailable_after_a_success_is_unreported(client) -> Non
     orchestrator = _page_engine(approvals)
     engine.tech_lead_page_section.side_effect = lambda: tech_lead_page_section(orchestrator)
     approvals.record_scope((), {})
+    publish_tech_lead_page(orchestrator)
     assert http.get("/api/tech-lead/page").status_code == 200
 
     approvals.mark_scope_unavailable()  # the next refresh started and failed
+    publish_tech_lead_page(orchestrator)  # at the end of that tick
 
     assert http.get("/api/tech-lead/page").status_code == 503
 
@@ -349,3 +369,71 @@ def test_a_command_for_another_engines_proposal_writes_nothing(client, decision)
     assert host.writes == []
     assert approvals.records.load_operator_approval(506) is None
     assert not approvals.is_declined(506)
+
+
+def test_the_page_is_read_without_the_state_lock_a_tick_holds(client) -> None:
+    """#8988: a planning cycle holds the state lock for the whole tick; the page
+    route answers from the last publication meanwhile instead of waiting out
+    the cycle (which made the Control Center's 3 s read time out)."""
+    from tests.unit.threading_helpers import join_or_fail, run_in_thread
+
+    http, engine = client
+    approvals = make_approvals()
+    approvals.record_scope((GitHubIssue(number=640, repo=REPO, title="p", labels=GATED),), {})
+    orchestrator = _ticked(_page_engine(approvals))
+    engine.tech_lead_page_section.side_effect = lambda: tech_lead_page_section(orchestrator)
+
+    with orchestrator.state_lock:  # a tick in flight
+        reader, answer = run_in_thread(http.get, "/api/tech-lead/page")
+        join_or_fail(reader, 10, label="the page read while a tick holds the state lock")
+
+    response = answer.unwrap()
+    assert response.status_code == 200 and [item["number"] for item in response.json()["waiting"]] == [640]
+
+
+def test_the_section_reports_when_it_was_captured() -> None:
+    """Its generated_at is the publication's: the page's "as of" (#8988)."""
+    from datetime import datetime
+
+    approvals = make_approvals()
+    approvals.record_scope((), {})
+    orchestrator = _ticked(_page_engine(approvals))
+    first = tech_lead_page_section(orchestrator).generated_at
+
+    assert tech_lead_page_section(orchestrator).generated_at == first  # a read is not a capture
+    publish_tech_lead_page(orchestrator)
+    assert datetime.fromisoformat(tech_lead_page_section(orchestrator).generated_at) >= datetime.fromisoformat(first)
+
+
+def test_a_capture_that_fails_withholds_the_page_and_spares_the_tick(caplog) -> None:
+    """A page the engine cannot build is "not reporting", and never the last
+    publication served as if current; the tick that published carries on."""
+    from issue_orchestrator.infra.tech_lead_page_snapshot import TechLeadPageNotObserved
+
+    approvals = make_approvals()
+    approvals.record_scope((), {})
+    orchestrator = _ticked(_page_engine(approvals))
+    tech_lead_page_section(orchestrator)
+    orchestrator.deps.standing_rulings = SimpleNamespace(synced=MagicMock(side_effect=OSError("disk gone")))
+
+    publish_tech_lead_page(orchestrator)  # raises nothing into the tick
+
+    with pytest.raises(TechLeadPageNotObserved, match="disk gone"):
+        tech_lead_page_section(orchestrator)
+    assert "could not capture the Tech lead page" in caplog.text
+
+
+def test_a_decision_republishes_the_page_before_the_lock_is_released() -> None:
+    """#8988: the refresh that follows Decline reads a page without the
+    proposal, not the tick's publication from before the decision."""
+    evidence = FakeApprovalEvidence()
+    approvals = make_approvals(evidence)
+    proposal = GitHubIssue(number=507, repo=REPO, title="p", labels=GATED)
+    approvals.record_scope((proposal,), {})
+    orchestrator = _ticked(_page_engine(approvals, host=_Host(evidence, proposal)))
+    assert [item.number for item in tech_lead_page_section(orchestrator).waiting] == [507]
+
+    outcome = proposal_command(orchestrator, TechLeadProposalCommand(507, "decline"))
+
+    assert outcome.outcome == "declined"
+    assert tech_lead_page_section(orchestrator).waiting == []

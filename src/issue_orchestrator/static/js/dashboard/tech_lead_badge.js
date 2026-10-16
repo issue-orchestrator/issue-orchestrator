@@ -20,7 +20,8 @@ function initTechLeadBadge(win, doc, contractJson) {
         if (!data || event.source !== win.parent || data.type !== 'cc-tech-lead-waiting') return;
         // The CC's own wording: it knows whether every repository reported.
         button.textContent = data.text;
-        button.dataset.waiting = String(data.count);
+        // An unknown count is never "0" (#8988): the badge stays highlighted.
+        button.dataset.waiting = data.count === null ? 'unknown' : String(data.count);
     });
     button.addEventListener('click', () => post({ type: 'cc-open-tech-lead' }));
     doc.addEventListener('click', event => {

@@ -64,7 +64,8 @@ function updateTechLeadBadges() {
     document.getElementById('techLeadNavCount').textContent = text;
     const badge = document.getElementById('techLeadHeaderBadge');
     badge.textContent = text;
-    badge.dataset.waiting = String(count);
+    // An unknown count is never "0" (#8988): the badge stays highlighted.
+    badge.dataset.waiting = count === null ? 'unknown' : String(count);
     // The embedded repo dashboard hides this header; it shows the same count.
     const iframe = document.getElementById('activityIframe');
     try {

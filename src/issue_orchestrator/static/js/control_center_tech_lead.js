@@ -40,8 +40,11 @@
     let rootNode = null;
 
     // An unreported repository's backlog is unknown: never an all-clear then.
+    // A ``null`` count means a running repository did not report (#8988): the
+    // total is not a number, so no number is shown.
     function badgeText(count, unreported = 0) {
         const repos = unreported === 1 ? '1 repository' : `${unreported} repositories`;
+        if (count === null) return `What waits on you is unknown; ${repos} not reporting`;
         if (unreported) return `${count} waiting on you; ${repos} not reporting`;
         if (!count) return 'Nothing waiting on you';
         return `${count} waiting on you`;
@@ -55,7 +58,7 @@
     // first read has finished: nothing is known yet.
     function badgeState() {
         if (latest) return { count: latest.waiting_count, text: badgeText(latest.waiting_count, latest.unreported_count) };
-        return unavailable ? { count: 0, text: UNAVAILABLE_TEXT } : null;
+        return unavailable ? { count: null, text: UNAVAILABLE_TEXT } : null;
     }
 
     function showUnavailable() {
@@ -73,6 +76,14 @@
         // The focused card went with the list: focus its lane heading, as
         // paint() does for an item that is gone (#7763 review r18 F2).
         if (place) restoreFocus(place);
+    }
+
+    // A section its running engine did not report now is what it last
+    // reported: wherever it shows, it says so, with its as-of time (#8988).
+    function asOf(repo) {
+        if (repo.availability !== 'last_known') return '';
+        const at = escapeHtml(repo.section.generated_at);
+        return ` <span class="tl-as-of">(last reported <time datetime="${at}">${at}</time>)</span>`;
     }
 
     function commandEndpoint(repoKey) {
@@ -144,7 +155,7 @@
         return `<li><article class="tl-card tl-kind-${escapeHtml(item.kind)}" tabindex="-1" aria-labelledby="${headingId}"
                 data-repository="${escapeHtml(repo.section.repository)}" data-number="${escapeHtml(item.number)}" data-focus-key="${escapeHtml(`card:${key}`)}">
             <p class="tl-card-meta"><span class="tl-kind">${escapeHtml(KIND_LABELS[item.kind])}</span>
-                · <span class="tl-repo">${escapeHtml(repo.name)}</span>
+                · <span class="tl-repo">${escapeHtml(repo.name)}</span>${asOf(repo)}
                 ${item.waiting_since ? `· waiting since <time datetime="${escapeHtml(item.waiting_since)}">${escapeHtml(item.waiting_since)}</time>` : ''}</p>
             <h3 id="${headingId}"><a href="${escapeHtml(item.link)}" target="_blank" rel="noopener" data-focus-key="${escapeHtml(`link:${key}`)}">#${escapeHtml(item.number)} ${escapeHtml(item.title)}</a></h3>
             <p class="tl-status tl-status-${escapeHtml(item.status)}"><strong>Status:</strong> ${escapeHtml(item.status_label)}</p>
@@ -163,14 +174,14 @@
             for (const item of repo.section.doing) {
                 const target = item.target_number ? ` <a href="${escapeHtml(item.link)}" target="_blank" rel="noopener" data-focus-key="${escapeHtml(`doing:${repo.repo_key}:${item.decision_id}`)}">#${escapeHtml(item.target_number)}</a>` : '';
                 rows.push(`<li><span class="tl-outcome tl-outcome-${escapeHtml(item.outcome)}">${escapeHtml(item.outcome_label)}</span>
-                    ${escapeHtml(item.action_label)}${target} · ${escapeHtml(repo.name)}
+                    ${escapeHtml(item.action_label)}${target} · ${escapeHtml(repo.name)}${asOf(repo)}
                     <span class="tl-when">${escapeHtml(item.at)}</span>
                     ${item.reason ? `<span class="tl-reason">${escapeHtml(item.reason)}</span>` : ''}</li>`);
             }
             for (const park of repo.section.parked) {
                 const target = park.issue_number ? ` <a href="${escapeHtml(park.link)}" target="_blank" rel="noopener" data-focus-key="${escapeHtml(`parked:${repo.repo_key}:${park.action}:${park.subject}`)}">#${escapeHtml(park.issue_number)}</a>` : ` ${escapeHtml(park.subject)}`;
                 rows.push(`<li class="tl-parked"><span class="tl-outcome tl-outcome-parked">Parked${park.escalated ? ', escalated' : ''}</span>
-                    ${escapeHtml(park.action)}${target} · ${escapeHtml(repo.name)}
+                    ${escapeHtml(park.action)}${target} · ${escapeHtml(repo.name)}${asOf(repo)}
                     <span class="tl-when">since ${escapeHtml(park.parked_since)}</span>
                     <span class="tl-reason">${escapeHtml(park.reason)}</span></li>`);
             }
@@ -191,7 +202,7 @@
             const cases = section.case_files.map(item =>
                 `<li><a href="${escapeHtml(item.link)}" target="_blank" rel="noopener" data-focus-key="${escapeHtml(`case:${repo.repo_key}:${item.issue_number}`)}">#${escapeHtml(item.issue_number)} ${escapeHtml(item.title)}</a>
                  ${item.area ? `<span class="tl-area">${escapeHtml(item.area)}</span>` : ''} · ${escapeHtml(item.comment_count)} observations</li>`).join('');
-            blocks.push(`<div class="tl-watch-repo"><h3>${escapeHtml(repo.name)}</h3>
+            blocks.push(`<div class="tl-watch-repo"><h3>${escapeHtml(repo.name)}${asOf(repo)}</h3>
                 <p><strong>Health review:</strong> ${escapeHtml(section.health_review.label)}</p>
                 <h4>Triaged blocked items</h4>${triaged ? `<ul class="tl-list">${triaged}</ul>` : '<p class="tl-empty">None.</p>'}
                 <h4>Pattern case files</h4>${cases ? `<ul class="tl-list">${cases}</ul>` : '<p class="tl-empty">None.</p>'}</div>`);
@@ -202,7 +213,7 @@
     function renderRunStrip(payload) {
         const runs = payload.repos
             .filter(repo => repo.section && repo.section.run.has_run)
-            .map(repo => `${escapeHtml(repo.name)}: ${escapeHtml(repo.section.run.phase_label)} — ${escapeHtml(repo.section.run.label)}`
+            .map(repo => `${escapeHtml(repo.name)}${asOf(repo)}: ${escapeHtml(repo.section.run.phase_label)} — ${escapeHtml(repo.section.run.label)}`
                 + (repo.section.run.started_at ? ` (${escapeHtml(repo.section.run.started_at)})` : ''));
         return runs.length ? `Latest tech-lead run · ${runs.join(' · ')}` : 'No tech-lead run recorded yet.';
     }
@@ -210,7 +221,7 @@
     function renderUnavailable(payload) {
         const rows = payload.repos
             .filter(repo => repo.availability !== 'available')
-            .map(repo => `<li><strong>${escapeHtml(repo.name)}</strong>: ${escapeHtml(repo.detail)}</li>`);
+            .map(repo => `<li><strong>${escapeHtml(repo.name)}</strong>: ${escapeHtml(repo.detail)}${asOf(repo)}</li>`);
         return rows.length ? `<ul class="tl-unavailable" aria-label="Repositories not reporting">${rows.join('')}</ul>` : '';
     }
 
@@ -218,9 +229,14 @@
         const waiting = waitingEntries(payload);
         // The count is the payload's: an approved proposal the engine is acting
         // on stays listed with its status, but it no longer waits on you.
+        // ``null``: a running repository did not report now, so the count is
+        // unknown and the heading says so instead of a number (#8988).
+        const unknown = payload.waiting_count === null;
         let clear = '';
-        if (payload.waiting_count === 0 && payload.unreported_count > 0) {
-            clear = '<p class="tl-empty">Nothing reported as waiting, but not every repository reported (see below): its backlog is unknown.</p>';
+        if (unknown) {
+            clear = '<p class="tl-empty">A running repository did not report just now (see above), so what waits on you is not fully known.</p>';
+        } else if (payload.waiting_count === 0 && payload.unreported_count > 0) {
+            clear = '<p class="tl-empty">Nothing reported as waiting, but not every repository reported (see above): its backlog is unknown.</p>';
         } else if (payload.waiting_count === 0) {
             clear = '<p class="tl-empty tl-all-clear">Nothing is waiting on you. The tech lead will list proposals, merge-ready PRs and hand-overs here.</p>';
         }
@@ -230,7 +246,7 @@
         return {
             runStrip: renderRunStrip(payload),
             waiting: renderUnavailable(payload) + waitingHtml,
-            waitingHeading: `Waiting on you (${payload.waiting_count})`,
+            waitingHeading: `Waiting on you (${unknown ? 'unknown' : payload.waiting_count})`,
             doing: renderDoing(payload),
             watching: renderWatching(payload),
         };
