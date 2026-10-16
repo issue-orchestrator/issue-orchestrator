@@ -9,6 +9,12 @@ adds the approval label. The integration owner merges the PR only at a head
 carrying such a receipt written under io's own credential; any other head
 goes back to io's review.
 
+Adoption is the right key: a PR io did not open
+(:class:`~.pull_request_provenance.PullRequestProvenance`, never its body's
+marker) is merged into the effort only once adopted, and adoption drops every
+approval given before it - so every approval the merge gate can act on, on a
+PR io did not open, is given here, to an adopted PR.
+
 The transition is idempotent and ordered: an exact receipt already written
 under io's credential satisfies the receipt step (a retry never posts it
 twice), and ANY failure - reading the PR, the receipt, writing either - halts
