@@ -103,7 +103,7 @@ def test_start_runs_source_from_separate_repo_root(
     )
 
     process = OrchestratorProcess(config, repo_root, source_root=source_root)
-    captured = _capture_engine_launch(monkeypatch)
+    captured = _capture_engine_launch(monkeypatch, tmp_path)
 
     try:
         process.start(max_issues=1)
@@ -142,7 +142,7 @@ def test_an_engine_registers_its_checkout_in_a_registry_of_its_own(
     )
     overrides = {"ISSUE_ORCHESTRATOR_CONFIG_DIR": str(operator_registry)} if overridden else {}
     process = OrchestratorProcess(config, test_repo_clone, env_overrides=overrides)
-    captured = _capture_engine_launch(monkeypatch)
+    captured = _capture_engine_launch(monkeypatch, tmp_path)
 
     try:
         process.start(max_issues=1)
@@ -164,9 +164,18 @@ def test_an_engine_registers_its_checkout_in_a_registry_of_its_own(
     assert not engine_registry.exists()
 
 
-def _capture_engine_launch(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
-    """Replace the engine launch: return what ``start`` would run it with."""
+def _capture_engine_launch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> dict[str, object]:
+    """Replace the engine launch: return what ``start`` would run it with.
+
+    Its logs go to ``tmp_path``, not the machine-wide e2e log directory that
+    every concurrent run prunes.
+    """
     captured: dict[str, object] = {}
+    log_dir = tmp_path / "e2e-logs"
+    log_dir.mkdir()
+    monkeypatch.setattr("tests.e2e.fixtures.orchestrator_process.E2E_LOG_DIR", log_dir)
 
     class FakeProcess:
         pid = 12345
