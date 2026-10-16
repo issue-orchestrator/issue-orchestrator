@@ -206,8 +206,8 @@ def test_a_sweep_with_nothing_to_audit_settles_owed_effects_before_it_is_green(
 
     from issue_orchestrator.contracts.improver_findings import FINDINGS_FILE, ImproverFindings
     from issue_orchestrator.contracts.improver_run import ImproverRunRecord
-    from issue_orchestrator.control.improver_effects import planned_effects
-    from tests.unit.improver_support import example
+    from issue_orchestrator.control.improver_effects import EffectIdentity, planned_effects
+    from tests.unit.improver_support import FakeEngineSource, example
 
     _, porchpin = two_engines
     store, host = MemoryRunStore(tmp_path / "store"), FakeIssueHost()
@@ -219,7 +219,9 @@ def test_a_sweep_with_nothing_to_audit_settles_owed_effects_before_it_is_green(
         run_id="manual", started_at=NOW, finished_at=NOW, outcome=RunOutcome.ACCEPTED, detail="",
         engine_id=porchpin.engine_id, audited_repo=porchpin.repo, outputs_repo=OUTPUTS,
         run_dir=str(run_dir), engine_commit=doc["engine_commit"],
-        effects=planned_effects(ImproverFindings.model_validate_json(json.dumps(doc)), porchpin),
+        effects=planned_effects(
+            ImproverFindings.model_validate_json(json.dumps(doc)), EffectIdentity(porchpin, FakeEngineSource())
+        ),
     ))
     stopped = Inventory(porchpin, written={porchpin.engine_id: NOW - td(minutes=5)})
     agent = EmptyFindingsAgent()
