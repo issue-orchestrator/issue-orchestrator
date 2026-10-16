@@ -308,10 +308,10 @@ class OrchestratorProcess:
         self._orchestrator_log_file = orchestrator_log_file
         self._log_handle = open(self._log_file, "w")
 
-        # Clean up old log files (keep last 10)
+        # Clean up old log files (keep last 10); a concurrent run may prune them too
         log_files = sorted(E2E_LOG_DIR.glob("e2e-*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
         for old_log in log_files[10:]:
-            old_log.unlink()
+            old_log.unlink(missing_ok=True)
 
         # Print debug paths upfront for troubleshooting
         worktree_dir = Path("/tmp/e2e-worktrees")  # E2E worktree location
