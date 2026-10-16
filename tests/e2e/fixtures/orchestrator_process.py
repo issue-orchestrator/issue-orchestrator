@@ -5,6 +5,7 @@ Manages the orchestrator subprocess lifecycle: start, stop, log capture.
 
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -117,6 +118,8 @@ class OrchestratorProcess:
         self._log_handle: "open | None" = None
         self._config_dir: Path | None = None
         self._config_path: Path | None = None
+        # The io repo registry the engine registers its checkout in.
+        self._registry_dir: Path | None = None
         self._last_log_time: float | None = None
 
     def write_e2e_config(self) -> Path:
@@ -397,6 +400,16 @@ class OrchestratorProcess:
         env["ORCHESTRATOR_WORKTREE_PER_SESSION"] = os.environ.get("E2E_WORKTREE_PER_SESSION", "1")
         env["ORCHESTRATOR_DISABLE_WORKTREE_REUSE"] = os.environ.get("E2E_DISABLE_WORKTREE_REUSE", "1")
         env.update(self.env_overrides)
+        # Register the engine's checkout in a registry of its own, never the
+        # operator's (#9529): get_test_repo refuses every repository a checkout
+        # there names, and the exam and onboarding engines run from clones of
+        # the test repository itself, so registering them there would refuse
+        # this run's own target, and every later run's.
+        if self._registry_dir is None:
+            self._registry_dir = Path(
+                tempfile.mkdtemp(prefix=f"e2e-engine-registry-{os.getpid()}-")
+            )
+        env["ISSUE_ORCHESTRATOR_CONFIG_DIR"] = str(self._registry_dir)
         # Ensure worktrees are created from main (which has all our test fixes)
         env["ORCHESTRATOR_WORKTREE_BASE_BRANCH"] = "main"
         # Skip pre-push hooks in e2e tests - test scripts create trivial changes that don't need validation
@@ -551,6 +564,9 @@ class OrchestratorProcess:
                 self._config_dir = None
             except OSError:
                 pass
+        if self._registry_dir is not None:
+            shutil.rmtree(self._registry_dir, ignore_errors=True)
+            self._registry_dir = None
 
     def _cleanup_log_tailers(self) -> None:
         """Stop lingering session.log tail processes from tmux pipe-pane.

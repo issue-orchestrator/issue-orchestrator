@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from issue_orchestrator.infra.repo_registry import add_repo
+from issue_orchestrator.infra.repo_registry import add_repo, registry_file, remove_repo
 from tests.e2e.fixtures import github_utils
 from tests.e2e.fixtures.github_utils import (
     E2ETargetRepoError,
@@ -120,13 +120,32 @@ def test_e2e_test_repo_naming_a_registered_checkouts_repository_is_refused(
         get_test_repo()
 
 
-def test_a_deleted_registered_checkout_manages_nothing(monkeypatch, tmp_path):
+@pytest.mark.parametrize("configured", [MANAGED, "someone/io-e2e-sandbox"])
+def test_a_missing_registered_checkout_is_refused_not_skipped(
+    monkeypatch, tmp_path, configured
+):
+    """An engine can outlive its checkout, so a missing one proves nothing
+    about what it managed: any target is refused, not only its old one."""
     checkout = _register_checkout(tmp_path, "porchpin")
     checkout.rmdir()
     _origins(monkeypatch, {checkout: MANAGED})
-    monkeypatch.setenv("E2E_TEST_REPO", MANAGED)
+    monkeypatch.setenv("E2E_TEST_REPO", configured)
 
-    assert get_test_repo() == MANAGED
+    with pytest.raises(E2ETargetRepoError, match="no longer exists") as refusal:
+        get_test_repo()
+
+    _assert_names_the_unidentified_checkout(str(refusal.value), checkout)
+
+
+def test_unregistering_a_missing_checkout_lifts_its_refusal(monkeypatch, tmp_path):
+    checkout = _register_checkout(tmp_path, "porchpin")
+    checkout.rmdir()
+    _origins(monkeypatch, {})
+    monkeypatch.setenv("E2E_TEST_REPO", "someone/io-e2e-sandbox")
+
+    assert remove_repo(checkout)
+
+    assert get_test_repo() == "someone/io-e2e-sandbox"
 
 
 def test_a_registered_checkout_with_an_unreadable_origin_is_refused(monkeypatch, tmp_path):
@@ -134,10 +153,19 @@ def test_a_registered_checkout_with_an_unreadable_origin_is_refused(monkeypatch,
     _origins(monkeypatch, {checkout: None})
     monkeypatch.setenv("E2E_TEST_REPO", "someone/io-e2e-sandbox")
 
-    with pytest.raises(E2ETargetRepoError, match="cannot prove") as refusal:
+    with pytest.raises(E2ETargetRepoError, match="no readable GitHub origin") as refusal:
         get_test_repo()
 
-    assert str(checkout) in str(refusal.value)
+    _assert_names_the_unidentified_checkout(str(refusal.value), checkout)
+
+
+def _assert_names_the_unidentified_checkout(diagnostic: str, checkout: Path) -> None:
+    """The refusal names the checkout, the registry listing it, and the way out."""
+    assert str(checkout) in diagnostic
+    assert str(registry_file()) in diagnostic
+    assert "cannot prove" in diagnostic
+    assert "Restore the checkout" in diagnostic
+    assert "remove its entry from the registry" in diagnostic
 
 
 def test_an_unreadable_origin_is_refused_rather_than_trusted(monkeypatch):

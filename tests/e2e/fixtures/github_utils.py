@@ -6,7 +6,7 @@ from pathlib import Path
 
 from issue_orchestrator.adapters.github import resolve_github_token
 from issue_orchestrator.entrypoints.setup_wizard_common import detect_repo
-from issue_orchestrator.infra.repo_registry import list_repos
+from issue_orchestrator.infra.repo_registry import list_repos, registry_file
 from tests.fixtures.live_agent_cli import (
     is_claude_authenticated,
     is_claude_available,
@@ -139,24 +139,33 @@ def get_registered_repos() -> dict[str, Path]:
     engine registers the harness checkout (whose origin is this repository's)
     while naming the test repository only in a temporary config.
 
-    A registered checkout that no longer exists hosts no engine and is
-    skipped. One whose origin is unreadable is refused rather than guessed.
+    A registered checkout whose repository cannot be read, because it no
+    longer exists or has no GitHub origin, is refused rather than skipped:
+    the registry records only the path, and an engine can outlive a checkout
+    that was deleted, moved or unmounted. The suite's own engines register in
+    a registry of their own (``OrchestratorProcess``), never this one.
     """
     repos: dict[str, Path] = {}
     for registered in list_repos():
         checkout = Path(registered.path)
         if not checkout.exists():
-            continue
+            raise _unidentified_registered_checkout(checkout, "no longer exists")
         repo = detect_repo(cwd=checkout)
         if repo is None:
-            raise E2ETargetRepoError(
-                f"Cannot read a GitHub origin remote for {checkout}, which the "
-                "io repo registry lists, so the live e2e suite cannot prove "
-                "E2E_TEST_REPO is not a repository an io engine manages. "
-                "Unregister the checkout if no engine manages it."
+            raise _unidentified_registered_checkout(
+                checkout, "has no readable GitHub origin remote"
             )
         repos.setdefault(repo.casefold(), checkout)
     return repos
+
+
+def _unidentified_registered_checkout(checkout: Path, why: str) -> E2ETargetRepoError:
+    return E2ETargetRepoError(
+        f"The io repo registry ({registry_file()}) lists {checkout}, which {why}, "
+        "so the live e2e suite cannot prove E2E_TEST_REPO is not the repository "
+        "an io engine manages from it. Restore the checkout, or, once no io "
+        "engine runs from it, remove its entry from the registry."
+    )
 
 
 def resolve_test_repo(

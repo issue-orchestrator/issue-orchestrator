@@ -82,7 +82,8 @@ make test-tech-lead-exam EXAM_CASE=U EXAM_ENGINE_REF=<candidate> EXAM_BASE_REF=<
 
 Like the rest of `tests/e2e`, the exam runs only against `E2E_TEST_REPO`, which is
 required and may not be this checkout's own repository or any repository in the io repo
-registry (an io engine manages each), and only with the `IO_E2E=1`
+registry (an io engine manages each; a registered checkout that is missing or has no GitHub
+origin refuses every target until restored or unregistered), and only with the `IO_E2E=1`
 opt-in that `make test-tech-lead-exam` supplies (#9523). Agent sessions can never run it.
 
 Case U is the upgrade check to run before merging a feature branch into `main`. The engine

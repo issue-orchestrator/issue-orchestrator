@@ -131,7 +131,11 @@ that, each of three safeguards fails closed on its own (#9523):
 - **Never the production repository.** `E2E_TEST_REPO` is required and must
   not be this checkout's own `origin` repository, nor that of any checkout in
   the io repo registry (`~/.config/issue-orchestrator/repos.json`), since an
-  io engine manages each of them (#9529). There is no git-remote fallback.
+  io engine manages each of them (#9529). A registered checkout that is
+  missing or has no GitHub origin refuses every target until it is restored
+  or, once no engine runs from it, unregistered. The suite's own engines
+  register in a per-engine registry, never the operator's. There is no
+  git-remote fallback.
 - **Cleanup removes only what a scope proves is this run's.** Every PR close,
   branch delete, issue close and label delete goes through one owner
   (`tests/e2e/fixtures/artifact_cleanup.py`). A run closes only the issues it
