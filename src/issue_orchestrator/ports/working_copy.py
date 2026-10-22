@@ -237,7 +237,10 @@ class WorkingCopy(ExactGit, Protocol):
         ...
 
     def list_remote_branches(self, repo_root: Path, remote: str = "origin") -> list[str]:
-        """List remote branches.
+        """The branches the remote holds now, read from the remote itself.
+
+        Not the local remote-tracking refs, which nothing prunes: they can name
+        branches the remote does not have and miss ones it does (#9550).
 
         Args:
             repo_root: Path to the git repository root.
@@ -245,6 +248,10 @@ class WorkingCopy(ExactGit, Protocol):
 
         Returns:
             List of branch names (may include remote prefix).
+
+        Raises:
+            GitError: the remote could not be read. Never an empty list in its
+                place: callers scope PRs to an issue's active branch by it.
         """
         ...
 
