@@ -448,10 +448,15 @@ class GitWorkingCopy:
         remote never had, which hid the issue's real PR as a "prior attempt"
         from review discovery and the tech lead's review release (#9550).
 
-        Raises :class:`GitError` when the remote cannot be read: an empty list
-        would read as "no issue has a branch" and admit a prior attempt's PR.
+        It is a network read, so it presents the configured transport
+        authentication (a GitHub App installation token) as fetch and push do,
+        in the environment, never in argv. A failure to prepare that
+        authentication propagates, as does :class:`GitError` when the remote
+        cannot be read: an empty list would read as "no issue has a branch" and
+        admit a prior attempt's PR.
         """
-        result = self._run_git(repo_root, ["ls-remote", "--heads", remote], timeout_s=60)
+        env = git_push_ops.prepare_git_auth_env(self._git_auth, remote=remote)
+        result = self._run_git(repo_root, ["ls-remote", "--heads", remote], timeout_s=60, env=env)
         heads: list[str] = []
         for line in result.stdout.splitlines():
             ref = line.partition("\t")[2]

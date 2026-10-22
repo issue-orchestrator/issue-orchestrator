@@ -11,8 +11,7 @@ console = Console()
 
 def cmd_audit(args: argparse.Namespace) -> int:
     """Audit the queue - show why issues are queued or skipped."""
-    from ..execution.git_working_copy import GitWorkingCopy
-    from ..execution.providers import create_repository_host
+    from ..execution.providers import create_repository_access
     from ..infra.analysis import extract_issue_branches
     from ..infra.audit import audit_queue, print_audit
 
@@ -33,15 +32,14 @@ def cmd_audit(args: argparse.Namespace) -> int:
         return 1
 
     # Run audit (no state = fresh start, no session history)
-    issue_tracker = create_repository_host(config.repo, config=config)
-    working_copy = GitWorkingCopy()
+    repository = create_repository_access(config.repo, config)
     issue_branches = extract_issue_branches(
-        working_copy.list_remote_branches(config.repo_root)
+        repository.working_copy.list_remote_branches(config.repo_root)
     )
     entries = audit_queue(
         config,
         state=None,
-        issue_tracker=issue_tracker,
+        issue_tracker=repository.host,
         issue_branches=issue_branches,
         known_proposals=_stored_known_proposals(config),
     )
