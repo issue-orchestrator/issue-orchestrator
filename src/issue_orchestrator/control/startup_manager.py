@@ -48,7 +48,6 @@ from ..domain.models import (
     PendingReview,
     SessionHistoryEntry,
     Session,
-    ORCHESTRATOR_PR_MARKER,
 )
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
 from ..domain.session_kind import SessionKind
@@ -62,6 +61,7 @@ from .queue_cache import QueueCache, QueueMutationStatus, record_issue_refreshes
 from .review_validity import evaluate_review_validity
 from .needs_human_block import NO_OTHER_NEEDS_HUMAN_CAUSES, SharedNeedsHumanBlock
 from .human_gates import HumanGates
+from .pull_request_provenance import PullRequestProvenance
 from .review_scope import ReviewScopeChecker, extract_issue_number_from_pr
 from ..infra.repo_scope import require_repo
 from .retrospective_review import discover_retrospective_review_issues
@@ -671,13 +671,12 @@ class StartupManager:
         for pr in prs:
             pr_number = pr.number
             pr_url = pr.url
-            pr_body = pr.body
 
             issue_number = extract_issue_number_from_pr(pr, repo_slug=require_repo(self.config))
 
-            # Check if PR was created by orchestrator
-            if ORCHESTRATOR_PR_MARKER not in pr_body:
-                logger.debug(f"PR #{pr_number}: Not created by orchestrator (no marker)")
+            # io's own PR only (opened by io's account, never adopted): any other is left to the gated scan (#9499)
+            if not PullRequestProvenance(self.repository_host).proven_io_owned(pr):
+                logger.debug(f"PR #{pr_number}: Not io's own (not opened by io, or adopted)")
                 continue
 
             scope = self._review_scope.check_issue_number(issue_number, pr_number)

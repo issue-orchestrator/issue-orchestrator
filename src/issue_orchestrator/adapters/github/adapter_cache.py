@@ -6,7 +6,7 @@ import logging
 import re
 from typing import Any
 
-from ...ports.pull_request_tracker import PRInfo
+from ...ports.pull_request_tracker import PRInfo, PullRequestAuthor
 from .cache import GitHubCache
 
 logger = logging.getLogger(__name__)
@@ -112,6 +112,7 @@ class GitHubAdapterCacheSupport:
             "base_branch": pr_info.base_branch,
             "merged_at": pr_info.merged_at,
             "head_sha": pr_info.head_sha,
+            "author": (pr_info.author.account_id, pr_info.author.login) if pr_info.author else None,
             "issue_number": issue_number,
         }
         if issue_number is not None:
@@ -139,6 +140,7 @@ class GitHubAdapterCacheSupport:
             base_branch=cached.get("base_branch"),
             merged_at=cached.get("merged_at"),
             head_sha=cached.get("head_sha"),
+            author=PullRequestAuthor(*cached["author"]) if cached.get("author") else None,
         )
 
     @staticmethod

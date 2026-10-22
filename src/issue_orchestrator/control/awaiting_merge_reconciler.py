@@ -689,6 +689,7 @@ class AwaitingMergeReconciler:
             feedback_comment_already_posted=self._post_publish_comment_present(
                 pr_number
             ),
+            authority=self.integration.authority(pr, issue) if self.integration is not None else None,  # #9499
         )
 
     def _post_publish_comment_present(self, pr_number: int) -> bool:

@@ -4631,6 +4631,35 @@ def test_a_rework_retry_claim_of_another_cycle_is_quarantined(tmp_path: Path) ->
     )
 
 
+def test_a_restored_rework_keeps_the_authority_its_claim_was_queued_under(tmp_path: Path) -> None:
+    """#9499 r6 F10: a governed rework's next review is queued under the
+    authority of its session - which a restart restores from the claim."""
+    from dataclasses import replace
+
+    from issue_orchestrator.control.in_flight_work import InFlightWorkLedger
+    from issue_orchestrator.domain.external_pr_adoption import LaunchAuthority
+    from issue_orchestrator.domain.models import OrchestratorState
+    from issue_orchestrator.ports.pull_request_tracker import PRInfo
+
+    harness = _ready_harness(tmp_path)
+    harness.launcher.repository_host.prs[7] = [PRInfo(
+        number=70, url="u", title="PR", branch="7-rework", labels=[], body="", state="open",
+    )]
+    state = _pending_state("rework")
+    rework = state.pending_reworks[0]
+    authority = LaunchAuthority(effort="integration", issue_number=7, pr_number=70, agent=rework.agent_type)
+    rework.pr_number, rework.rework_cycle, rework.authority = 70, 3, authority
+    session = _route("rework", state, harness)
+    assert session is not None and session.launch_authority == authority
+
+    restoration = InFlightWorkLedger(OrchestratorState(), harness.claims).rehydrate(
+        [replace(session, launch_authority=None)]  # what a restart rebuilds from the run ledger
+    )
+
+    [restored] = restoration.admitted
+    assert restored.launch_authority == authority
+
+
 def test_a_matching_rework_claim_is_admitted(tmp_path: Path) -> None:
     from issue_orchestrator.control.in_flight_work import InFlightWorkLedger
     from issue_orchestrator.domain.models import OrchestratorState

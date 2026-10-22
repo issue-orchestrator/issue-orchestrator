@@ -13,7 +13,11 @@ hand (``.coord/integration_merger.sh``):
   review, ``merge_after``), checks green on a head that already CONTAINS the
   integration tip, no person's hold on the issue or PR (``needs-human`` of
   either scope, #7678), and no standing ruling on the issue (#8141): a PR whose
-  issue carries one is handed to a person to check against it instead.
+  issue carries one is handed to a person to check against it instead. Only
+  io's own PRs or external ones THE admission rule admits qualify (#9499):
+  io never reworks, updates or merges any other. An admitted external PR is
+  merged only at a head io's review approved; any other head goes back to
+  io's review (:class:`~.external_pr_adoption.ExternalPullRequestGate`).
 * **It brings an approved PR up to the integration tip mechanically** before
   any agent rework: GitHub merges the tip into the PR branch server-side
   (guarded by the expected head). No session runs and no rework cycle is
@@ -64,12 +68,21 @@ from ..domain.integration_branch import (
     render_delivery_body,
     step_issue_number,
 )
+from ..domain.external_pr_adoption import (
+    AdoptExternalPullRequest,
+    ReportRefusedExternalPullRequest,
+    LaunchAuthority,
+    ReturnExternalPullRequestToReview,
+    launch_authority,
+)
 from ..events import EventName
 from ..infra.logging_config import issue_log
 from ..ports import make_trace_event
 from ..ports.repository_host import RepositoryHostError
 from ..ports.standing_rulings import StandingRulingsUnavailable
 from .awaiting_merge_post_publish_policy import PostApprovalAction, build_escalation
+from .external_pr_adoption import ExternalPullRequestGate, external_step_refusal, linked_issue_facts, review_lane
+from .external_pr_adoption_writes import write_external_step
 from .human_gates import holds_merge
 
 if TYPE_CHECKING:
@@ -120,6 +133,8 @@ class MergeGate(StrEnum):
     """Whether io may merge a PR into integration NOW, and if not, why."""
 
     OPEN = "open"
+    NOT_ADMITTED = "not_admitted"  # an external PR io never adopted, or no longer admits (#9499)
+    UNREVIEWED_HEAD = "unreviewed_head"  # an adopted PR at a head io's review never approved (#9499)
     HELD = "held"  # needs-human of either scope on the issue or the PR (#7678)
     GATE_NOT_PASSED = "gate_not_passed"  # the merge_after label is missing
     REWORK_REQUESTED = "rework_requested"  # needs-rework on the issue or the PR
@@ -149,6 +164,25 @@ class MergeGatekeeper:
     host: "RepositoryHost"
     label_manager: "LabelManager"
     standing_rulings: "StandingRulings"
+    #: THE admission rule and reviewed-head custody for external PRs (#9499).
+    external: ExternalPullRequestGate
+
+    def admits(
+        self, *, pr: "PRInfo", issue: "Issue", issue_labels: "Sequence[str]", pr_labels: "Sequence[str]",
+        gate_label: str,
+    ) -> MergeGate:
+        """Whether io may act on *pr* as *issue*'s PR: THE admission rule (io's
+        own, or an external PR admitted for exactly that issue), a person's hold,
+        rework asked for, the gate label, and - for an external PR - io's review
+        of exactly its current head (a receipt read, last)."""
+        refused = self.external.refusal(pr=pr, issue=issue, issue_labels=issue_labels, pr_labels=pr_labels)
+        if refused is not None:
+            return MergeGate.NOT_ADMITTED
+        gate = self.person_or_gate(issue_labels=issue_labels, pr_labels=pr_labels, gate_label=gate_label)
+        if gate is not MergeGate.OPEN:
+            return gate
+        reviewed = self.external.head_reviewed(pr, pr_labels=pr_labels)
+        return MergeGate.OPEN if reviewed else MergeGate.UNREVIEWED_HEAD
 
     def person_or_gate(self, *, issue_labels: "Sequence[str]", pr_labels: "Sequence[str]", gate_label: str) -> MergeGate:
         """The label-only part (no reads): a person's hold, rework asked for on
@@ -162,10 +196,11 @@ class MergeGatekeeper:
         return MergeGate.OPEN if gated else MergeGate.GATE_NOT_PASSED
 
     def judge(
-        self, *, issue_number: int, issue_labels: "Sequence[str]", pr: "PRInfo", gate_label: str,
+        self, *, issue: "Issue", issue_labels: "Sequence[str]", pr: "PRInfo", gate_label: str,
     ) -> MergeEligibility:
         """Every gate, the checks on exactly ``pr.head_sha`` included (one rollup read)."""
-        first = self.person_or_gate(issue_labels=issue_labels, pr_labels=pr.labels, gate_label=gate_label)
+        issue_number = issue.number
+        first = self.admits(pr=pr, issue=issue, issue_labels=issue_labels, pr_labels=pr.labels, gate_label=gate_label)
         if first is not MergeGate.OPEN:
             return MergeEligibility(first)
         if not pr.head_sha:
@@ -220,6 +255,8 @@ class IntegrationBranchOwner:
     label_manager: "LabelManager"
     standing_rulings: "StandingRulings"
     clock: Callable[[], float]
+    #: THE admission rule and reviewed-head custody for external PRs (#9499).
+    external: ExternalPullRequestGate
     steps: list[IntegrationStep] = field(default_factory=list)
     _tip: str | None = field(default=None, init=False)
     _tip_read: bool = field(default=False, init=False)
@@ -237,6 +274,12 @@ class IntegrationBranchOwner:
         """Whether *pr* targets the integration branch (only those are io's to merge)."""
         return pr.base_branch == self.branch
 
+    def authority(self, pr: "PRInfo", issue: "Issue") -> LaunchAuthority | None:
+        """The authority work this owner routed onto *pr* for *issue* is queued
+        under when the effort governs it (#9499); else None."""
+        facts = self.external.facts(pr, pr_labels=pr.labels)
+        return launch_authority(self.branch, facts, linked_issue_facts(self.external.config, issue, labels=issue.labels))
+
     def gate_label(self) -> str:
         """The PR label required before io merges (``merge_after``)."""
         if self.config.merge_after == "tech-lead-reviewed":
@@ -247,6 +290,26 @@ class IntegrationBranchOwner:
 
     def route(self, *, pr: "PRInfo", issue: "Issue", action: PostApprovalAction) -> IntegrationRouting:
         """Decide what happens to one reviewer-approved PR into integration."""
+        try:
+            refusal = self.external.refusal(pr=pr, issue=issue, issue_labels=issue.labels, pr_labels=pr.labels)
+        except RepositoryHostError as error:
+            logger.warning("Integration: PR #%d's provenance unreadable: %s", pr.number, error)
+            return IntegrationRouting(_NOTHING)  # fail closed; re-read next pass
+        if refusal is not None:
+            # Not io's to act on at all - no rework, update or merge (#9499):
+            # the adoption owner reports it instead.
+            logger.info(issue_log(issue.number, "Integration: PR #%d not admitted: %s"), pr.number, refusal)
+            return IntegrationRouting(_NOTHING)
+        try:
+            reviewed = self.external.head_reviewed(pr, pr_labels=pr.labels)
+        except RepositoryHostError as error:
+            logger.warning("Integration: io's review receipt on PR #%d unreadable: %s", pr.number, error)
+            return IntegrationRouting(_NOTHING)  # fail closed; re-read next pass
+        if not reviewed:
+            # An adopted PR's approval was for another head (a push since, or
+            # io's own update onto the tip): back to io's review, before any
+            # rework, update or merge of a head no review approved.
+            return self._back_to_review(pr=pr, issue=issue)
         if action in ("REWORK_CONFLICT", "REWORK_CHECK_FAILED"):
             # A real conflict or a failed check: only an agent can fix it.
             return IntegrationRouting(action)
@@ -267,7 +330,19 @@ class IntegrationBranchOwner:
 
     @property
     def gatekeeper(self) -> MergeGatekeeper:
-        return MergeGatekeeper(self.host, self.label_manager, self.standing_rulings)
+        return MergeGatekeeper(self.host, self.label_manager, self.standing_rulings, self.external)
+
+    def _back_to_review(self, *, pr: "PRInfo", issue: "Issue") -> IntegrationRouting:
+        if not pr.head_sha:
+            raise RepositoryHostError(f"PR #{pr.number} was read without its head commit")
+        lane = review_lane(self.external.config)
+        if lane is None:
+            raise IntegrationConfigError("an adopted PR needs io's review lane to return to")
+        self.steps.append(ReturnExternalPullRequestToReview(
+            issue_number=issue.number, pr_number=pr.number, head_sha=pr.head_sha,
+            integration_branch=self.branch, review_label=lane,
+        ))
+        return IntegrationRouting(_NOTHING)
 
     def _route_against_tip(
         self, *, pr: "PRInfo", issue: "Issue", action: PostApprovalAction, head: str, tip: str
@@ -292,9 +367,7 @@ class IntegrationBranchOwner:
         return self._merge_or_hand_over(pr=pr, issue=issue, head=head, tip=tip)
 
     def _merge_or_hand_over(self, *, pr: "PRInfo", issue: "Issue", head: str, tip: str) -> IntegrationRouting:
-        verdict = self.gatekeeper.judge(
-            issue_number=issue.number, issue_labels=issue.labels, pr=pr, gate_label=self.gate_label(),
-        )
+        verdict = self.gatekeeper.judge(issue=issue, issue_labels=issue.labels, pr=pr, gate_label=self.gate_label())
         if verdict.rollup is not None:
             pr.status_check_rollup = verdict.rollup.state  # the rework brief names it
         routed = _ROUTING_BY_GATE.get(verdict.gate)
@@ -466,20 +539,24 @@ def apply_integration_step(
     host: "RepositoryHost",
     labels: "LabelManager",
     rulings: "StandingRulings",
+    external: ExternalPullRequestGate,
     events: "EventSink",
     event_context: "EventContext | None" = None,
 ) -> "ActionResult":
-    """Execute one integration step, re-checking what may have moved since discovery."""
+    """Execute one integration step, re-checking what may have moved since discovery.
+
+    *external* is a write's gate: fresh custody reads, no memo of receipts.
+    """
     from .actions import ActionResult
 
     step = action.step
     assert step is not None, "an integration action carries its step"
-    refusal = _refusal(step, gatekeeper=MergeGatekeeper(host, labels, rulings))
+    refusal = _refusal(step, gatekeeper=MergeGatekeeper(host, labels, rulings, external))
     if refusal is not None:
         _publish(events, event_context, EventName.INTEGRATION_STEP_SKIPPED, step, reason=refusal)
         return ActionResult.skip(action, refusal, pr_number=action.pr_number or None)
     try:
-        detail = _write(step, host)
+        detail = _write(step, host, labels)
     except RepositoryHostError as error:
         logger.error("Integration step failed (%s): %s", describe_step(step), error)
         return ActionResult.fail_from(action, error, pr_number=action.pr_number or None)
@@ -499,31 +576,39 @@ def _refusal(step: IntegrationStep, *, gatekeeper: MergeGatekeeper) -> str | Non
     A merge is judged again, on fresh reads, by the same gatekeeper discovery
     asked: the PR must still be open, into the integration branch, at the head
     whose checks passed; every gate must still be open; and the tip it was
-    checked against must still be the tip.
+    checked against must still be the tip. An external PR's steps are
+    re-judged by THE admission rule on fresh reads (#9499), and a merge or
+    update of an external PR also needs io's review receipt for its head.
     """
+    if isinstance(step, (AdoptExternalPullRequest, ReportRefusedExternalPullRequest, ReturnExternalPullRequestToReview)):
+        return external_step_refusal(step, gatekeeper.external)
     if not isinstance(step, (MergeIntoIntegration, UpdatePullRequestBranch)):
         return None
     host = gatekeeper.host
     try:
         pr = host.get_pr(step.pr_number)
+        issue = host.get_issue(step.issue_number)
         issue_labels = host.get_issue_labels_fresh(step.issue_number)
         pr_labels = host.get_issue_labels_fresh(step.pr_number)
         tip = host.branch_head(step.integration_branch)
+        moved = _moved_since_discovery(step, pr, tip)
+        if moved is not None:
+            return moved
+        if issue is None:
+            return f"issue #{step.issue_number} is gone; PR #{step.pr_number} not written"
+        assert pr is not None
+        if isinstance(step, UpdatePullRequestBranch):
+            # Updating needs no green checks or ruling check, only that io may
+            # still act on the PR at all: admitted, no person's hold, the gate
+            # still passed, and (an external PR) a head io's review approved.
+            gate = gatekeeper.admits(pr=pr, issue=issue, issue_labels=issue_labels, pr_labels=pr_labels,
+                                     gate_label=step.gate_label)
+            return None if gate is MergeGate.OPEN else f"PR #{step.pr_number}: io may not act on it now ({gate.value})"
+        verdict = gatekeeper.judge(
+            issue=issue, issue_labels=issue_labels, pr=replace(pr, labels=list(pr_labels)), gate_label=step.gate_label,
+        )
     except RepositoryHostError as error:
         return f"PR #{step.pr_number} could not be re-read before the merge: {error}"
-    moved = _moved_since_discovery(step, pr, tip)
-    if moved is not None:
-        return moved
-    assert pr is not None
-    if isinstance(step, UpdatePullRequestBranch):
-        # Updating needs no green checks or ruling check, only that io may
-        # still act on the PR at all: no person's hold, the gate still passed.
-        gate = gatekeeper.person_or_gate(issue_labels=issue_labels, pr_labels=pr_labels, gate_label=step.gate_label)
-        return None if gate is MergeGate.OPEN else f"PR #{step.pr_number}: io may not act on it now ({gate.value})"
-    verdict = gatekeeper.judge(
-        issue_number=step.issue_number, issue_labels=issue_labels,
-        pr=replace(pr, labels=list(pr_labels)), gate_label=step.gate_label,
-    )
     if verdict.gate is not MergeGate.OPEN:
         return f"PR #{step.pr_number} is no longer mergeable by io ({verdict.gate.value}); not merged"
     return None
@@ -546,9 +631,11 @@ def _moved_since_discovery(
     return None
 
 
-def _write(step: IntegrationStep, host: "RepositoryHost") -> str | None:
+def _write(step: IntegrationStep, host: "RepositoryHost", labels: "LabelManager") -> str | None:
     """Perform *step*; a non-None return is GitHub refusing it without an error."""
-    if isinstance(step, MergeIntoIntegration):
+    if isinstance(step, (AdoptExternalPullRequest, ReportRefusedExternalPullRequest, ReturnExternalPullRequestToReview)):
+        write_external_step(step, host, labels)
+    elif isinstance(step, MergeIntoIntegration):
         title, message = merge_commit_message(
             pr_number=step.pr_number, title=step.pr_title, branch=step.integration_branch,
             head_sha=step.head_sha, tip=step.integration_tip,
@@ -586,7 +673,7 @@ def _publish(
     payload: dict[str, object] = {"step": type(step).__name__, "summary": describe_step(step), "reason": reason}
     payload.update(
         (attribute, getattr(step, attribute))
-        for attribute in ("issue_number", "pr_number", "head_sha", "integration_tip", "branch", "to_sha")
+        for attribute in ("issue_number", "pr_number", "head_sha", "integration_tip", "branch", "to_sha", "refusal")
         if hasattr(step, attribute)
     )
     events.publish(make_trace_event(name, context.enrich(payload) if context is not None else payload))
@@ -625,4 +712,7 @@ def apply_advance_integration(
         )
     if target:
         verify_claim(action, target)
-    return apply_integration_step(action, host=host, labels=labels, rulings=rulings, events=applier.events)
+    gate = applier.external_pr_gate
+    assert gate is not None, "integration needs the external-PR gate (#9499)"
+    return apply_integration_step(action, host=host, labels=labels, rulings=rulings, external=gate(),
+                                  events=applier.events)

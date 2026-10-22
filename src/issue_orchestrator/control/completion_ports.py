@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from ..domain.issue_delivery import MergedPullRequest
+from ..ports.comment_receipt import IssueCommentReceipt
 from ..ports.pull_request_tracker import PRInfo
 from ..ports.working_copy import (
     BranchCommitMessagesResult,
@@ -36,6 +37,7 @@ class PRAdapter(Protocol):
     def set_pr_base(self, pr_number: int, base: str) -> None: ...
     def get_pr(self, pr_number: int) -> PRInfo | None: ...
     def merged_pr_history(self, issue_number: int) -> tuple[MergedPullRequest, ...]: ...
+    def find_issue_comment_receipt(self, issue_number: int, *, body: str) -> IssueCommentReceipt | None: ...
 
 
 @runtime_checkable
