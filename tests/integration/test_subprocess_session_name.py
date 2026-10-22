@@ -18,6 +18,7 @@ import pytest
 # (forkpty() in multi-threaded processes can deadlock)
 pytestmark = pytest.mark.xdist_group("pty")
 
+from issue_orchestrator.domain.launch_prompt_delivery import LaunchCommand
 from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin
 from issue_orchestrator.infra.hooks.hookspec import PROJECT_NAME, TerminalSpec
 from tests.unit.session_run_helpers import make_session_run_assets
@@ -78,8 +79,9 @@ class TestSessionNameFlow:
         # This is what the orchestrator does for review sessions
         result = plugin_manager.hook.create_session(
             session_id=3865,
-            command=_long_running_command(worktree, "review-3865"),
-            working_dir=str(worktree),
+            prepared=plugin_manager.hook.prepare_session(
+                command=LaunchCommand(_long_running_command(worktree, "review-3865")), working_dir=worktree,
+            ),
             title="Review PR #3865",
             session_name="review-3865",  # This is the key parameter!
         )
@@ -117,8 +119,9 @@ class TestSessionNameFlow:
         # Caller provides explicit session name (no fallbacks)
         result = plugin_manager.hook.create_session(
             session_id=123,
-            command=_long_running_command(worktree, "issue-123"),
-            working_dir=str(worktree),
+            prepared=plugin_manager.hook.prepare_session(
+                command=LaunchCommand(_long_running_command(worktree, "issue-123")), working_dir=worktree,
+            ),
             title="Issue #123",
             session_name="issue-123",  # Caller computes name
         )

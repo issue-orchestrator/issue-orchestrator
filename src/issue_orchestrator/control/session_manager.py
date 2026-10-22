@@ -1,7 +1,7 @@
 """SessionManager - terminal session lifecycle management.
 
 This module owns:
-1. Session naming conventions (issue-N, review-N, rework-N)
+1. Session naming conventions (issue-N, review-N, rework-N, debug-N)
 2. Session lifecycle (start, stop, exists, status)
 3. Worktree path conventions
 4. Session reference types
@@ -10,8 +10,9 @@ It delegates actual terminal operations to the SessionRunner port.
 
 Usage:
     manager = SessionManager(runner=session_runner, events=event_sink, config=config)
-    ref = manager.start_issue_session(issue_number=123, command="claude", worktree_path=path)
-    if manager.exists(ref):
+    prepared = manager.prepare(LaunchCommand("claude"), worktree_path)
+    manager.start(issue_session_context(123, prepared))
+    if manager.exists(SessionRef.for_issue(123)):
         manager.stop(ref)
 """
 
@@ -21,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from ..domain.launch_prompt_delivery import LaunchCommand, PreparedSessionCommand
 from ..domain.session_kind import SessionType
 from ..infra.config import Config
 from ..events import EventName
@@ -58,7 +60,7 @@ class SessionRef:
         Raises:
             ValueError: If session name format is invalid
         """
-        match = re.match(r"^(issue|review|retrospective-review|rework|tech-lead)-(\d+)$", session_name)
+        match = re.match(r"^(issue|review|retrospective-review|rework|tech-lead|debug)-(\d+)$", session_name)
         if not match:
             raise ValueError(f"Invalid session name format: {session_name}")
         session_type = SessionType(match.group(1))
@@ -90,6 +92,11 @@ class SessionRef:
         """Create a session reference for a tech_lead review."""
         return cls(session_type=SessionType.TECH_LEAD, number=issue_number)
 
+    @classmethod
+    def for_debug(cls, issue_number: int) -> "SessionRef":
+        """Create a session reference for an operator's debug session."""
+        return cls(session_type=SessionType.DEBUG, number=issue_number)
+
 
 @dataclass
 class SessionContext:
@@ -99,8 +106,9 @@ class SessionContext:
     """
 
     ref: SessionRef
-    command: str
-    working_dir: Path
+    #: The command exactly as the terminal prepared it, with its working
+    #: directory: a session is only ever started from a prepared command (#9012).
+    prepared: PreparedSessionCommand
     title: Optional[str] = None
     #: Provider credentials for the session process, deliberately separate from
     #: ``command``: argv is world-readable through ``ps``, so a model API key
@@ -163,6 +171,13 @@ class SessionManager:
         repo_name = actual_repo_root.name
         return actual_worktree_base / f"{repo_name}-{issue_number}"
 
+    def prepare(self, command: LaunchCommand, working_dir: Path) -> PreparedSessionCommand:
+        """The terminal's exact exec form of *command*, or ``LaunchCommandTooLong`` (#9012).
+
+        Side-effect free: a launch prepares before its first workflow mutation.
+        """
+        return self.runner.prepare_session(command, working_dir)
+
     def start(self, ctx: SessionContext) -> bool:
         """Start a terminal session.
 
@@ -174,8 +189,7 @@ class SessionManager:
         """
         success = self.runner.create_session(
             session_id=ctx.ref.number,
-            command=ctx.command,
-            working_dir=str(ctx.working_dir),
+            prepared=ctx.prepared,
             title=ctx.title,
             session_name=ctx.ref.name,
             secret_env=ctx.secret_env,
@@ -189,7 +203,7 @@ class SessionManager:
                         "session_type": ctx.ref.session_type.value,
                         "number": ctx.ref.number,
                         "session_name": ctx.ref.name,
-                        "working_dir": str(ctx.working_dir),
+                        "working_dir": str(ctx.prepared.working_dir),
                     },
                 )
             )
@@ -292,44 +306,38 @@ class SessionManager:
 
 def issue_session_context(
     issue_number: int,
-    command: str,
-    working_dir: Path,
+    prepared: PreparedSessionCommand,
     title: Optional[str] = None,
 ) -> SessionContext:
     """Create a context for launching an issue session."""
     return SessionContext(
         ref=SessionRef.for_issue(issue_number),
-        command=command,
-        working_dir=working_dir,
+        prepared=prepared,
         title=title or f"Issue #{issue_number}",
     )
 
 
 def review_session_context(
     pr_number: int,
-    command: str,
-    working_dir: Path,
+    prepared: PreparedSessionCommand,
     title: Optional[str] = None,
 ) -> SessionContext:
     """Create a context for launching a review session."""
     return SessionContext(
         ref=SessionRef.for_review(pr_number),
-        command=command,
-        working_dir=working_dir,
+        prepared=prepared,
         title=title or f"Review PR #{pr_number}",
     )
 
 
 def rework_session_context(
     issue_number: int,
-    command: str,
-    working_dir: Path,
+    prepared: PreparedSessionCommand,
     title: Optional[str] = None,
 ) -> SessionContext:
     """Create a context for launching a rework session."""
     return SessionContext(
         ref=SessionRef.for_rework(issue_number),
-        command=command,
-        working_dir=working_dir,
+        prepared=prepared,
         title=title or f"Rework Issue #{issue_number}",
     )

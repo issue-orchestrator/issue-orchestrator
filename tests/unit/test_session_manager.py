@@ -13,7 +13,13 @@ from issue_orchestrator.control.session_manager import (
     review_session_context,
     rework_session_context,
 )
+from issue_orchestrator.domain.launch_prompt_delivery import LaunchCommand, PreparedSessionCommand
 from issue_orchestrator.ports import NullEventSink, TraceEvent
+from tests.launch_prompt_helpers import prepared_as_given
+
+
+def _prepared(command: str = "claude", working_dir: str = "/path/to/worktree") -> PreparedSessionCommand:
+    return prepared_as_given(LaunchCommand(command), Path(working_dir))
 
 
 class CollectingEventSink:
@@ -33,16 +39,21 @@ class MockSessionRunner:
         self.sessions: dict[int, dict] = {}
         self.create_calls: list[dict] = []
         self.kill_calls: list[int] = []
+        self.prepare_calls: list[tuple[LaunchCommand, Path]] = []
+
+    def prepare_session(self, command: LaunchCommand, working_dir: Path) -> PreparedSessionCommand:
+        self.prepare_calls.append((command, working_dir))
+        return prepared_as_given(command, working_dir)
 
     def create_session(
         self,
         session_id: int,
-        command: str,
-        working_dir: str,
+        prepared: PreparedSessionCommand,
         title: str | None = None,
         session_name: str | None = None,
         secret_env: dict | None = None,
     ) -> bool:
+        command, working_dir = prepared.launch.text, str(prepared.working_dir)
         self.create_calls.append({
             "session_id": session_id,
             "session_name": session_name,
@@ -179,6 +190,14 @@ class TestSessionRef:
         assert ref.session_type == SessionType.REWORK
         assert ref.number == 200
 
+    def test_a_debug_session_has_its_own_lane(self):
+        """#9012: an operator's debug session never collides with the issue's own terminal."""
+        ref = SessionRef.for_debug(123)
+
+        assert ref.name == "debug-123"
+        assert SessionRef.from_name("debug-123") == ref
+        assert ref != SessionRef.for_issue(123)
+
     def test_ref_is_frozen(self):
         """Test that SessionRef is immutable."""
         ref = SessionRef(session_type=SessionType.ISSUE, number=123)
@@ -211,12 +230,20 @@ class TestSessionManager:
             config=sample_config,
         )
 
+    def test_prepare_asks_the_runner_for_its_exact_exec_form(self, manager, mock_runner):
+        """#9012: preparing is the terminal's; the manager hands back what it prepared."""
+        command = LaunchCommand("claude")
+
+        prepared = manager.prepare(command, Path("/path/to/worktree"))
+
+        assert mock_runner.prepare_calls == [(command, Path("/path/to/worktree"))]
+        assert prepared.launch is command and prepared.working_dir == Path("/path/to/worktree")
+
     def test_start_creates_session(self, manager, mock_runner):
         """Test that start creates a session via runner."""
         ctx = SessionContext(
             ref=SessionRef.for_issue(123),
-            command="claude",
-            working_dir=Path("/path/to/worktree"),
+            prepared=_prepared(),
             title="Issue #123",
         )
 
@@ -232,11 +259,7 @@ class TestSessionManager:
 
     def test_start_emits_session_launched_event(self, manager, collecting_sink):
         """Test that start emits session.launched event."""
-        ctx = SessionContext(
-            ref=SessionRef.for_issue(123),
-            command="claude",
-            working_dir=Path("/path/to/worktree"),
-        )
+        ctx = SessionContext(ref=SessionRef.for_issue(123), prepared=_prepared())
 
         manager.start(ctx)
 
@@ -332,38 +355,26 @@ class TestSessionContextFactories:
 
     def test_issue_session_context(self):
         """Test issue session context factory."""
-        ctx = issue_session_context(
-            issue_number=123,
-            command="claude",
-            working_dir=Path("/path/to/worktree"),
-        )
+        prepared = _prepared()
+        ctx = issue_session_context(issue_number=123, prepared=prepared)
 
         assert ctx.ref.session_type == SessionType.ISSUE
         assert ctx.ref.number == 123
-        assert ctx.command == "claude"
-        assert ctx.working_dir == Path("/path/to/worktree")
+        assert ctx.prepared is prepared
         assert ctx.title == "Issue #123"
 
     def test_review_session_context(self):
         """Test review session context factory."""
-        ctx = review_session_context(
-            pr_number=456,
-            command="claude --review",
-            working_dir=Path("/path/to/worktree"),
-        )
+        ctx = review_session_context(pr_number=456, prepared=_prepared("claude --review"))
 
         assert ctx.ref.session_type == SessionType.REVIEW
         assert ctx.ref.number == 456
-        assert ctx.command == "claude --review"
+        assert ctx.prepared.launch.text == "claude --review"
         assert ctx.title == "Review PR #456"
 
     def test_rework_session_context(self):
         """Test rework session context factory."""
-        ctx = rework_session_context(
-            issue_number=789,
-            command="claude --rework",
-            working_dir=Path("/path/to/worktree"),
-        )
+        ctx = rework_session_context(issue_number=789, prepared=_prepared("claude --rework"))
 
         assert ctx.ref.session_type == SessionType.REWORK
         assert ctx.ref.number == 789
@@ -371,11 +382,6 @@ class TestSessionContextFactories:
 
     def test_custom_title_overrides_default(self):
         """Test that custom title overrides the default."""
-        ctx = issue_session_context(
-            issue_number=123,
-            command="claude",
-            working_dir=Path("/path"),
-            title="Custom Title",
-        )
+        ctx = issue_session_context(issue_number=123, prepared=_prepared(working_dir="/path"), title="Custom Title")
 
         assert ctx.title == "Custom Title"

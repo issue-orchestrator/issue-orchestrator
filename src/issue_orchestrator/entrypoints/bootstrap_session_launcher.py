@@ -13,7 +13,9 @@ from typing import TYPE_CHECKING, Callable, Optional
 
 from ..control.needs_human_block import SharedNeedsHumanBlock
 from ..control.recovery_review_hold import NO_RECOVERY_HOLDS, RecoveryHolds
+from ..control.external_pr_launch import launch_gate
 from ..control.session_launcher import SessionLauncher
+from ..control.session_routing import session_presence, session_starter
 from ..control.launch_prompt import NO_LAUNCH_PROMPT
 from ..ports.launch_prompt import LaunchPromptProvider
 from ..ports.provider_credentials import (
@@ -30,14 +32,11 @@ if TYPE_CHECKING:
     from ..domain.state_machines.session_machine import SessionStateMachine
     from ..infra.config import Config
     from ..ports.agent_callback_endpoint import AgentCallbackEndpoint
-    from ..control.external_pr_launch import ExternalLaunchAdmission
+    from ..domain.models import OrchestratorState
     from ..ports.blocked_item_triage import BlockedItemTriageAgenda
     from ..ports.board_snapshot_provider import BoardSnapshotProvider
     from ..ports.issue import Issue as IssueProtocol
-    from ..ports.session_launcher_factory import (
-        CreateSessionFn,
-        SessionLauncherFactory,
-    )
+    from ..ports.session_launcher_factory import SessionLauncherFactory
 
 
 def build_session_launcher_factory(
@@ -68,12 +67,15 @@ def build_session_launcher_factory(
 ) -> "SessionLauncherFactory":
     """Bind the application dependencies; return the facade-facing factory."""
 
+    # One terminal per launch (#9012): the SessionManager that prepares its
+    # command is the one its conflict checks ask and its session starts on.
+    session_present = session_presence(session_manager, events)
+    start_session = session_starter(session_manager, events)
+
     def _factory(
         *,
         board_snapshot_provider: "BoardSnapshotProvider",
         blocked_item_triage: "BlockedItemTriageAgenda",
-        session_exists_fn: Callable[[str], bool],
-        create_session_fn: "CreateSessionFn",
         get_issue_machine: Callable[
             ["IssueProtocol"], Optional["IssueStateMachine"]
         ],
@@ -83,14 +85,14 @@ def build_session_launcher_factory(
         get_review_machine: Callable[[int, int], Optional["ReviewStateMachine"]],
         refresh_issue_fn: Optional[Callable[[int], Optional["IssueProtocol"]]],
         dependency_evaluator: Optional["DependencyEvaluator"],
-        external_admission: "ExternalLaunchAdmission",
+        state: Callable[[], "OrchestratorState"],
     ) -> SessionLauncher:
         return SessionLauncher(
             config, events, repository_host, action_applier, session_manager,
             worktree_manager, working_copy, command_runner, session_output,
             manifest_downloader, tech_lead_authority,
-            session_exists_fn,
-            create_session_fn, get_issue_machine, get_session_machine,
+            session_present,
+            start_session, get_issue_machine, get_session_machine,
             get_review_machine, refresh_issue_fn, dependency_evaluator,
             claim_manager=claim_manager,
             provider_resilience=provider_resilience,
@@ -109,7 +111,8 @@ def build_session_launcher_factory(
             needs_human_block=needs_human_block,
             launch_prompt=launch_prompt,
             recovery_holds=recovery_holds,
-            external_admission=external_admission,
+            # Re-asked at each launch, over io's live state (#9499).
+            external_admission=launch_gate(config, repository_host, state),
         )
 
     return _factory

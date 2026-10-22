@@ -7,7 +7,6 @@ SessionManager adapter calls.
 """
 
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
 from ..domain.models import (
@@ -51,6 +50,8 @@ from .session_launcher import SessionLauncher
 from .session_manager import SessionManager
 
 if TYPE_CHECKING:
+    from ..domain.launch_prompt_delivery import PreparedSessionCommand
+    from ..ports.session_launcher_factory import CreateSessionFn
     from ..domain.models import OrchestratorState
     from .claim_quarantine import ClaimQuarantineOwner
     from ..domain.state_machines.session_machine import SessionStateMachine
@@ -540,26 +541,43 @@ def parse_session_ref(
 
 def create_session(
     name: str,
-    cmd: str,
-    wd: Path,
+    prepared: "PreparedSessionCommand",
     title: str | None,
     session_manager: SessionManager,
     events: EventSink,
     secret_env: dict[str, str] | None = None,
 ) -> bool:
-    """Create a terminal session through SessionManager."""
+    """Start a terminal session from its prepared command through SessionManager."""
     from .session_manager import SessionContext
 
     ref = parse_session_ref(name, "create", events)
     return session_manager.start(
         SessionContext(
             ref=ref,
-            command=cmd,
-            working_dir=wd,
+            prepared=prepared,
             title=title,
             secret_env=secret_env,
         )
     )
+
+
+def session_starter(session_manager: SessionManager, events: EventSink) -> "CreateSessionFn":
+    """:func:`create_session` bound to *session_manager*, the one that prepares each launch's command (#9012).
+
+    The composition root hands it to the session launcher, so a launch's
+    preflight and its start are the same terminal's and the facade relays
+    neither.
+    """
+
+    def start(
+        name: str,
+        prepared: "PreparedSessionCommand",
+        title: str | None = None,
+        secret_env: dict[str, str] | None = None,
+    ) -> bool:
+        return create_session(name, prepared, title, session_manager, events, secret_env)
+
+    return start
 
 
 def session_exists(
@@ -567,6 +585,17 @@ def session_exists(
 ) -> bool:
     """Check whether a terminal session exists through SessionManager."""
     return session_manager.exists(parse_session_ref(name, "exists", events))
+
+
+def session_presence(session_manager: SessionManager, events: EventSink) -> Callable[[str], bool]:
+    """:func:`session_exists` bound to *session_manager*, the one that prepares and starts each launch (#9012 review r3).
+
+    The composition root hands it to the session launcher beside
+    :func:`session_starter`, so a launch's conflict and duplicate checks ask
+    the very terminal its session would start on, and no caller can point
+    them at another.
+    """
+    return lambda name: session_exists(name, session_manager, events)
 
 
 def kill_session(name: str, session_manager: SessionManager, events: EventSink) -> None:

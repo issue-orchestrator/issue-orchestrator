@@ -14,6 +14,13 @@ from unittest.mock import MagicMock, Mock, patch, call
 
 import pytest
 
+from issue_orchestrator.domain.launch_prompt_delivery import LaunchCommand
+from tests.launch_prompt_helpers import prepared_as_given
+
+
+def _prepared(command: str = "claude"):
+    return prepared_as_given(LaunchCommand(command), Path("/tmp/worktree"))
+
 
 class TestPluggySessionRunner:
     """Tests for PluggySessionRunner which wraps pluggy PluginManager.
@@ -35,15 +42,34 @@ class TestPluggySessionRunner:
         from issue_orchestrator.execution.session_runner_adapter import PluggySessionRunner
         return PluggySessionRunner(mock_plugin_manager)
 
+    def test_prepare_session_returns_what_the_terminal_prepared(self, session_runner, mock_plugin_manager):
+        """prepare_session delegates to the pluggy hook (#9012)."""
+        prepared = _prepared("claude --prompt issue.md")
+        mock_plugin_manager.hook.prepare_session.return_value = prepared
+
+        result = session_runner.prepare_session(prepared.launch, Path("/tmp/worktree"))
+
+        assert result is prepared
+        mock_plugin_manager.hook.prepare_session.assert_called_once_with(
+            command=prepared.launch, working_dir=Path("/tmp/worktree"),
+        )
+
+    def test_prepare_session_without_a_terminal_plugin_fails_loudly(self, session_runner, mock_plugin_manager):
+        """No terminal to prepare for is a wiring fault, never an unchecked command."""
+        mock_plugin_manager.hook.prepare_session.return_value = None
+
+        with pytest.raises(RuntimeError, match="no terminal plugin"):
+            session_runner.prepare_session(LaunchCommand("claude"), Path("/tmp/worktree"))
+
     def test_create_session_success(self, session_runner, mock_plugin_manager, caplog):
         """create_session delegates to pluggy hook and returns result."""
         mock_plugin_manager.hook.create_session.return_value = True
+        prepared = _prepared("claude --prompt issue.md")
 
         with caplog.at_level(logging.INFO):
             result = session_runner.create_session(
                 session_id=42,
-                command="claude --prompt issue.md",
-                working_dir="/tmp/worktree",
+                prepared=prepared,
                 title="Fix the bug",
                 session_name="issue-42",
             )
@@ -51,8 +77,7 @@ class TestPluggySessionRunner:
         assert result is True
         mock_plugin_manager.hook.create_session.assert_called_once_with(
             session_id=42,
-            command="claude --prompt issue.md",
-            working_dir="/tmp/worktree",
+            prepared=prepared,
             title="Fix the bug",
             session_name="issue-42",
             # Forwarded even when absent, so a provider that needs credentials
@@ -68,8 +93,7 @@ class TestPluggySessionRunner:
 
         result = session_runner.create_session(
             session_id=42,
-            command="claude",
-            working_dir="/tmp/worktree",
+            prepared=_prepared(),
             title=None,
             session_name="issue-42",
         )
@@ -82,8 +106,7 @@ class TestPluggySessionRunner:
 
         result = session_runner.create_session(
             session_id=42,
-            command="claude",
-            working_dir="/tmp/worktree",
+            prepared=_prepared(),
             title=None,
             session_name="issue-42",
         )

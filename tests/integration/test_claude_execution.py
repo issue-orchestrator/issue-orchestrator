@@ -20,6 +20,7 @@ import shutil
 from pathlib import Path
 from uuid import uuid4
 
+from issue_orchestrator.domain.launch_prompt_delivery import LaunchCommand
 from issue_orchestrator.infra.env import ENV_PREFIX
 from tests.process_group_run import run_in_process_group
 from tests.unit.session_run_helpers import make_session_run_assets
@@ -491,8 +492,7 @@ class TestClaudeViaAdapterPath:
             plugin = SubprocessPlugin()
             created = plugin.create_session(
                 session_id=999,
-                command=claude_cmd,
-                working_dir=str(worktree),
+                prepared=plugin.prepare_session(LaunchCommand(claude_cmd), worktree),
                 title="Claude subprocess integration",
                 session_name=session_name,
             )

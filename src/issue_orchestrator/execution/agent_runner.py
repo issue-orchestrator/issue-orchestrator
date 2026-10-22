@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pexpect
 
+from issue_orchestrator.domain.launch_prompt_delivery import require_exec_argument_within_limit
 from issue_orchestrator.execution.agent_runner_base import (
     BaseAgentRunner,
     _pty_preexec,
@@ -238,6 +239,15 @@ class AgentRunner(BaseAgentRunner):
         result = runner.run(spec)  # blocks until done
     """
 
+    @staticmethod
+    def exec_argv(command: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+        """The arguments the OS receives to run *command*: ``bash -c`` and it, quoted.
+
+        The one rule :meth:`start` execs by, so a terminal that prepares a
+        command ahead of starting it checks exactly what will be exec'd (#9012).
+        """
+        return ("/bin/bash", "-c", shlex.join(command))
+
     def start(
         self,
         spec: AgentSpec,
@@ -253,7 +263,14 @@ class AgentRunner(BaseAgentRunner):
 
         The caller is responsible for calling :meth:`AgentSession.wait`
         or :meth:`AgentSession.kill` when done.
+
+        Raises :class:`~issue_orchestrator.domain.launch_prompt_delivery.LaunchCommandTooLong`,
+        before anything is created, when an argument is past the OS limit.
         """
+        # Bounded exactly as exec'd (#9012): the whole command is ONE argument.
+        argv = self.exec_argv(spec.command)
+        for argument in argv:
+            require_exec_argument_within_limit(argument)
         spec.output_dir.mkdir(parents=True, exist_ok=True)
         if spec.log_path is not None:
             spec.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -285,10 +302,9 @@ class AgentRunner(BaseAgentRunner):
                 initial_cols=cols,
             )
 
-        shell_cmd = shlex.join(spec.command)
         child = pexpect.spawn(
-            "/bin/bash",
-            ["-c", shell_cmd],
+            argv[0],
+            list(argv[1:]),
             cwd=str(spec.working_dir),
             env=env,
             logfile=log_writer,

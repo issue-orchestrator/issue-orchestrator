@@ -49,6 +49,8 @@ from fastapi.testclient import TestClient
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session
 from issue_orchestrator.infra.config import Config, DangerousConfig
 from issue_orchestrator.infra.hooks.hookspec import hookimpl
+from issue_orchestrator.domain.launch_prompt_delivery import LaunchCommand, PreparedSessionCommand
+from tests.launch_prompt_helpers import prepared_as_given
 from issue_orchestrator.ports.pull_request_tracker import (
     CheckRunAttempt,
     FailedChecksRead,
@@ -991,22 +993,29 @@ class MockTerminalPlugin:
         self.session_exists_override = None  # Set to True/False to override
 
     @hookimpl
+    def prepare_session(self, command: LaunchCommand, working_dir: Path) -> PreparedSessionCommand:
+        """The command as given: this terminal puts nothing around it."""
+        return prepared_as_given(command, working_dir)
+
+    @hookimpl
     def create_session(
         self,
         session_id: int,
-        command: str,
-        working_dir: str,
+        prepared: PreparedSessionCommand,
         title: str | None,
         session_name: str,  # Required - caller must provide explicit name
         secret_env: dict[str, str] | None = None,
     ) -> bool:
         """Track session creation."""
+        command = prepared.launch.text
+        working_dir = str(prepared.working_dir)
         self.create_session_calls.append({
             "session_id": session_id,
             "session_name": session_name,
             "command": command,
             "working_dir": working_dir,
             "title": title,
+            "secret_env": secret_env,
         })
         self.sessions[session_id] = {
             "command": command,
@@ -1061,21 +1070,23 @@ class MockPluginManager:
         """Access the underlying mock plugin for assertions."""
         return self._plugin
 
+    def prepare_session(self, command: LaunchCommand, working_dir: Path) -> PreparedSessionCommand:
+        return self._plugin.prepare_session(command=command, working_dir=working_dir)
+
     def create_session(
         self,
         session_id: int,
-        command: str,
-        working_dir: str,
+        prepared: PreparedSessionCommand,
         title: str | None,
         session_name: str,  # Required - caller must provide explicit name
         secret_env: dict[str, str] | None = None,
     ) -> bool:
         return self._plugin.create_session(
             session_id=session_id,
-            command=command,
-            working_dir=working_dir,
+            prepared=prepared,
             title=title,
             session_name=session_name,
+            secret_env=secret_env,
         )
 
     def session_exists(self, session_id: int, session_name: str) -> bool:
@@ -1136,21 +1147,23 @@ class MockSessionRunner:
         """Access the underlying mock plugin for assertions."""
         return self._plugin
 
+    def prepare_session(self, command: LaunchCommand, working_dir: Path) -> PreparedSessionCommand:
+        return self._plugin.prepare_session(command=command, working_dir=working_dir)
+
     def create_session(
         self,
         session_id: int,
-        command: str,
-        working_dir: str,
+        prepared: PreparedSessionCommand,
         title: str | None,
         session_name: str,  # Required - caller must provide explicit name
         secret_env: dict[str, str] | None = None,
     ) -> bool:
         return self._plugin.create_session(
             session_id=session_id,
-            command=command,
-            working_dir=working_dir,
+            prepared=prepared,
             title=title,
             session_name=session_name,
+            secret_env=secret_env,
         )
 
     def session_exists(self, session_id: int, session_name: str) -> bool:
