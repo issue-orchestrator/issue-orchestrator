@@ -252,6 +252,8 @@ class WorkingCopy(ExactGit, Protocol):
         Raises:
             GitError: the remote could not be read. Never an empty list in its
                 place: callers scope PRs to an issue's active branch by it.
+            Exception: the configured transport authentication could not be
+                prepared; the auth owner's own error, unconverted.
         """
         ...
 

@@ -1,13 +1,20 @@
 """Unit tests for GitWorkingCopy adapter."""
 
 import json
+import logging
 import os
 import subprocess
+from base64 import b64encode
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
 
+from issue_orchestrator.adapters.github.auth import (
+    GitHubAuth,
+    GitHubAuthError,
+    StaticGitHubTokenProvider,
+)
 from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
 from issue_orchestrator.ports.command_runner import OutputNewlines
 from issue_orchestrator.ports.git import GitError, GitResult
@@ -484,6 +491,48 @@ class TestListRemoteBranches:
 
         with pytest.raises(GitError):
             GitWorkingCopy().list_remote_branches(clone.root)
+
+    def test_the_read_presents_the_configured_git_auth_in_the_environment_only(
+        self, mock_git, tmp_path, caplog
+    ):
+        """GitHub App transport auth reaches ``ls-remote``; the token never
+        reaches argv or a log line (#9550 review r1 F1)."""
+        token = "installation-token-not-live"
+        header = b64encode(f"x-access-token:{token}".encode()).decode()
+        auth = GitHubAuth(
+            token_provider=StaticGitHubTokenProvider(token=token),
+            source_descriptions=(),
+            repo="owner/repo",
+            enable_git_push_auth=True,
+        )
+        mock_git.run.return_value = git_result(stdout="abc123\trefs/heads/8-real\n")
+        caplog.set_level(logging.DEBUG)
+
+        branches = GitWorkingCopy(git=mock_git, git_auth=auth).list_remote_branches(tmp_path)
+
+        assert branches == ["8-real"]
+        mock_git.run.assert_called_once()
+        argv = mock_git.run.call_args.args[1]
+        env = mock_git.run.call_args.kwargs["env"]
+        assert argv == ["ls-remote", "--heads", "origin"]
+        assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraheader"
+        assert env["GIT_CONFIG_VALUE_0"] == f"Authorization: Basic {header}"
+        for secret in (token, header):
+            assert secret not in " ".join(argv)
+            assert secret not in caplog.text
+
+    def test_a_git_auth_failure_raises_rather_than_reading_ambiently(self, mock_git, tmp_path):
+        """An unpreparable credential is loud: no unauthenticated read, no
+        empty branch set (#9550 review r1 F1)."""
+
+        class _BrokenAuth:
+            def git_env_overrides(self, *, remote: str) -> dict[str, str]:
+                raise GitHubAuthError("installation token unavailable")
+
+        with pytest.raises(GitHubAuthError, match="installation token unavailable"):
+            GitWorkingCopy(git=mock_git, git_auth=_BrokenAuth()).list_remote_branches(tmp_path)
+
+        mock_git.run.assert_not_called()
 
 
 class TestIsGitRepo:
