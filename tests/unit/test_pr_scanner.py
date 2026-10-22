@@ -14,6 +14,8 @@ from unittest.mock import MagicMock
 
 from issue_orchestrator.domain.human_block import NeedsHumanCause
 from issue_orchestrator.control.pr_scanner import PRScanner
+from issue_orchestrator.control.worktree_manager import extract_issue_branches
+from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
 from issue_orchestrator.observation.no_progress import WorkRefusal, refusal_of_text
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.models import PendingReview, PendingRework
@@ -22,6 +24,7 @@ from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.events import EventName
 from tests.conftest import MockEventSink, MockGitHubAdapter
 from tests.builders import IssueBuilder
+from tests.unit.foreign_tracking_refs import clone_with_foreign_tracking_refs
 
 
 # =============================================================================
@@ -368,6 +371,32 @@ class TestScanForReviewsFiltering:
         ).reviews
 
         assert result == []
+
+    @pytest.mark.parametrize("fetched", [True, False], ids=["seeded-branch-fetched", "seeded-branch-unfetched"])
+    def test_a_branch_the_remote_never_had_does_not_hide_the_issues_review_pr(
+        self, tmp_path, fetched, mock_config, mock_repository, mock_events
+    ):
+        """Exam Case I (#9550): the engine's clone tracked
+        ``origin/163-test-simple-backend-task``, a branch of the repository it
+        was cloned from that its remote never had. As the issue's "active
+        branch" it made the seeded PR a prior attempt on every scan, so the PR
+        was never reviewed and its conflict rework never queued."""
+        clone = clone_with_foreign_tracking_refs(
+            tmp_path, foreign_branch="163-test-simple-backend-task",
+            remote_branch="163-exam-i-ruled-pr", fetched=fetched,
+        )
+        pr = make_pr_info(164, branch="163-exam-i-ruled-pr", body="Closes #163", labels=["needs-code-review"])
+        mock_repository.prs["163-exam-i-ruled-pr"] = [pr]
+        scanner = PRScanner(
+            config=mock_config,
+            repository=mock_repository,
+            events=mock_events,
+            issue_branches_fn=lambda: extract_issue_branches(GitWorkingCopy(), clone.root),
+        )
+
+        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[]).reviews
+
+        assert [review.pr_number for review in result] == [164]
 
     def test_skips_review_pr_when_linked_issue_is_blocked(
         self,

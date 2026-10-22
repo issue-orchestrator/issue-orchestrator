@@ -21,6 +21,8 @@ from issue_orchestrator.ports.working_copy import (
     PushResult,
     RebaseResult,
 )
+from tests.unit.foreign_tracking_refs import clone_with_foreign_tracking_refs
+from tests.unit.foreign_tracking_refs import git as tracking_git
 
 
 def git_result(stdout: str = "", stderr: str = "", returncode: int = 0) -> GitResult:
@@ -453,47 +455,35 @@ class TestFetch:
 
 
 class TestListRemoteBranches:
-    """Tests for list_remote_branches method."""
+    """The remote's branches, as the remote holds them now (#9550)."""
 
-    def test_list_remote_branches_success(self, git_wc, worktree_path):
-        """Test listing remote branches."""
-        with patch.object(git_wc, "_run_git") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout="  origin/main\n  origin/feature-1\n  origin/feature-2\n",
-                stderr="",
-            )
+    @pytest.mark.parametrize("fetched", [True, False])
+    def test_lists_the_remotes_branches_not_the_clones_tracking_refs(self, tmp_path, fetched):
+        clone = clone_with_foreign_tracking_refs(
+            tmp_path, foreign_branch="106-test-frontend-feature",
+            remote_branch="106-exam-b-green-pr-awaiting-review", fetched=fetched,
+        )
 
-            branches = git_wc.list_remote_branches(worktree_path)
+        branches = GitWorkingCopy().list_remote_branches(clone.root)
 
-            assert len(branches) == 3
-            assert "origin/main" in branches
-            assert "origin/feature-1" in branches
-            assert "origin/feature-2" in branches
+        assert sorted(branches) == ["106-exam-b-green-pr-awaiting-review", "main"]
 
-    def test_list_remote_branches_empty(self, git_wc, worktree_path):
-        """Test listing remote branches when none exist."""
-        with patch.object(git_wc, "_run_git") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout="",
-                stderr="",
-            )
+    def test_a_remote_branch_deleted_since_the_last_fetch_is_gone(self, tmp_path):
+        clone = clone_with_foreign_tracking_refs(
+            tmp_path, foreign_branch="7-elsewhere", remote_branch="8-retired", fetched=True,
+        )
+        tracking_git(clone.remote, "branch", "-D", "8-retired")
 
-            branches = git_wc.list_remote_branches(worktree_path)
+        assert GitWorkingCopy().list_remote_branches(clone.root) == ["main"]
 
-            assert branches == []
+    def test_an_unreadable_remote_raises_rather_than_listing_nothing(self, tmp_path):
+        clone = clone_with_foreign_tracking_refs(
+            tmp_path, foreign_branch="7-elsewhere", remote_branch="8-real", fetched=True,
+        )
+        tracking_git(clone.root, "remote", "set-url", "origin", str(tmp_path / "missing.git"))
 
-    def test_list_remote_branches_error(self, git_wc, worktree_path):
-        """Test error handling."""
-        with patch.object(git_wc, "_run_git") as mock_run:
-            mock_run.side_effect = git_error(
-                1, "git", stderr="error"
-            )
-
-            branches = git_wc.list_remote_branches(worktree_path)
-
-            assert branches == []
+        with pytest.raises(GitError):
+            GitWorkingCopy().list_remote_branches(clone.root)
 
 
 class TestIsGitRepo:

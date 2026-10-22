@@ -439,16 +439,25 @@ class GitWorkingCopy:
             return False
 
     def list_remote_branches(self, repo_root: Path, remote: str = "origin") -> list[str]:
-        """List remote branches for a repository."""
-        try:
-            result = self._run_git(
-                repo_root,
-                ["branch", "-r", "--list", f"{remote}/*"],
-            )
-            return [line.strip() for line in result.stdout.splitlines() if line.strip()]
-        except GitError as e:
-            logger.warning("Failed to list remote branches in %s: %s", repo_root, e)
-            return []
+        """The branches ``remote`` holds NOW, read from the remote itself.
+
+        Never the local remote-tracking refs: nothing prunes them, so they keep
+        a branch the remote deleted, lack one it gained since the last fetch,
+        and in a clone of another local repository name THAT repository's
+        branches. An issue's active branch read from them can be a branch the
+        remote never had, which hid the issue's real PR as a "prior attempt"
+        from review discovery and the tech lead's review release (#9550).
+
+        Raises :class:`GitError` when the remote cannot be read: an empty list
+        would read as "no issue has a branch" and admit a prior attempt's PR.
+        """
+        result = self._run_git(repo_root, ["ls-remote", "--heads", remote], timeout_s=60)
+        heads: list[str] = []
+        for line in result.stdout.splitlines():
+            ref = line.partition("\t")[2]
+            if ref.startswith("refs/heads/"):
+                heads.append(ref.removeprefix("refs/heads/"))
+        return heads
 
     def list_active_worktrees(self, repo_root: Path) -> set[Path]:
         """List paths of active git worktrees for a repository."""
