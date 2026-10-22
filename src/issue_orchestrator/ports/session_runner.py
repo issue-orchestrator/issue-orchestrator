@@ -7,7 +7,10 @@ details (currently subprocess-based).
 This abstraction keeps terminal backend details out of the core.
 """
 
+from pathlib import Path
 from typing import NotRequired, Protocol, TypedDict
+
+from ..domain.launch_prompt_delivery import LaunchCommand, PreparedSessionCommand
 
 
 class DiscoveredSession(TypedDict):
@@ -29,11 +32,21 @@ class SessionRunner(Protocol):
     (e.g., "issue-123" or "review-456"). No fallback logic in implementations.
     """
 
+    def prepare_session(self, command: LaunchCommand, working_dir: Path) -> PreparedSessionCommand:
+        """Prepare *command* exactly as this terminal will exec it (#9012).
+
+        Side-effect free, so a launch prepares before its first workflow
+        mutation and starts the session from the same value.
+
+        Raises:
+            LaunchCommandTooLong: the OS could not exec the prepared command.
+        """
+        ...
+
     def create_session(
         self,
         session_id: int,
-        command: str,
-        working_dir: str,
+        prepared: PreparedSessionCommand,
         title: str | None,
         session_name: str,  # Required - caller must provide explicit name
         secret_env: dict[str, str] | None = None,
@@ -42,8 +55,8 @@ class SessionRunner(Protocol):
 
         Args:
             session_id: Numeric ID (typically issue number)
-            command: Shell command to execute
-            working_dir: Working directory path
+            prepared: What :meth:`prepare_session` returned; the session runs
+                exactly that, in its working directory
             title: Optional human-readable title
             session_name: Full session name (e.g., "issue-123", "review-456")
             secret_env: Provider credentials for the session process. Kept out
@@ -189,11 +202,15 @@ class SessionRunner(Protocol):
 class NullSessionRunner:
     """No-op session runner for testing."""
 
+    def prepare_session(self, command: LaunchCommand, working_dir: Path) -> PreparedSessionCommand:
+        """The command as given: this runner puts nothing around it."""
+        argv = (command.text,)
+        return PreparedSessionCommand(launch=command, working_dir=working_dir, argv=argv, exec_argv=argv)
+
     def create_session(
         self,
         session_id: int,
-        command: str,
-        working_dir: str,
+        prepared: PreparedSessionCommand,
         title: str | None,
         session_name: str,
         secret_env: dict[str, str] | None = None,

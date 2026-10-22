@@ -64,6 +64,9 @@ agents:
     #   model: "deepseek-v4-pro" or "deepseek-flash".
     #   Pay-as-you-go: your topped-up balance is the only spend cap.
     # command: "claude --model {model} '{initial_prompt}'"
+    #   # {initial_prompt} is a short instruction to read the launch prompt the
+    #   # engine persisted to the run directory: the prompt itself, rulings and
+    #   # all, never rides on the command line.
     # initial_prompt: "Work on issue #{issue_number}: {issue_title}"
     # sandbox: false                  # Opt in (default OFF) to the
     #   # orchestrator-computed OS sandbox (ADR-0034), under a TRUSTED-repository

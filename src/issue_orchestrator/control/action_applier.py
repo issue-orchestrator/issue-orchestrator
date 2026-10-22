@@ -40,6 +40,7 @@ from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.repository_host import RepositoryHost
 from ..ports.worktree_manager import WorktreeManager
 from ..domain.label_change_event import labels_changed_payload
+from ..domain.launch_prompt_delivery import LaunchCommand, LaunchCommandTooLong
 from ..domain.models import RETROSPECTIVE_REVIEW_TERMINAL_PREFIX
 from .action_results import FailureCollector
 from .session_launch_types import LaunchStep, launch_step_result
@@ -1058,12 +1059,12 @@ class ActionApplier:
         if self.sessions.exists(ref):
             return ActionResult.skip(action, f"Session {ref.name} already running")
 
-        ctx = SessionContext(
-            ref=ref,
-            command=action.command,
-            working_dir=Path(action.working_dir),
-            title=action.title,
-        )
+        # Started only from what the terminal prepared, like every launch (#9012).
+        try:
+            prepared = self.sessions.prepare(LaunchCommand(action.command), Path(action.working_dir))
+        except LaunchCommandTooLong as exc:
+            return ActionResult.fail_from(action, exc)
+        ctx = SessionContext(ref=ref, prepared=prepared, title=action.title)
 
         success = self.sessions.start(ctx)
 

@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from ..control.isolation import build_agent_tool_path, build_isolation_prefix
+from ..domain.launch_prompt_delivery import LaunchCommand, PreparedSessionCommand
 from .agent_runner import AgentRunner, AgentSession, AgentSpec
 from .session_interactions import (
     SessionInteractionHandler,
@@ -34,6 +35,25 @@ from ..infra.terminal_recording import TERMINAL_RECORDING_FILENAME
 
 logger = logging.getLogger(__name__)
 _RUN_DIR_ENV_RE = re.compile(r"ISSUE_ORCHESTRATOR_RUN_DIR=(['\"]?)([^'\"\s]+)\1")
+
+
+def prepare_subprocess_session(command: LaunchCommand, working_dir: Path) -> PreparedSessionCommand:
+    """*command* exactly as this terminal will exec it in *working_dir* (#9012).
+
+    Everything the terminal puts around the launcher's command - the working
+    directory, the inherited ``PATH`` and the isolation prefix - is read here,
+    once, and frozen into the prepared value the session is later started
+    from. Side-effect free; raises
+    :class:`~..domain.launch_prompt_delivery.LaunchCommandTooLong` when the OS
+    could not exec the result.
+    """
+    path_prefix = build_agent_tool_path(working_dir, os.environ.get("PATH", ""))
+    isolation_prefix = build_isolation_prefix(working_dir, scrub_env=True, isolate_home=False)
+    shell_command = f'cd "{working_dir}" && export PATH="{path_prefix}" && {isolation_prefix}{command.text}'
+    argv = ("/bin/bash", "-lc", shell_command)
+    return PreparedSessionCommand(
+        launch=command, working_dir=working_dir, argv=argv, exec_argv=AgentRunner.exec_argv(argv),
+    )
 
 
 @dataclass
@@ -273,12 +293,6 @@ class SubprocessPlugin:
             "terminal session creation requires ISSUE_ORCHESTRATOR_RUN_DIR in command"
         )
 
-    def _build_process_command(self, command: str, working_dir: Path) -> str:
-        """Build the full command with path and isolation prefix."""
-        path_prefix = build_agent_tool_path(working_dir, os.environ.get("PATH", ""))
-        isolation_prefix = build_isolation_prefix(working_dir, scrub_env=True, isolate_home=False)
-        return f'cd "{working_dir}" && export PATH="{path_prefix}" && {isolation_prefix}{command}'
-
     def _start_session_watcher(self, session: AgentSession, session_name: str) -> None:
         """Start a thread that waits for the session to complete."""
 
@@ -326,27 +340,27 @@ class SubprocessPlugin:
 
     def _start_process(
         self,
-        command: str,
-        working_dir: Path,
+        prepared: PreparedSessionCommand,
         session_name: str,
         secret_env: dict[str, str] | None = None,
     ) -> AgentSession:
         """Start an agent session via :class:`AgentRunner`.
 
-        Builds the full command with isolation prefix, constructs an
-        :class:`AgentSpec`, and delegates to ``AgentRunner.start()``.
+        Runs the prepared command as it was prepared - its ``PATH`` and
+        isolation prefix are not read again - through ``AgentRunner.start()``.
 
         ``secret_env`` becomes ``env_overrides`` rather than part of the command
         string. That is the whole point of carrying it separately: the command
         is visible in ``ps`` to every local user, and a model API key in it
         would be readable fleet-wide on a shared machine.
         """
-        full_cmd = self._build_process_command(command, working_dir)
+        working_dir = prepared.working_dir
+        command = prepared.launch.text
         log_path = self._session_log_path(working_dir, session_name, command)
         interaction_handler = self._interaction_handler(command, session_name, working_dir)
 
         spec = AgentSpec(
-            command=["/bin/bash", "-lc", full_cmd],
+            command=list(prepared.argv),
             working_dir=working_dir,
             timeout_seconds=7200,  # Sessions manage their own timeout via provider_runner
             log_path=log_path,
@@ -395,11 +409,14 @@ class SubprocessPlugin:
                 return
 
     @hookimpl
+    def prepare_session(self, command: LaunchCommand, working_dir: Path) -> PreparedSessionCommand:
+        return prepare_subprocess_session(command, working_dir)
+
+    @hookimpl
     def create_session(
         self,
         session_id: int,
-        command: str,
-        working_dir: str,
+        prepared: PreparedSessionCommand,
         title: str | None,
         session_name: str,  # Required - caller must provide explicit name
         secret_env: dict[str, str] | None = None,
@@ -412,11 +429,11 @@ class SubprocessPlugin:
             # Names only. The values are credentials and must never be logged.
             sorted(secret_env or {}),
         )
-        worktree = Path(working_dir)
+        worktree = prepared.working_dir
         if self.session_exists(session_id, session_name):
             return False
 
-        session = self._start_process(command, worktree, session_name, secret_env)
+        session = self._start_process(prepared, session_name, secret_env)
         is_review = session_name.startswith("review-")
         tab_name = title or session_name
         if is_review:
@@ -433,7 +450,7 @@ class SubprocessPlugin:
             worktree_path=str(worktree.resolve()),
             pid=session.pid,
             started_at=datetime.now().isoformat(),
-            log_path=str(self._session_log_path(worktree, session_name, command)),
+            log_path=str(self._session_log_path(worktree, session_name, prepared.launch.text)),
             tab_name=tab_name,
             is_review=is_review,
         )

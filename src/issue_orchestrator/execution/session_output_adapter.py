@@ -20,6 +20,7 @@ from typing import Any
 from unittest.mock import Mock
 
 from ..domain.escrow_retention_boundary import is_escrow_path
+from ..domain.launch_prompt_delivery import LaunchPromptFile
 from ..contracts.run_manifest import validate_run_manifest_payload
 from ..domain.artifact_contracts import (
     RESERVED_VALIDATION_OUTCOME_FIELDS,
@@ -612,13 +613,13 @@ Timestamp: {self._now_iso()}
         self,
         run_dir: Path,
         content: str,
-    ) -> Path:
-        """Write the run-scoped session prompt used to launch the agent."""
+    ) -> LaunchPromptFile:
+        """Write the run-scoped launch prompt the agent is told to read (#9012)."""
         prompt_path = run_dir / SESSION_PROMPT_NAME
         self._write_text(prompt_path, content)
         self.update_manifest(run_dir, {"session_prompt_path": str(prompt_path)})
         logger.info("Wrote session prompt to %s", prompt_path)
-        return prompt_path
+        return LaunchPromptFile.written(prompt_path, content)
 
     def clear_retry_state(
         self,

@@ -13,6 +13,13 @@ Tests mock at port boundaries, not internal patches, following the hexagonal arc
 from tests.unit.control.liveness_doubles import gated, liveness_owner
 from issue_orchestrator.control.host_rate_limit_launch_gate import live_episode_keys
 from issue_orchestrator.domain.issue_run_evidence import ReworkTarget
+from issue_orchestrator.domain.launch_prompt_delivery import (
+    MAX_EXEC_ARGUMENT_BYTES,
+    LaunchCommand,
+    LaunchCommandTooLong,
+    PreparedSessionCommand,
+)
+from issue_orchestrator.execution.terminal_subprocess import prepare_subprocess_session
 from issue_orchestrator.domain.tech_lead_scratch_identity import (
     names_one_scratch_checkout,
     parse_scratch_worktree_name,
@@ -21,6 +28,7 @@ from issue_orchestrator.domain.tech_lead_scratch_identity import (
 )
 from issue_orchestrator.domain.session_run import SessionRunIdentity
 from issue_orchestrator.domain.registered_completion import CompletionProcessingPolicy
+from tests.launch_prompt_helpers import delivered_prompt, prepared_as_given
 from tests.run_allocation_helpers import make_session_launcher
 
 from issue_orchestrator.domain.models import DiscoveredReview
@@ -603,6 +611,19 @@ class LauncherTestBundle:
     )
     claim_manager: MagicMock | None = None
     issue_run_ledger: IssueRunLedger = field(default_factory=MagicMock)
+    #: Prepares each launch's command as given; a test that exercises the
+    #: terminal's own additions binds :func:`_with_the_subprocess_terminal`.
+    session_manager: MagicMock = field(default_factory=MagicMock)
+
+
+def _with_the_subprocess_terminal(bundle: LauncherTestBundle) -> None:
+    """Prepare through the real subprocess terminal: its cd, PATH and isolation prefix included (#9012)."""
+    bundle.session_manager.prepare.side_effect = prepare_subprocess_session
+
+
+#: An inherited PATH the terminal copies into the command it execs: short
+#: commands under it are past the OS argument limit once prepared.
+_LONG_INHERITED_PATH = "/usr/bin:" + "/opt/it's" * 20_000
 
 
 def _build_launcher_bundle(
@@ -649,14 +670,14 @@ def _build_launcher_bundle(
 
     def mock_create_session(
         name: str,
-        cmd: str,
-        wd: Path,
+        prepared: PreparedSessionCommand,
         title: str | None,
         secret_env: dict | None = None,
     ) -> bool:
+        cmd, wd = prepared.launch.text, prepared.working_dir
         create_session_calls.append(
             {"name": name, "cmd": cmd, "wd": wd, "title": title,
-             "secret_env": secret_env}
+             "secret_env": secret_env, "prepared": prepared}
         )
         if create_session_override[0] is not None:
             return create_session_override[0](name, cmd, wd, title)
@@ -685,6 +706,7 @@ def _build_launcher_bundle(
         return review_machines[pr_number]
 
     mock_action_applier = MagicMock()
+    session_manager = MagicMock()
     launcher_kwargs = {}
     if coder_prompt_addendum is not None or standing_rulings is not None:
         launcher_kwargs["launch_prompt"] = IssueLaunchPrompt(
@@ -711,7 +733,7 @@ def _build_launcher_bundle(
         events=mock_events,
         repository_host=mock_repo_host,
         action_applier=mock_action_applier,
-        session_manager=MagicMock(),
+        session_manager=session_manager,
         worktree_manager=mock_worktree_manager,
         working_copy=mock_working_copy,
         command_runner=mock_command_runner,
@@ -743,8 +765,14 @@ def _build_launcher_bundle(
         board_snapshot_provider=board_snapshot_provider,
         claim_manager=claim_manager,
         issue_run_ledger=issue_run_ledger,
+        session_manager=session_manager,
     )
     return bundle
+
+
+def _labels_added(bundle: LauncherTestBundle) -> list[AddLabelAction]:
+    """Every label the launcher's mutations added, through its action applier."""
+    return [call.args[0] for call in bundle.action_applier.apply.call_args_list if isinstance(call.args[0], AddLabelAction)]
 
 
 @pytest.fixture
@@ -974,6 +1002,38 @@ class TestLaunchIssueSession:
         assert observed[0].session_key == result.session.key
         assert observed[0].run == result.session.run_assets
 
+    def test_a_coding_session_starts_from_what_its_terminal_prepared(
+        self, launcher_bundle, sample_issue,
+    ):
+        """#9012 review r2 F2: the start consumes the very value the terminal
+        prepared before the in-progress label, not a command rebuilt after it."""
+        _with_the_subprocess_terminal(launcher_bundle)
+
+        result = launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is True
+        (command,) = [call.args[0] for call in launcher_bundle.session_manager.prepare.call_args_list]
+        started = launcher_bundle.create_session_calls[0]["prepared"]
+        assert started.launch is command
+        assert started.argv[-1].endswith(command.text) and 'export PATH="' in started.argv[-1]
+
+    def test_terminal_path_growth_past_the_limit_fails_a_coding_launch_before_its_in_progress_label(
+        self, launcher_bundle, sample_issue, monkeypatch,
+    ):
+        """#9012 review r2 F2: the terminal copies the inherited PATH into what
+        it execs, so a launch whose own command is short can still be past the
+        OS limit. The terminal says so before the in-progress label: no label
+        is added and nothing is started."""
+        _with_the_subprocess_terminal(launcher_bundle)
+        monkeypatch.setenv("PATH", _LONG_INHERITED_PATH)
+
+        with pytest.raises(LaunchCommandTooLong):
+            launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert _labels_added(launcher_bundle) == []
+        assert launcher_bundle.create_session_calls == []
+        launcher_bundle.session_manager.prepare.assert_called_once()
+
     def test_failed_run_registration_refuses_spawn_without_consuming_work_claim(
         self, sample_config, mock_event_sink, mock_repository_host,
         mock_worktree_manager, mock_working_copy, mock_command_runner, sample_issue,
@@ -1009,7 +1069,7 @@ class TestLaunchIssueSession:
         result = bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
 
         assert result.success is True
-        assert "INTERNAL-REVIEW-MARKER" in bundle.create_session_calls[0]["cmd"]
+        assert "INTERNAL-REVIEW-MARKER" in delivered_prompt(bundle.create_session_calls[0]["cmd"])
         provider.prepare.assert_called_once_with(kind=SessionKind.CODE)
 
     def test_missing_internal_review_instructions_fail_before_initial_mutation(
@@ -1104,7 +1164,7 @@ class TestLaunchIssueSession:
         result = bundle.launcher.launch_issue_session(issue, active_sessions=[])
 
         assert result.success is True
-        assert "INTERNAL-REVIEW-MARKER" not in bundle.create_session_calls[0]["cmd"]
+        assert "INTERNAL-REVIEW-MARKER" not in delivered_prompt(bundle.create_session_calls[0]["cmd"])
         provider.prepare.assert_called_once_with(kind=SessionKind.TECH_LEAD)
 
     def test_tech_lead_launch_preserves_branch_but_coding_does_not(
@@ -1636,7 +1696,7 @@ class TestLaunchIssueSession:
             manifest_downloader=NullManifestDownloader(),
             tech_lead_authority=SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root),
             session_exists_fn=lambda name: False,
-            create_session_fn=lambda name, cmd, wd, title, secret_env=None: True,
+            create_session_fn=lambda name, prepared, title, secret_env=None: True,
             get_issue_machine=lambda issue: IssueStateMachine(issue),
             get_session_machine=lambda name, n, timeout: SessionStateMachine(
                 name, n, timeout_minutes=timeout
@@ -1807,7 +1867,7 @@ class TestLaunchIssueSession:
 
         assert result.success is True
         # The command should include existing work context
-        cmd = launcher_bundle.create_session_calls[0]["cmd"]
+        cmd = delivered_prompt(launcher_bundle.create_session_calls[0]["cmd"])
         assert "IMPORTANT:" in cmd or "existing commit" in cmd.lower() or result.session is not None
 
     def test_writes_session_identity_file(self, session_launcher, sample_issue):
@@ -2110,7 +2170,7 @@ class TestLaunchValidationRetrySession:
         assert result.session.run_dir is not None
         assert result.session.run_dir.name.endswith("__coding-2")
         assert mock_worktree_manager.create_calls[0]["branch_name"] == "123-fix-checkout"
-        command = launcher_bundle.create_session_calls[0]["cmd"]
+        command = delivered_prompt(launcher_bundle.create_session_calls[0]["cmd"])
         assert "Validation Retry" in command
         assert "dirty worktree" in command
 
@@ -2177,7 +2237,7 @@ class TestLaunchValidationRetrySession:
         )
 
         assert result.success is True
-        assert "INTERNAL-REVIEW-MARKER" in bundle.create_session_calls[0]["cmd"]
+        assert "INTERNAL-REVIEW-MARKER" in delivered_prompt(bundle.create_session_calls[0]["cmd"])
         provider.prepare.assert_called_once_with(kind=SessionKind.CODE)
 
     def test_missing_internal_review_instructions_fail_before_retry_mutation(
@@ -2221,6 +2281,54 @@ class TestLaunchValidationRetrySession:
         bundle.action_applier.apply.assert_not_called()
         assert mock_worktree_manager.create_calls == []
         assert bundle.create_session_calls == []
+
+
+    @staticmethod
+    def _retry() -> PendingValidationRetry:
+        return PendingValidationRetry(
+            issue_number=123,
+            issue_title="Fix checkout",
+            agent_label="agent:web",
+            worktree_path="/tmp/worktree-123",
+            branch_name="123-fix-checkout",
+            original_prompt="Work on issue #123",
+            validation_error="dirty worktree",
+            validation_error_file=None,
+            retry_count=1,
+            source_kind=SessionKind.CODE,
+            validation_cmd="make test",
+        )
+
+    def test_a_retry_command_past_the_limit_fails_before_the_in_progress_label(
+        self, launcher_bundle, sample_config
+    ):
+        """#9012 review r1 F1: a validation retry's command is prepared by its
+        terminal, wrapping included, before its in-progress label."""
+        _with_the_subprocess_terminal(launcher_bundle)
+        sample_config.agents["agent:web"].command = (
+            "claude --append-system-prompt " + "''" * 12_000 + " '{initial_prompt}'"
+        )
+
+        with pytest.raises(LaunchCommandTooLong):
+            launcher_bundle.launcher.launch_validation_retry_session(self._retry(), active_sessions=[])
+
+        assert _labels_added(launcher_bundle) == [] and launcher_bundle.create_session_calls == []
+
+    def test_terminal_path_growth_past_the_limit_fails_a_retry_before_its_in_progress_label(
+        self, launcher_bundle, monkeypatch
+    ):
+        """#9012 review r2 F2: the terminal copies the inherited PATH into what
+        it execs. A retry whose own command is short is still past the OS limit
+        under a long PATH: its terminal says so before the in-progress label,
+        and nothing is started."""
+        _with_the_subprocess_terminal(launcher_bundle)
+        monkeypatch.setenv("PATH", _LONG_INHERITED_PATH)
+
+        with pytest.raises(LaunchCommandTooLong):
+            launcher_bundle.launcher.launch_validation_retry_session(self._retry(), active_sessions=[])
+
+        assert _labels_added(launcher_bundle) == [] and launcher_bundle.create_session_calls == []
+        launcher_bundle.session_manager.prepare.assert_called_once()
 
 
 class TestLaunchIssueSessionPerSessionWorktree:
@@ -2277,7 +2385,7 @@ class TestLaunchReviewSession:
         result = bundle.launcher.launch_review_session(review, active_sessions=[])
 
         assert result.success is True
-        assert "INTERNAL-REVIEW-MARKER" not in bundle.create_session_calls[0]["cmd"]
+        assert "INTERNAL-REVIEW-MARKER" not in delivered_prompt(bundle.create_session_calls[0]["cmd"])
         provider.prepare.assert_not_called()
 
     def test_review_launch_threads_issue_label_provider_args(self, launcher_bundle):
@@ -2772,7 +2880,7 @@ class TestLaunchReworkSession:
         result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
         assert result.success and result.session is not None
         assert len(launcher_bundle.create_session_calls) == 1
-        command = launcher_bundle.create_session_calls[0]["cmd"]
+        command = delivered_prompt(launcher_bundle.create_session_calls[0]["cmd"])
         for instruction in (request.report, request.feedback, "Earlier coder feedback", "Keep reviewer regression coverage"):
             assert instruction in command
         assert mock_worktree_manager.create_calls[0]["branch_name"] == pr.branch
@@ -2841,7 +2949,7 @@ class TestLaunchReworkSession:
         result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
         assert result.success and result.session is not None
         assert len(launcher_bundle.create_session_calls) == 1
-        command = launcher_bundle.create_session_calls[0]["cmd"]
+        command = delivered_prompt(launcher_bundle.create_session_calls[0]["cmd"])
         for request in (first, second):
             assert request.report in command
             receipt = store.load_rework_receipt(request.key)
@@ -2883,7 +2991,7 @@ class TestLaunchReworkSession:
         result = launcher_bundle.launcher.launch_rework_session(rework, [],
             work_claim=PendingWorkLaunchClaim(claim, claims))
         assert result.success and result.session is not None
-        command = launcher_bundle.create_session_calls[-1]["cmd"]
+        command = delivered_prompt(launcher_bundle.create_session_calls[-1]["cmd"])
         assert first.report in command
         assert (second.report in command) is (provider is None)
         assert store.load_rework_receipt(first.key).attempt == result.session.run_assets.identity
@@ -2999,7 +3107,7 @@ class TestLaunchReworkSession:
         result = bundle.launcher.launch_rework_session(rework, active_sessions=[])
 
         assert result.success is True
-        assert "INTERNAL-REVIEW-MARKER" in bundle.create_session_calls[0]["cmd"]
+        assert "INTERNAL-REVIEW-MARKER" in delivered_prompt(bundle.create_session_calls[0]["cmd"])
         provider.prepare.assert_called_once_with(kind=SessionKind.REWORK)
 
     def test_missing_internal_review_instructions_fail_before_rework_mutation(
@@ -3201,7 +3309,7 @@ class TestLaunchReworkSession:
 
         assert result.success is True
         assert len(launcher_bundle.create_session_calls) == 1
-        command = launcher_bundle.create_session_calls[0]["cmd"]
+        command = delivered_prompt(launcher_bundle.create_session_calls[0]["cmd"])
         assert "REVIEWER FEEDBACK" in command
         assert "Please add unit tests" in command
         assert "reviewer1" in command
@@ -3223,7 +3331,7 @@ class TestLaunchReworkSession:
         result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
 
         assert result.success is True
-        command = launcher_bundle.create_session_calls[0]["cmd"]
+        command = delivered_prompt(launcher_bundle.create_session_calls[0]["cmd"])
         assert "POST-PUBLISH VALIDATION FAILURE" in command
         assert "Resolve merge conflicts." in command
 
@@ -3245,7 +3353,7 @@ class TestLaunchReworkSession:
         result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
 
         assert result.success is True
-        command = launcher_bundle.create_session_calls[0]["cmd"]
+        command = delivered_prompt(launcher_bundle.create_session_calls[0]["cmd"])
         assert "Fix the bug" in command
         assert "alice" in command
         # APPROVED review should not be included
@@ -3269,7 +3377,7 @@ class TestLaunchReworkSession:
         result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
 
         assert result.success is True
-        command = launcher_bundle.create_session_calls[0]["cmd"]
+        command = delivered_prompt(launcher_bundle.create_session_calls[0]["cmd"])
         # No feedback should be included (empty body)
         assert "REVIEWER FEEDBACK" not in command
 
@@ -3288,11 +3396,11 @@ class TestLaunchReworkSession:
         result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
 
         assert result.success is True
-        command = launcher_bundle.create_session_calls[0]["cmd"]
+        command = delivered_prompt(launcher_bundle.create_session_calls[0]["cmd"])
         assert "REVIEWER FEEDBACK" not in command
 
     def test_escapes_quotes_in_feedback(self, launcher_bundle, mock_repo_host):
-        """Verify quotes in reviewer feedback don't break the command."""
+        """Verify quotes in reviewer feedback reach the agent intact."""
         mock_repo_host.prs[123] = [
             PRInfo(number=456, title="Fix", url="url", branch="123-fix", body="", state="open", labels=[])
         ]
@@ -3308,9 +3416,8 @@ class TestLaunchReworkSession:
         result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
 
         assert result.success is True
-        # Command should not break - the eval text should still be present
-        command = launcher_bundle.create_session_calls[0]["cmd"]
-        assert "eval" in command
+        # The quoted feedback reaches the agent verbatim, through the prompt file
+        assert "Don't use 'eval' here" in delivered_prompt(launcher_bundle.create_session_calls[0]["cmd"])
 
     def test_includes_commented_reviews_with_body(self, launcher_bundle, mock_repo_host):
         """Verify COMMENTED reviews with body text are included."""
@@ -3329,7 +3436,7 @@ class TestLaunchReworkSession:
         result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
 
         assert result.success is True
-        command = launcher_bundle.create_session_calls[0]["cmd"]
+        command = delivered_prompt(launcher_bundle.create_session_calls[0]["cmd"])
         assert "REVIEWER FEEDBACK" in command
         assert "Consider using a helper function here" in command
 
@@ -3367,7 +3474,7 @@ class TestLaunchReworkSession:
         result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
 
         assert result.success is True
-        command = launcher_bundle.create_session_calls[0]["cmd"]
+        command = delivered_prompt(launcher_bundle.create_session_calls[0]["cmd"])
         assert "REVIEWER FEEDBACK" in command
         assert "Local feedback: please add tests" in command
 
@@ -3407,7 +3514,7 @@ class TestLaunchReworkSession:
         result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
 
         assert result.success is True
-        command = launcher_bundle.create_session_calls[0]["cmd"]
+        command = delivered_prompt(launcher_bundle.create_session_calls[0]["cmd"])
         # Should use GitHub API feedback, not old local file
         assert "GitHub API feedback" in command
         assert "Old local feedback" not in command
@@ -7093,17 +7200,13 @@ class TestCreateSession:
         mock_manager = MockSessionManager()
         events = MockEventSink()
 
-        result = create_session(
-            "issue-123",
-            "claude --help",
-            Path("/tmp/worktree"),
-            "Test Session",
-            mock_manager,
-            events,
-        )
+        prepared = prepared_as_given(LaunchCommand("claude --help"), Path("/tmp/worktree"))
+
+        result = create_session("issue-123", prepared, "Test Session", mock_manager, events)
 
         assert result is True
-        assert len(mock_manager.start_calls) == 1
+        (started,) = mock_manager.start_calls
+        assert started.prepared is prepared and started.ref.name == "issue-123"
 
 
 class TestSessionExists:
@@ -8049,7 +8152,7 @@ class TestStackRelaunchGate:
             manifest_downloader=NullManifestDownloader(),
             tech_lead_authority=SqliteTechLeadAuthorityStore.for_repo(sample_config.repo_root),
             session_exists_fn=lambda name: False,
-            create_session_fn=lambda name, cmd, wd, title, secret_env=None: True,
+            create_session_fn=lambda name, prepared, title, secret_env=None: True,
             get_issue_machine=lambda issue: IssueStateMachine(issue),
             get_session_machine=lambda name, n, timeout: SessionStateMachine(
                 name, n, timeout_minutes=timeout
@@ -11066,7 +11169,7 @@ class TestStandingRulingsReachEveryLaunch:
         prompt = result.session.original_prompt
         assert prompt.startswith(f"{BINDING_BEGIN}\n{RULINGS_PROMPT_HEADING}123")  # binding, before the task
         assert f"`{ruling.ruling_id}`" in prompt and ruling.text in prompt and "Build to these rulings" in prompt
-        assert ruling.ruling_id in bundle.create_session_calls[0]["cmd"]
+        assert ruling.ruling_id in delivered_prompt(bundle.create_session_calls[0]["cmd"])
 
     def test_a_conflict_rework_carries_the_ruling_as_its_brief(self, rulings_bundle) -> None:
         from issue_orchestrator.domain.standing_ruling import REWORK_BRIEF_OPENING
@@ -11082,7 +11185,7 @@ class TestStandingRulingsReachEveryLaunch:
         result = bundle.launcher.launch_rework_session(rework, active_sessions=[])
 
         assert result.success is True
-        command = bundle.create_session_calls[0]["cmd"]
+        command = delivered_prompt(bundle.create_session_calls[0]["cmd"])
         assert REWORK_BRIEF_OPENING in command and ruling.ruling_id in command
         assert command.index(REWORK_BRIEF_OPENING) < command.index("Merge conflict against base branch")
 
@@ -11105,7 +11208,7 @@ class TestStandingRulingsReachEveryLaunch:
         bodies.bodies[123] = body_with(ruling)
 
         assert bundle.launcher.launch_validation_retry_session(retry, active_sessions=[]).success is True
-        command = bundle.create_session_calls[0]["cmd"]
+        command = delivered_prompt(bundle.create_session_calls[0]["cmd"])
         assert ruling.ruling_id in command and "Work on issue #123" in command
         assert retired.ruling_id not in command and retired.text not in command
 
@@ -11119,7 +11222,7 @@ class TestStandingRulingsReachEveryLaunch:
         )
 
         assert bundle.launcher.launch_validation_retry_session(retry, active_sessions=[]).success is True
-        assert ruling.ruling_id in bundle.create_session_calls[0]["cmd"]
+        assert ruling.ruling_id in delivered_prompt(bundle.create_session_calls[0]["cmd"])
 
     def test_a_review_must_check_the_diff_against_each_ruling_and_attest_it(self, rulings_bundle) -> None:
         bundle, _owner, _bodies, ruling = rulings_bundle
@@ -11131,7 +11234,7 @@ class TestStandingRulingsReachEveryLaunch:
         result = bundle.launcher.launch_review_session(review, active_sessions=[])
 
         assert result.success is True
-        command = bundle.create_session_calls[0]["cmd"]
+        command = delivered_prompt(bundle.create_session_calls[0]["cmd"])
         assert f"`{ruling.ruling_id}`" in command
         assert "--upholds-ruling <id>" in command and "implementation-required" in command
 
@@ -11214,8 +11317,93 @@ class TestTechLeadRunsAreBoundByTheRulingsOfTheWorkTheyCover:
         assert COVERED_RULINGS_HEADING in prompt
         assert f"{RULINGS_PROMPT_HEADING}365 (PR #512)" in prompt and ruling.text in prompt
         assert "issue #400" not in prompt  # no ruling on it: nothing to bind
-        assert ruling.ruling_id in bundle.create_session_calls[0]["cmd"]
+        assert ruling.ruling_id in delivered_prompt(bundle.create_session_calls[0]["cmd"])
         assert {365, 400} <= set(bodies.reads)  # each covered body read fresh at launch
+
+    def test_a_batch_whose_covered_rulings_exceed_the_argument_limit_launches_bounded(
+        self, tech_lead_bundle, mock_repo_host
+    ) -> None:
+        """#9012: rulings may hold 30,000 characters each, so a batch covering a
+        few such issues composes a prompt no single OS argument can carry. The
+        command stays within the limit as its terminal execs it, and the agent
+        is given the whole prompt to read."""
+        from issue_orchestrator.domain.standing_ruling import MAX_RULING_TEXT_CHARS
+        from tests.standing_ruling_helpers import a_ruling, body_with
+
+        bundle, _owner, bodies, _ruling, anchor = tech_lead_bundle
+        _with_the_subprocess_terminal(bundle)
+        covered = range(365, 370)
+        long_rulings = {
+            number: a_ruling(f"m-00000000{number:04d}", (f"Ruling on #{number}: keep the contract. " * 1000)[:MAX_RULING_TEXT_CHARS])
+            for number in covered
+        }
+        for number, ruling in long_rulings.items():
+            bodies.bodies[number] = body_with(ruling)
+        self._batch_of(mock_repo_host, *((number + 200, f"{number}-work", f"Closes #{number}") for number in covered))
+
+        result = bundle.launcher.launch_issue_session(anchor, active_sessions=[])
+
+        assert result.success is True, result.reason
+        command = bundle.create_session_calls[0]["cmd"]
+        assert len(result.session.original_prompt.encode()) > 128 * 1024  # past Linux's per-argument cap
+        exec_argv = bundle.create_session_calls[0]["prepared"].exec_argv
+        assert all(len(argument.encode()) <= MAX_EXEC_ARGUMENT_BYTES for argument in exec_argv)
+        assert delivered_prompt(command) == result.session.original_prompt  # whole, never truncated
+        for ruling in long_rulings.values():
+            assert ruling.text in result.session.original_prompt and ruling.text not in command
+
+    def test_a_prompt_that_cannot_be_delivered_fails_before_the_in_progress_label(
+        self, tech_lead_bundle, mock_repo_host, sample_config
+    ) -> None:
+        """#9012: a launch whose prompt cannot be delivered whole fails loudly,
+        before its first label mutation, and nothing is spawned or truncated."""
+        bundle, _owner, _bodies, _ruling, anchor = tech_lead_bundle
+        _with_the_subprocess_terminal(bundle)
+        # What still rides on the command line is configuration; configured past the limit, it cannot start.
+        sample_config.agents["agent:tech-lead"].provider = "claude-code"
+        sample_config.agents["agent:tech-lead"].provider_args = {"system_prompt": "x" * MAX_EXEC_ARGUMENT_BYTES}
+        self._batch_of(mock_repo_host, (512, "365-walk", "Closes #365"))
+
+        with pytest.raises(LaunchCommandTooLong):
+            bundle.launcher.launch_issue_session(anchor, active_sessions=[])
+
+        assert _labels_added(bundle) == [] and bundle.create_session_calls == []
+
+    def test_a_command_that_retry_wrapping_pushes_past_the_limit_fails_before_the_in_progress_label(
+        self, tech_lead_bundle, mock_repo_host, sample_config
+    ) -> None:
+        """#9012 review r1 F1: the limit is the exec'd command's. A one-shot
+        command is re-quoted into the retry wrapper's ``--command`` argument, a
+        single quote growing to five bytes, so an agent command that reads well
+        under the limit can be past it once wrapped: the launch fails before its
+        first label mutation, and nothing is spawned."""
+        bundle, _owner, _bodies, _ruling, anchor = tech_lead_bundle
+        _with_the_subprocess_terminal(bundle)
+        agent = sample_config.agents["agent:tech-lead"]
+        agent.command = "claude --append-system-prompt " + "''" * 12_000 + " '{initial_prompt}'"
+        assert agent.provider is None  # provider-less: run one-shot, so wrapped
+        assert len(agent.command.encode()) < MAX_EXEC_ARGUMENT_BYTES // 3
+        self._batch_of(mock_repo_host, (512, "365-walk", "Closes #365"))
+
+        with pytest.raises(LaunchCommandTooLong):
+            bundle.launcher.launch_issue_session(anchor, active_sessions=[])
+
+        assert _labels_added(bundle) == [] and bundle.create_session_calls == []
+
+    def test_environment_exports_that_push_the_command_past_the_limit_fail_before_the_in_progress_label(
+        self, tech_lead_bundle, mock_repo_host, sample_config
+    ) -> None:
+        """#9012 review r1 F1: the session's environment exports are part of
+        the command a session starts from, so they are inside the limit too."""
+        bundle, _owner, _bodies, _ruling, anchor = tech_lead_bundle
+        _with_the_subprocess_terminal(bundle)
+        sample_config.e2e_pr_labels = ["e2e-" + "l" * MAX_EXEC_ARGUMENT_BYTES]
+        self._batch_of(mock_repo_host, (512, "365-walk", "Closes #365"))
+
+        with pytest.raises(LaunchCommandTooLong):
+            bundle.launcher.launch_issue_session(anchor, active_sessions=[])
+
+        assert _labels_added(bundle) == [] and bundle.create_session_calls == []
 
     def test_the_links_come_from_the_pr_text_the_agent_is_given(
         self, sample_config, mock_events, mock_repo_host, mock_worktree_manager, mock_working_copy,
@@ -11349,7 +11537,7 @@ class TestTechLeadRunsAreBoundByTheRulingsOfTheWorkTheyCover:
         result = bundle.launcher.launch_validation_retry_session(retry, active_sessions=[])
 
         assert result.success is True, result.reason
-        prompt = bundle.create_session_calls[0]["cmd"]
+        prompt = delivered_prompt(bundle.create_session_calls[0]["cmd"])
         assert f"{RULINGS_PROMPT_HEADING}365" in prompt and since.text in prompt
         assert retired.ruling_id not in prompt and retired.text not in prompt  # codex r3 F1
         assert "Run the health review." in prompt

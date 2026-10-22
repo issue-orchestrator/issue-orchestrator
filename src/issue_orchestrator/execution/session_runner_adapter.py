@@ -8,8 +8,10 @@ This is the ONLY place pluggy is used for session management.
 """
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..domain.launch_prompt_delivery import LaunchCommand, PreparedSessionCommand
 from ..ports.session_runner import DiscoveredSession
 
 if TYPE_CHECKING:
@@ -35,11 +37,18 @@ class PluggySessionRunner:
         """
         self._pm = plugin_manager
 
+    def prepare_session(self, command: LaunchCommand, working_dir: Path) -> PreparedSessionCommand:
+        """Prepare a session command via the terminal plugin's hook (#9012)."""
+        prepared = self._pm.hook.prepare_session(command=command, working_dir=working_dir)
+        if prepared is None:
+            # No terminal to prepare for is a wiring fault, never "no bound".
+            raise RuntimeError("no terminal plugin prepares session commands")
+        return prepared
+
     def create_session(
         self,
         session_id: int,
-        command: str,
-        working_dir: str,
+        prepared: PreparedSessionCommand,
         title: str | None,
         session_name: str,  # Required - caller must provide explicit name
         secret_env: dict[str, str] | None = None,
@@ -50,13 +59,12 @@ class PluggySessionRunner:
             session_id,
             session_name,
             title,
-            working_dir,
-            command,
+            prepared.working_dir,
+            prepared.launch.text,
         )
         result = self._pm.hook.create_session(
             session_id=session_id,
-            command=command,
-            working_dir=working_dir,
+            prepared=prepared,
             title=title,
             session_name=session_name,
             secret_env=secret_env,

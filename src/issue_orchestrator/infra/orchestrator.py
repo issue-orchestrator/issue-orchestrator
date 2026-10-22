@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from ..control.session_manager import SessionRef, SessionType
     from ..control.tech_lead_trigger import TechLeadTerminationOutcome
     from ..domain.tech_lead_session import TechLeadLaunchScope, TechLeadSessionGeneration
+    from ..ports.debug_session_launch import DebugSessionOutcome
     from ..ports.operator_issue_commands import OperatorIssueCommands
     from ..ports.session_runner import DiscoveredSession
 
@@ -74,6 +75,7 @@ from ..domain.state_machines.session_machine import SessionStateMachine
 from ..domain.state_machines.review_machine import ReviewStateMachine
 from ..control.session_completion import handle_session_completion as _handle_session_completion, process_active_sessions as _process_active_sessions, unprocessed_session_policy
 from ..control.session_launcher import SessionLauncher
+from ..control.debug_session_launcher import debug_session_request
 from ..control.board_snapshot_builder import StateBoardSnapshotProvider
 from ..control.tech_lead_run_wiring import (
     TechLeadRunAdmission,
@@ -93,7 +95,6 @@ from ..control.session_routing import (
     recover_unresolved_work as _recover_unresolved_work,
     restore_running_sessions as _restore_running_sessions,
     parse_session_ref as _parse_session_ref,
-    create_session as _create_session,
     session_exists as _session_exists,
     kill_session as _kill_session,
     orchestrator_launch_session as _launch_session,
@@ -255,6 +256,10 @@ class Orchestrator:
         with self.state_lock:
             return fn()
 
+    def launch_debug_session(self, issue_number: int) -> "DebugSessionOutcome":
+        """An operator's debug session (#9012): its request read under the state lock, then launched by the session launcher."""
+        return self._session_launcher.launch_debug_session(self.run_locked(lambda: debug_session_request(self.config, issue_number, self.state.cached_queue_issues)))
+
     def kill_session(self, name: str) -> None:
         """Kill a session by terminal ID (public wrapper)."""
         self._kill_session(name)
@@ -321,8 +326,6 @@ class Orchestrator:
         return self.deps.session_launcher_factory(
             board_snapshot_provider=StateBoardSnapshotProvider(self.deps.board_snapshot_builder, lambda: self.state),
             blocked_item_triage=build_blocked_item_triage(self.config, self.deps, lambda: self.state),
-            session_exists_fn=lambda name: _session_exists(name, self.deps.session_manager, self.deps.events),
-            create_session_fn=self._create_session,
             get_issue_machine=self._get_issue_machine,
             get_session_machine=self._get_session_machine,
             get_review_machine=self._get_review_machine,
@@ -411,16 +414,6 @@ class Orchestrator:
 
     def _parse_session_ref(self, session_name: str, operation: str) -> "SessionRef":
         return _parse_session_ref(session_name, operation, self.deps.events)
-
-    def _create_session(
-        self,
-        name: str,
-        cmd: str,
-        wd: Path,
-        title: str | None = None,
-        secret_env: dict[str, str] | None = None,
-    ) -> bool:
-        return _create_session(name, cmd, wd, title, self.deps.session_manager, self.deps.events, secret_env)
 
     def _session_exists(self, name: str) -> bool:
         return _session_exists(name, self.deps.session_manager, self.deps.events)
