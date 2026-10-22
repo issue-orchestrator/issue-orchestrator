@@ -1,6 +1,7 @@
 """Trust and interruption tests through durable owners with external ports substituted."""
 
 import json
+from contextlib import nullcontext
 import sqlite3
 from dataclasses import replace
 from hashlib import sha256
@@ -68,7 +69,7 @@ def setup(tmp_path: Path):
         returncode=0, stdout="passed", stderr="", timed_out=False
     )
     workspace = Mock(spec=CompletionValidationWorkspace)
-    workspace.checkout.return_value = record.run.worktree_path
+    workspace.checkout.side_effect = lambda *_args: nullcontext(record.run.worktree_path)
     validator = ConfiguredCompletionEvidenceValidator(
         wc, runner, workspace, command="configured-check", timeout_seconds=30
     )
@@ -312,7 +313,7 @@ def test_background_restart_consumes_pending_receipt_without_filename_selection(
     callbacks = []
     jobs.submit.side_effect = lambda key, callback: callbacks.append(callback) or True
     workspace = Mock(spec=CompletionValidationWorkspace)
-    workspace.checkout.return_value = run.worktree_path
+    workspace.checkout.side_effect = lambda *_args: nullcontext(run.worktree_path)
     validator = ConfiguredCompletionEvidenceValidator(
         wc, runner, workspace, command="configured-check", timeout_seconds=30
     )

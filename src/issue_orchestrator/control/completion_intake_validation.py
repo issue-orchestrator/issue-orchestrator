@@ -46,32 +46,32 @@ class ConfiguredCompletionEvidenceValidator:
         if head is None:
             raise CompletionIntakeError("validation HEAD is unavailable")
         require_sha(head)
-        worktree = self._workspace.checkout(entry.run, head, entry.entry_id)
-        if self._working_copy.get_head_sha(
-            worktree
-        ) != head or self._working_copy.has_uncommitted_changes(worktree):
-            raise CompletionIntakeError(
-                "isolated validator checkout does not match selected commit"
+        with self._workspace.checkout(entry.run, head, entry.entry_id) as worktree:
+            if self._working_copy.get_head_sha(
+                worktree
+            ) != head or self._working_copy.has_uncommitted_changes(worktree):
+                raise CompletionIntakeError(
+                    "isolated validator checkout does not match selected commit"
+                )
+            result = run_owned_validation(
+                self._command_runner,
+                worktree=worktree,
+                binding=ValidationBinding(
+                    entry.entry_id,
+                    entry.run.identity,
+                    entry.raw_sha256,
+                    entry.normalized_sha256,
+                ),
+                head_sha=head,
+                command=self._command,
+                timeout_seconds=self._timeout,
+                custody_directory=entry.raw_path.parent.parent,
             )
-        result = run_owned_validation(
-            self._command_runner,
-            worktree=worktree,
-            binding=ValidationBinding(
-                entry.entry_id,
-                entry.run.identity,
-                entry.raw_sha256,
-                entry.normalized_sha256,
-            ),
-            head_sha=head,
-            command=self._command,
-            timeout_seconds=self._timeout,
-            custody_directory=entry.raw_path.parent.parent,
-        )
-        if self._working_copy.get_head_sha(
-            worktree
-        ) != head or self._working_copy.has_uncommitted_changes(worktree):
-            raise CompletionIntakeError("workspace changed during validation")
-        return result
+            if self._working_copy.get_head_sha(
+                worktree
+            ) != head or self._working_copy.has_uncommitted_changes(worktree):
+                raise CompletionIntakeError("workspace changed during validation")
+            return result
 
 
 def run_owned_validation(

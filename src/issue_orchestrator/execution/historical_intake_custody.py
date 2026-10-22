@@ -5,6 +5,9 @@ from collections.abc import Callable
 from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
+from contextlib import contextmanager
+from collections.abc import Iterator
+from tempfile import TemporaryDirectory
 
 from ..domain.completion_intake import CompletionIntakeError
 from ..domain.historical_intake import HistoricalIntakeCommand
@@ -108,33 +111,40 @@ class IsolatedCompletionValidationWorkspace:
         self._git = git
         self._prepare = prepare
 
-    def checkout(self, run: "SessionRunAssets", head_sha: str, entry_id: str) -> Path:
+    @contextmanager
+    def checkout(
+        self, run: "SessionRunAssets", head_sha: str, entry_id: str
+    ) -> Iterator[Path]:
         from ..domain.validated_work import require_sha
 
         require_sha(head_sha)
         require_sha(entry_id, size=64)
         self._root.mkdir(parents=True, exist_ok=True)
-        workspace = self._root / (entry_id + "-" + uuid4().hex)
-        if workspace.is_relative_to(run.worktree_path):
+        if self._root.resolve().is_relative_to(run.worktree_path.resolve()):
             raise CompletionIntakeError(
                 "validator checkout must be outside agent worktrees"
             )
-        self._git.run(
-            run.worktree_path,
-            [
-                "clone",
-                "--no-hardlinks",
-                "--no-checkout",
-                "--",
-                str(run.worktree_path),
-                str(workspace),
-            ],
-        )
-        self._git.run(workspace, ["checkout", "--detach", head_sha])
-        try:
-            self._prepare(workspace)
-        except (OSError, RuntimeError) as exc:
-            raise CompletionIntakeError(
-                "historical validation workspace setup failed"
-            ) from exc
-        return workspace
+        # The lease owns allocation as well as validation: failed clone,
+        # checkout, preparation and consumer exceptions all release the clone.
+        # Durable validation records and output live in external receipt custody.
+        with TemporaryDirectory(prefix=entry_id + "-", dir=self._root) as directory:
+            workspace = Path(directory)
+            self._git.run(
+                run.worktree_path,
+                [
+                    "clone",
+                    "--no-hardlinks",
+                    "--no-checkout",
+                    "--",
+                    str(run.worktree_path),
+                    str(workspace),
+                ],
+            )
+            self._git.run(workspace, ["checkout", "--detach", head_sha])
+            try:
+                self._prepare(workspace)
+            except (OSError, RuntimeError) as exc:
+                raise CompletionIntakeError(
+                    "historical validation workspace setup failed"
+                ) from exc
+            yield workspace

@@ -1,5 +1,6 @@
 """Real receipt lifetime for component fixtures; only external ports are substituted."""
 
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from unittest.mock import Mock
@@ -77,7 +78,7 @@ def make_completion_intake_fixture(root: Path) -> CompletionIntakeFixture:
     workspace = Mock(spec=CompletionValidationWorkspace)
     checkout = root / "isolated-validator"
     checkout.mkdir()
-    workspace.checkout.return_value = checkout
+    workspace.checkout.side_effect = lambda *_args: nullcontext(checkout)
     runtime = CompletionEvidenceIntakeService(
         ledger,
         ConfiguredCompletionEvidenceValidator(

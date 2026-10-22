@@ -4,6 +4,7 @@ from ..domain.validated_work_commands import AutomaticCaptureScope
 from ..domain.validated_work import ValidatedWorkEvidence
 
 from typing import Protocol
+from contextlib import AbstractContextManager
 from pathlib import Path
 
 from ..domain.completion_intake import (
@@ -137,6 +138,8 @@ class CompletionIntakeRuntime(CompletionSubmissionHandler, Protocol):
 
 
 class CompletionValidationWorkspace(Protocol):
-    def checkout(self, run: SessionRunAssets, head_sha: str, entry_id: str) -> Path:
-        """Return an exact, isolated checkout prepared for configured validation."""
+    def checkout(
+        self, run: SessionRunAssets, head_sha: str, entry_id: str
+    ) -> AbstractContextManager[Path]:
+        """Lease an isolated checkout, releasing it on every exit path."""
         ...
