@@ -365,18 +365,33 @@ class FakeIssueHost:
         self.fail_on_create: Exception | None = None
         #: Raise AFTER the issue is created: the POST landed, its result was lost.
         self.lose_create_result: Exception | None = None
-        #: Newly created issues the open listing does not show yet.
+        #: Newly created issues the application's one open-issue read does
+        #: not show (it was read before another run filed them).
         self.stale_listing = False
         self.create_calls = 0
         self.next_number = 9000
-
-    def list_open_issue_labels_complete(self):  # type: ignore[no-untyped-def]
-        created = {c["number"] for c in self.created}
-        return [i for i in self.open if not (self.stale_listing and i.number in created)]
+        #: The bodies of open issues it did not file (an operator's, an older run's).
+        self.bodies: dict[int, str] = {}
 
     def find_open_issue_by_marker(self, *, marker):  # type: ignore[no-untyped-def]
-        """Uncached, by body: sees what the (stale, retitled) listing does not."""
-        return next((c["number"] for c in self.created if marker in c["body"]), None)
+        """Read fresh, by body: sees what the application's (stale) open-issue
+        read does not, but never an issue closed since (one left out of ``open``)."""
+        return next((i for i in self._open_bodies() if marker in i.body), None)
+
+    def list_open_issue_bodies_complete(self):  # type: ignore[no-untyped-def]
+        created = {c["number"] for c in self.created}
+        return [i for i in self._open_bodies() if not (self.stale_listing and i.number in created)]
+
+    def _open_bodies(self):  # type: ignore[no-untyped-def]
+        """Every open issue with its title, labels and body (an empty body for
+        one whose body the test does not give)."""
+        from issue_orchestrator.ports.engine_audit import OpenIssueBody
+
+        bodies = {**self.bodies, **{c["number"]: c["body"] for c in self.created}}
+        return [
+            OpenIssueBody(number=i.number, title=i.title, labels=i.labels, body=bodies.get(i.number, ""))
+            for i in self.open
+        ]
 
     def find_issue_by_marker(self, *, title, marker, authoritative=False):  # type: ignore[no-untyped-def]
         assert authoritative

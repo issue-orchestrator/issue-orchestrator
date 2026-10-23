@@ -91,3 +91,22 @@ def test_badges_follow_the_views_answer_including_unable_to_check() -> None:
     update = CC_JS[CC_JS.index("function updateTechLeadBadges()"):CC_JS.index("async function refreshTechLead")]
     assert "getTechLeadView()?.badgeState()" in update
     assert "onBadgeChange: () => updateTechLeadBadges()" in CC_JS
+
+
+def test_an_unknown_count_is_never_marked_as_zero() -> None:
+    """#8988: a running repository that did not report makes the count unknown.
+    Both badges mark it ``unknown`` (never "0" or "null"), which keeps the
+    attention border: the highlight is for anything that is not a known 0."""
+    dashboard_badge = (ROOT / "static" / "js" / "dashboard" / "tech_lead_badge.js").read_text(encoding="utf-8")
+    assert "badge.dataset.waiting = count === null ? 'unknown' : String(count);" in CC_JS
+    assert "button.dataset.waiting = data.count === null ? 'unknown' : String(data.count);" in dashboard_badge
+    assert '.waiting-badge[data-waiting]:not([data-waiting="0"])' in CC_CSS
+    assert '.tech-lead-waiting-badge[data-waiting]:not([data-waiting="0"])' in DASHBOARD_CSS
+
+
+def test_a_last_reported_marker_is_text_in_the_theme_secondary_colour() -> None:
+    """The as-of marker on a last-known section says "last reported" in words;
+    its colour is the theme's secondary text token, so it holds contrast in
+    light and dark themes rather than relying on a hue."""
+    rule = re.search(r"\.tl-card-meta,\s*\.tl-when,\s*\.tl-reason,\s*\.tl-empty,\s*\.tl-as-of\s*{([^}]*)}", CC_CSS)
+    assert rule and "color: var(--text-secondary)" in rule.group(1)

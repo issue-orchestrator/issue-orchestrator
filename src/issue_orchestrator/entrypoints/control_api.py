@@ -63,7 +63,7 @@ from ..ports.repository_engine_supervisor import SupervisorOps
 from ..ports import RepositoryHost
 from ..control.goal_pilot import GoalPilot
 from ..execution.control_center_actions import ControlCenterActions
-from ..execution.control_center_tech_lead import build_control_center_tech_lead
+from ..execution.control_center_tech_lead import TechLeadSectionMemory, build_control_center_tech_lead
 from ..execution.control_center_recovery import (
     build_control_center_recovery_queries,
     build_control_center_recovery_stops,
@@ -1113,6 +1113,9 @@ install_control_api_tools_dependencies(
         validate_repo_root=_validate_repo_root,
     ),
 )
+# One per Control Center process: what each running engine last reported, for
+# a read it misses (#8988). The page's owner is built per request.
+_tech_lead_sections = TechLeadSectionMemory()
 install_control_api_repo_dependencies(
     control_app,
     ControlApiRepoDependencies(
@@ -1133,7 +1136,7 @@ install_control_api_repo_dependencies(
         get_recovery_stops=lambda: build_control_center_recovery_stops(
             get_supervisor()
         ),
-        get_tech_lead=lambda: build_control_center_tech_lead(get_supervisor()),
+        get_tech_lead=lambda: build_control_center_tech_lead(get_supervisor(), _tech_lead_sections),
     ),
 )
 install_control_api_setup_dependencies(

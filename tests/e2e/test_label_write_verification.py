@@ -14,7 +14,8 @@ from issue_orchestrator.control.action_applier import ActionApplier
 from issue_orchestrator.control.actions import AddLabelAction, RemoveLabelAction
 from issue_orchestrator.infra import gh_audit
 from issue_orchestrator.ports import InMemoryEventSink
-from issue_orchestrator.testing.support.test_data import create_issue, close_issue
+from tests.e2e.fixtures.cleanup import close_run_issue
+from tests.e2e.fixtures.data_factory import create_run_issue
 from tests.e2e.conftest import e2e_label
 from tests.e2e.fixtures.github_utils import is_github_connection_error
 
@@ -73,7 +74,7 @@ class TestLabelWriteVerification:
 
         issue_number = None
         try:
-            issue_number = create_issue(
+            issue_number = create_run_issue(
                 repo_name,
                 f"[E2E] Label write verification ({test_label})",
                 [base_label],
@@ -143,5 +144,5 @@ class TestLabelWriteVerification:
             raise
         finally:
             if issue_number is not None:
-                close_issue(repo_name, issue_number, comment="E2E cleanup: label write verification")
+                close_run_issue(repo_name, issue_number, comment="E2E cleanup: label write verification")
             gh_audit.configure(enabled=False)

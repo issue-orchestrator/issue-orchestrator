@@ -25,9 +25,10 @@ from pathlib import Path
 
 import pytest
 
+from issue_orchestrator.domain.launch_prompt_delivery import LaunchCommand
 from issue_orchestrator.domain.models import Issue
 from issue_orchestrator.events import EventName
-from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin
+from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin, prepare_subprocess_session
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
 from issue_orchestrator.control.session_env import build_session_env_exports
@@ -255,11 +256,14 @@ def _build_session_exports(contract: ForeignSessionContract) -> str:
     )
 
 
+def _terminal_script(command: str, worktree: Path) -> str:
+    """The script the subprocess terminal runs for *command*: its cd/PATH/isolation prefix included."""
+    return prepare_subprocess_session(LaunchCommand(command), worktree).argv[-1]
+
+
 def _run_in_session(contract: ForeignSessionContract, command: str) -> subprocess.CompletedProcess[str]:
     """Run ``command`` in the worktree under the production session env."""
-    full_cmd = SubprocessPlugin()._build_process_command(  # noqa: SLF001
-        f"{_build_session_exports(contract)} && {command}", contract.worktree_path
-    )
+    full_cmd = _terminal_script(f"{_build_session_exports(contract)} && {command}", contract.worktree_path)
     return subprocess.run(
         full_cmd, shell=True, capture_output=True, text=True,
         executable="/bin/bash", timeout=60,
@@ -495,8 +499,7 @@ def test_foreign_repo_scripts_dir_from_package() -> None:
     scripts directory referenced in the command actually exists and contains
     the expected wrapper scripts.
     """
-    plugin = SubprocessPlugin()
-    cmd = plugin._build_process_command("echo test", Path("/tmp/fake-worktree"))  # noqa: SLF001
+    cmd = _terminal_script("echo test", Path("/tmp/fake-worktree"))
 
     # Extract the PATH value from the generated command
     # Format: ... export PATH="<venv_bin>:<scripts_dir>:<system_path>" ...
@@ -734,8 +737,7 @@ def test_foreign_repo_real_pty_agent_invocation(
 
     created = plugin.create_session(
         session_id=81,
-        command=command,
-        working_dir=str(wt),
+        prepared=plugin.prepare_session(LaunchCommand(command), wt),
         title="PTY agent test",
         session_name=session_name,
     )
@@ -809,12 +811,11 @@ def test_foreign_repo_claude_code_agent_done(make_worktree, coder_session_contra
     )
 
     escaped_prompt = prompt.replace('"', '\\"')
-    plugin = SubprocessPlugin()
     inner_cmd = (
         f'{exports} && claude -p --permission-mode bypassPermissions '
         f'"{escaped_prompt}"'
     )
-    full_cmd = plugin._build_process_command(inner_cmd, wt)  # noqa: SLF001
+    full_cmd = _terminal_script(inner_cmd, wt)
 
     result = _run_shell_with_timeout_retry(
         full_cmd,
@@ -872,13 +873,12 @@ def test_foreign_repo_codex_agent_done(make_worktree, coder_session_contract) ->
     )
 
     escaped_prompt = prompt.replace('"', '\\"')
-    plugin = SubprocessPlugin()
     inner_cmd = (
         f'{exports} && codex exec '
         f'--dangerously-bypass-approvals-and-sandbox '
         f'"{escaped_prompt}"'
     )
-    full_cmd = plugin._build_process_command(inner_cmd, wt)  # noqa: SLF001
+    full_cmd = _terminal_script(inner_cmd, wt)
 
     result = _run_shell_with_timeout_retry(
         full_cmd,

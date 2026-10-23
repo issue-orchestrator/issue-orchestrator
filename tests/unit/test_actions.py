@@ -22,6 +22,8 @@ from issue_orchestrator.control.actions import (
 )
 from issue_orchestrator.control.action_applier import ActionApplier
 from issue_orchestrator.control.session_manager import SessionManager, SessionRef, SessionType
+from issue_orchestrator.domain.launch_prompt_delivery import LaunchCommand, PreparedSessionCommand
+from tests.launch_prompt_helpers import prepared_as_given
 from issue_orchestrator.ports import NullEventSink, TraceEvent
 
 
@@ -65,16 +67,18 @@ class MockSessionRunner:
     def __init__(self):
         self.sessions: dict[int, dict] = {}
 
+    def prepare_session(self, command: LaunchCommand, working_dir: Path) -> PreparedSessionCommand:
+        return prepared_as_given(command, working_dir)
+
     def create_session(
         self,
         session_id: int,
-        command: str,
-        working_dir: str,
+        prepared: PreparedSessionCommand,
         title: str | None = None,
         session_name: str | None = None,
         secret_env: dict[str, str] | None = None,
     ) -> bool:
-        self.sessions[session_id] = {"command": command, "working_dir": working_dir}
+        self.sessions[session_id] = {"command": prepared.launch.text, "working_dir": str(prepared.working_dir)}
         return True
 
     def session_exists(self, session_id: int, session_name: str | None = None) -> bool:

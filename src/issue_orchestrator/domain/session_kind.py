@@ -71,6 +71,9 @@ class SessionType(Enum):
     RETROSPECTIVE_REVIEW = "retrospective-review"
     REWORK = "rework"
     TECH_LEAD = "tech-lead"
+    #: An operator's interactive debug session of an issue's CODE run: a lane
+    #: no kind derives, so it never collides with the issue's own terminal.
+    DEBUG = "debug"
 
 
 class CompletionProtocol(Enum):

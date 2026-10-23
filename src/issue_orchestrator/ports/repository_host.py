@@ -9,6 +9,7 @@ issues, PRs, and labels. It combines IssueTracker, LabelSet, and
 PullRequestTracker into a single interface.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -20,6 +21,7 @@ from .pull_request_tracker import PullRequestTracker
 
 if TYPE_CHECKING:
     from ..domain.issue_key import IssueKey
+    from .engine_audit import OpenIssueBody
 
 
 RepositoryHostErrorKind = Literal["http", "transport", "other"]
@@ -268,12 +270,22 @@ class RepositoryHost(IssueTracker, LabelSet, PullRequestTracker, IntegrationBran
         """
         ...
 
-    def find_open_issue_by_marker(self, *, marker: str) -> int | None:
-        """The OPEN issue whose body holds ``marker`` (#7490).
+    def find_open_issue_by_marker(self, *, marker: str) -> "OpenIssueBody | None":
+        """The OPEN issue whose body holds ``marker`` (#7490), with its title,
+        labels and body as read (#8986).
 
         Authoritative over every open issue, whatever its title or labels
         became: None proves there is none, and a read that cannot prove it
         raises. Uncached, so an issue filed a moment ago is seen.
+        """
+        ...
+
+    def list_open_issue_bodies_complete(self) -> Sequence["OpenIssueBody"]:
+        """Every OPEN issue, with its title, labels and body (#8986).
+
+        Complete or raising, never a partial list: walked by cursor, so an
+        issue closing mid-walk cannot shift another past a page boundary.
+        Read fresh, so an issue filed a moment ago is seen.
         """
         ...
 

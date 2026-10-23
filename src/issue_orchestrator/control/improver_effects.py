@@ -34,11 +34,22 @@ merge folds a design finding into another finding about the same defect;
 the folded finding's claim is shown on that finding's issue
 (:func:`support_note`).
 
-Deduplication is against OPEN issues: every filed issue's title carries the
-finding's identity (``[improver:<key>]``), so a finding an open issue already
-carries — filed by an earlier run, or by this one before a crash lost its
-receipt — gets its evidence commented there instead of a second issue. A
-comment carries a marker for its run and finding, so it is posted once.
+Deduplication is against OPEN issues (:class:`OpenIssues`): every filed
+issue's title carries the finding's identity (``[improver:<key>]``), and so
+does its body's marker whatever the title became, so a finding an open issue
+already carries — filed by an earlier run, or by this
+one before a crash lost its receipt — gets its evidence commented there
+instead of a second issue. A comment carries a marker for its run and
+finding, so it is posted once.
+
+A key is not the whole identity across runs (#8986): the next run words a
+design finding's slug anew, and a stall finding and a design finding about
+one defect never share a key. So every filed issue's first line also records
+its finding's defect profile (:func:`defect_marker`), and a finding about the
+same defect as an open issue an EARLIER run filed (one code site and
+overlapping evidence, :func:`~..domain.improver_defects.same_defect`) gets its
+evidence commented there. Within one run the merge already decided which
+findings are one defect (#8700), so a run's own issues are never matched.
 
 A rate limit stops the batch: what is left stays ``pending`` on the run, and
 the next application resumes it. Any other failure stops it too, recorded on
@@ -50,7 +61,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -65,11 +76,24 @@ from ..contracts.improver_findings import (
     ModeEdit,
     PromptEdit,
 )
-from ..contracts.improver_run import EffectReceipt, EffectStatus, ImproverRunRecord
+from ..contracts.improver_run import (
+    EffectReceipt,
+    EffectStatus,
+    FiledDefect,
+    ImproverRunRecord,
+)
 from ..domain.engine_activity import EngineRef
 from ..domain.improver_champion import CHANGE_ID
-from ..domain.improver_defects import DefectProfile, EngineSource, design_profile, stall_profile
-from ..ports.engine_audit import OpenIssueLabels
+from ..domain.improver_defects import (
+    DefectProfile,
+    EngineSource,
+    design_profile,
+    profile_record,
+    recorded_profile,
+    same_defect,
+    stall_profile,
+)
+from ..ports.engine_audit import OpenIssueBody
 
 #: Every improver issue carries this label, so an operator can find them all.
 IMPROVER_LABEL = "improver"
@@ -88,6 +112,8 @@ _LABELS: dict[str, tuple[str, ...]] = {
 DESIGN_LABELS: tuple[str, ...] = (IMPROVER_LABEL, OPERATOR_DECISION_LABEL, "improver:design")
 #: A challenger to the improver itself: tried, then a maintainer approves it.
 CHALLENGER_LABELS: tuple[str, ...] = (IMPROVER_LABEL, OPERATOR_DECISION_LABEL, "improver:challenger")
+#: How an improver issue's first line records the defect it is about (#8986).
+DEFECT_MARKER = "<!-- io-improver-defect:"
 
 
 class EffectRoute(StrEnum):
@@ -169,16 +195,22 @@ def finding_marker(key: str) -> str:
     return f"<!-- io-improver-finding:{key} -->"
 
 
+def comment_marker(run: ImproverRunRecord, finding_id: str) -> str:
+    """A run's comment for one finding: posted once, whatever issue it is on."""
+    return f"<!-- io-improver:{run.run_id}:{finding_id} -->"
+
+
 def planned_effects(
     findings: ImproverFindings,
-    engine: EngineRef,
+    identity: EffectIdentity,
     original_ids: Mapping[str, str] | None = None,
     *,
     change_base: str | None = None,
 ) -> tuple[EffectReceipt, ...]:
-    """One pending effect per accepted finding and design finding, and one
-    for the change to the improver an invited run proposed (``change_base``:
-    the champion it was invited to challenge).
+    """One pending effect per accepted finding and design finding, each with
+    its defect's profile as a later run compares it (#8986), and one for the
+    change to the improver an invited run proposed (``change_base``: the
+    champion it was invited to challenge).
 
     ``original_ids``: a design finding renamed by a multi-heat merge keeps the
     effect key of the id its heat wrote, so it deduplicates the same way
@@ -186,13 +218,19 @@ def planned_effects(
     originals = original_ids or {}
     return (
         *(
-            EffectReceipt(finding_id=f.id, key=finding_key(f, engine), status=EffectStatus.PENDING)
+            EffectReceipt(
+                finding_id=f.id,
+                key=identity.stall_key(f),
+                profile=profile_record(identity.stall_profile(f)),
+                status=EffectStatus.PENDING,
+            )
             for f in findings.findings
         ),
         *(
             EffectReceipt(
                 finding_id=d.id,
-                key=design_finding_key(d.model_copy(update={"id": originals.get(d.id, d.id)}), engine),
+                key=identity.design_key(d.model_copy(update={"id": originals.get(d.id, d.id)})),
+                profile=profile_record(identity.design_profile(d)),
                 status=EffectStatus.PENDING,
             )
             for d in findings.design_findings
@@ -208,7 +246,9 @@ def planned_effects(
 @dataclass(frozen=True)
 class FileImproverIssue:
     """File one new issue for a finding. ``marker`` is in its body, so a
-    creation whose result was lost can be proven filed or absent."""
+    creation whose result was lost can be proven filed or absent; its first
+    line records the defect the issue is about too (none for a proposed
+    change)."""
 
     title: str
     marker: str
@@ -232,29 +272,113 @@ class TrackedIssueNotOpen(RuntimeError):
     """A tracked finding's issue closed after the inputs were staged."""
 
 
+def defect_marker(defect: FiledDefect) -> str:
+    """The marker by which a later run knows the defect an issue is about:
+    its JSON, in which no text can end the comment (``<`` and ``>`` are
+    escaped, as JSON allows)."""
+    text = defect.model_dump_json().replace("<", "\\u003c").replace(">", "\\u003e")
+    return f"{DEFECT_MARKER}{text} -->"
+
+
+def filed_defect(body: str) -> FiledDefect | None:
+    """The defect an issue's FIRST line records: only that line is the
+    orchestrator's own, the rest is built from untrusted text made inert.
+    None when it records none; a marker that is not a whole defect raises,
+    since an issue would then be filed again for a defect it already carries."""
+    first = body.split("\n", 1)[0]
+    start = first.find(DEFECT_MARKER)
+    if start < 0:
+        return None
+    end = first.find("-->", start)
+    if end < 0:
+        raise ValueError("an improver issue's defect marker is not closed on its first line")
+    return FiledDefect.model_validate_json(first[start + len(DEFECT_MARKER) : end])
+
+
+class OpenIssues:
+    """What the effects are deduplicated against: every open issue the
+    application knows, with its title, labels and body, and the defect its
+    body records (#8986). Every fact enters through :meth:`add`: the
+    application's one read, an issue a fresh read proves open, and each
+    issue the application files, so key and defect deduplication see the
+    same issues whichever path proved them."""
+
+    def __init__(self) -> None:
+        self._issues: dict[int, OpenIssueBody] = {}
+        self._defects: dict[int, FiledDefect] = {}
+
+    @classmethod
+    def read(cls, issues: Iterable[OpenIssueBody]) -> OpenIssues:
+        """The open issues one complete read of the host shows."""
+        open_issues = cls()
+        for issue in issues:
+            open_issues.add(issue)
+        return open_issues
+
+    def add(self, issue: OpenIssueBody) -> None:
+        """``issue``, proven open now; what is read of it replaces what was."""
+        try:
+            defect = filed_defect(issue.body)
+        except ValueError as error:
+            raise ValueError(f"open issue #{issue.number}'s defect marker records no defect: {error}") from error
+        self._issues[issue.number] = issue
+        if defect is None:
+            self._defects.pop(issue.number, None)
+        else:
+            self._defects[issue.number] = defect
+
+    def is_open(self, number: int) -> bool:
+        return number in self._issues
+
+    def carrying(self, key: str) -> int | None:
+        """The open issue that carries the finding ``key``: by the token in
+        its title, or by the marker in its body whatever its title became."""
+        token, marker = title_token(key), finding_marker(key)
+        return next((n for n, i in sorted(self._issues.items()) if token in i.title or marker in i.body), None)
+
+    def same_defect(self, run: ImproverRunRecord, receipt: EffectReceipt) -> tuple[int, ...]:
+        """The open issues an EARLIER run filed about the receipt's defect on
+        the run's engine, oldest first.
+
+        Two engines' items share numbers and their logs share paths, so only
+        one engine's issues are compared. Several may match (two runs filed
+        one defect before this rule did): all of them are the same defect, so
+        a new issue would duplicate each, and would itself match the next
+        run's finding; the finding is evidence for the oldest."""
+        if receipt.profile is None:
+            return ()
+        mine = recorded_profile(receipt.profile, receipt.finding_id)
+        return tuple(
+            number
+            for number, filed in sorted(self._defects.items())
+            if filed.run_id != run.run_id
+            and (filed.engine_id, filed.audited_repo) == (run.engine_id, run.audited_repo)
+            and same_defect(mine, recorded_profile(filed.profile, f"#{number}"))
+        )
+
+
 def plan_effect(
     run: ImproverRunRecord,
     finding: Finding | DesignFinding | ImproverChange,
-    key: str,
-    open_issues: Mapping[int, OpenIssueLabels],
+    receipt: EffectReceipt,
+    open_issues: OpenIssues,
 ) -> ImproverEffectCommand:
     """The one GitHub effect an accepted finding asks for, deduplicated
-    against ``open_issues``."""
+    against ``open_issues``: by its key, then by its defect (#8986)."""
     if isinstance(finding, ImproverChange):
-        return _plan_change_effect(run, finding, key, open_issues)
+        return _plan_change_effect(run, finding, receipt.key, open_issues)
     if isinstance(finding, DesignFinding):
-        return _plan_design_effect(run, finding, key, open_issues)
+        return _plan_design_effect(run, finding, receipt, open_issues)
     target = finding.tracked_issue if finding.classification == "tracked" else None
-    if target is not None and target not in open_issues:
+    if target is not None and not open_issues.is_open(target):
         raise TrackedIssueNotOpen(
             f"tracked issue #{target} of {finding.id} is no longer open; its evidence is not"
             " commented on a closed issue"
         )
     if target is None:
-        token = title_token(key)
-        target = next((n for n, i in sorted(open_issues.items()) if token in i.title), None)
+        target = open_issues.carrying(receipt.key)
     if target is not None:
-        marker = f"<!-- io-improver:{run.run_id}:{finding.id} -->"
+        marker = comment_marker(run, finding.id)
         return CommentImproverEvidence(
             issue_number=target,
             marker=marker,
@@ -263,24 +387,27 @@ def plan_effect(
             f" `{finding.stall_point}`." + support_note(run, finding.id) + "\n\n"
             f"{_finding_json(finding)}",
         )
-    marker = finding_marker(key)
+    if same := open_issues.same_defect(run, receipt):
+        return _same_defect_comment(run, finding, same)
+    marker = finding_marker(receipt.key)
+    defect = _filed_defect(run, receipt)
     route = effect_route(run, finding)
     labels = _LABELS[finding.output]
     return FileImproverIssue(
-        title=f"{title_token(key)} {_summary(finding)} ({run.audited_repo})",
+        title=f"{title_token(receipt.key)} {_summary(finding)} ({run.audited_repo})",
         marker=marker,
-        body=f"{marker}\n{issue_body(run, finding)}",
+        body=f"{_first_line(marker, defect)}\n{issue_body(run, finding)}",
         labels=(*labels, TARGET_OPERATOR_LABEL) if route is EffectRoute.TARGET_OPERATOR else labels,
     )
 
 
 def _plan_design_effect(
-    run: ImproverRunRecord, design: DesignFinding, key: str, open_issues: Mapping[int, OpenIssueLabels]
+    run: ImproverRunRecord, design: DesignFinding, receipt: EffectReceipt, open_issues: OpenIssues
 ) -> ImproverEffectCommand:
-    token = title_token(key)
-    filed = next((n for n, i in sorted(open_issues.items()) if token in i.title), None)
+    token = title_token(receipt.key)
+    filed = open_issues.carrying(receipt.key)
     if filed is not None:
-        marker = f"<!-- io-improver:{run.run_id}:{design.id} -->"
+        marker = comment_marker(run, design.id)
         return CommentImproverEvidence(
             issue_number=filed,
             marker=marker,
@@ -288,22 +415,65 @@ def _plan_design_effect(
             f" (engine `{run.engine_id}` at `{run.engine_commit}`)." + support_note(run, design.id)
             + f"\n\n{_design_json(design)}",
         )
-    marker = finding_marker(key)
+    if same := open_issues.same_defect(run, receipt):
+        return _same_defect_comment(run, design, same)
+    marker = finding_marker(receipt.key)
+    defect = _filed_defect(run, receipt)
     return FileImproverIssue(
         title=f"{token} Design ({design.kind.replace('_', ' ')}): {design.id} ({run.audited_repo})",
         marker=marker,
-        body=f"{marker}\n{design_issue_body(run, design)}",
+        body=f"{_first_line(marker, defect)}\n{design_issue_body(run, design)}",
         labels=DESIGN_LABELS,
     )
 
 
+def _filed_defect(run: ImproverRunRecord, receipt: EffectReceipt) -> FiledDefect | None:
+    if receipt.profile is None:
+        return None
+    return FiledDefect(
+        run_id=run.run_id, engine_id=run.engine_id, audited_repo=run.audited_repo, profile=receipt.profile
+    )
+
+
+def _first_line(marker: str, defect: FiledDefect | None) -> str:
+    """A filed body's first line: the orchestrator's markers, and nothing else."""
+    return marker if defect is None else f"{marker} {defect_marker(defect)}"
+
+
+def _same_defect_comment(
+    run: ImproverRunRecord, finding: Finding | DesignFinding, issues: tuple[int, ...]
+) -> CommentImproverEvidence:
+    """A finding about the defect of open issues an earlier run filed: its
+    evidence on the oldest, naming the others."""
+    target, *others = issues
+    marker = comment_marker(run, finding.id)
+    if isinstance(finding, DesignFinding):
+        claim = f"**Design finding `{finding.id}` (`{finding.kind}`):** {_inert(finding.summary)}"
+        document = _design_json(finding)
+    else:
+        claim = (
+            f"**Finding `{finding.id}` (`{finding.output}`):** stalled at `{finding.stall_point}`."
+            f" **Classification:** `{finding.classification}`."
+        )
+        document = _finding_json(finding)
+    also = f" It is the same defect as {', '.join(f'#{n}' for n in others)} too." if others else ""
+    return CommentImproverEvidence(
+        issue_number=target,
+        marker=marker,
+        body=f"{marker}\n**Improver run `{run.run_id}`** found this issue's defect again on"
+        f" `{run.audited_repo}` (engine `{run.engine_id}` at `{run.engine_commit}`), worded as another"
+        " finding: one code site and overlapping evidence, so it is evidence here, not a new issue."
+        + also + support_note(run, finding.id) + f"\n\n{claim}\n\n{document}",
+    )
+
+
 def _plan_change_effect(
-    run: ImproverRunRecord, change: ImproverChange, key: str, open_issues: Mapping[int, OpenIssueLabels]
+    run: ImproverRunRecord, change: ImproverChange, key: str, open_issues: OpenIssues
 ) -> ImproverEffectCommand:
     token = title_token(key)
-    filed = next((n for n, i in sorted(open_issues.items()) if token in i.title), None)
+    filed = open_issues.carrying(key)
     if filed is not None:
-        marker = f"<!-- io-improver:{run.run_id}:{CHANGE_ID} -->"
+        marker = comment_marker(run, CHANGE_ID)
         return CommentImproverEvidence(
             issue_number=filed, marker=marker,
             body=f"{marker}\n**Improver run `{run.run_id}`** proposed this change again.\n\n{_change_json(change)}",
@@ -527,15 +697,20 @@ __all__ = [
     "OPERATOR_DECISION_LABEL",
     "TARGET_OPERATOR_LABEL",
     "DESIGN_LABELS",
+    "DEFECT_MARKER",
     "CommentImproverEvidence",
     "EffectIdentity",
     "EffectRoute",
     "FileImproverIssue",
     "ImproverEffectCommand",
+    "OpenIssues",
     "TrackedIssueNotOpen",
+    "comment_marker",
+    "defect_marker",
     "design_finding_key",
     "design_issue_body",
     "effect_route",
+    "filed_defect",
     "finding_key",
     "finding_marker",
     "issue_body",

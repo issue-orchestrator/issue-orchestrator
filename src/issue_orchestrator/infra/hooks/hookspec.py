@@ -8,7 +8,7 @@ Usage:
 
     class MyTerminalPlugin:
         @hookimpl
-        def create_session(self, session_id, command, working_dir, title):
+        def create_session(self, session_id, prepared, title, session_name):
             # Implementation
             ...
 
@@ -17,7 +17,13 @@ Entry points are registered in pyproject.toml:
     my_plugin = "my_package:MyPlugin"
 """
 
+from pathlib import Path
+from typing import TYPE_CHECKING
+
 import pluggy
+
+if TYPE_CHECKING:
+    from ...domain.launch_prompt_delivery import LaunchCommand, PreparedSessionCommand
 
 # Project name for hook markers
 PROJECT_NAME = "issue_orchestrator"
@@ -38,11 +44,26 @@ class TerminalSpec:
     """
 
     @hookspec(firstresult=True)
+    def prepare_session(
+        self, command: "LaunchCommand", working_dir: Path
+    ) -> "PreparedSessionCommand | None":
+        """Prepare *command* exactly as this terminal will exec it (#9012).
+
+        Side-effect free. The terminal puts its own part around the launcher's
+        command, so it alone can prove the result fits the OS argument limit.
+
+        Returns:
+            The prepared command, or None to defer to the next plugin.
+
+        Raises:
+            LaunchCommandTooLong: the OS could not exec the prepared command.
+        """
+
+    @hookspec(firstresult=True)
     def create_session(
         self,
         session_id: int,
-        command: str,
-        working_dir: str,
+        prepared: "PreparedSessionCommand",
         title: str | None,
         session_name: str,  # Required - caller must provide explicit name
         secret_env: dict[str, str] | None = None,
@@ -51,8 +72,8 @@ class TerminalSpec:
 
         Args:
             session_id: Numeric ID (typically issue number)
-            command: Shell command to execute
-            working_dir: Working directory path
+            prepared: The command this terminal prepared, started exactly as
+                prepared, with its working directory
             title: Optional human-readable title
             session_name: Full session name (e.g., "issue-123", "review-456")
             secret_env: Provider credentials for the session process. Kept out

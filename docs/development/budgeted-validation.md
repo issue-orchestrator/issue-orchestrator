@@ -289,7 +289,11 @@ broken rule recorded and changes nothing; an unavailable input or agent exits
 open issues by the `[improver:<key>]` title token, or an evidence comment on a
 tracked issue; proposals labelled `needs-operator-decision`, never applied) go
 through the repository-host port; a rate limit leaves the rest pending for the
-next run. `python -m issue_orchestrator.entrypoints.cli_tools.improver status`
+next run. Each filed issue's first line also records its finding's defect
+profile (code sites and evidence, #8986), so a later run's finding about the
+same defect (one code site and overlapping evidence, however it is worded and
+whether it is a stall or a design finding) is commented on that open issue
+instead of filed again. `python -m issue_orchestrator.entrypoints.cli_tools.improver status`
 prints the runs, their stall-point grades and how those moved;
 `... improver apply --outputs-repo <owner/repo>` applies what is still owed.
 Point `IMPROVER_STATE_DIR` and `IMPROVER_AUDITED_REPO` at another engine (e.g.

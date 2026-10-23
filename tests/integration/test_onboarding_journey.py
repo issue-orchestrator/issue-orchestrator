@@ -23,14 +23,6 @@ from issue_orchestrator.ports.repository_setup import (
 from tests.git_push_authorization import authorized_local_fixture_git_env
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_GIT_ENV_STRIP = (
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_INDEX_FILE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_COMMON_DIR",
-)
 
 
 class _QueuePrompter:
@@ -76,10 +68,11 @@ def _clean_git_env() -> dict[str, str]:
     """Return an env for fixture git commands isolated from agent sessions.
 
     The fixture pushes to a local bare repo it creates under ``tmp_path``, so
-    it needs the shared test-only push authorization (see
+    it needs the shared test-only push authorization, which also drops the
+    session's Git repository and config overrides (see
     ``tests/git_push_authorization.py``).
     """
-    return authorized_local_fixture_git_env(strip=_GIT_ENV_STRIP)
+    return authorized_local_fixture_git_env()
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:

@@ -17,7 +17,6 @@ import os
 import pytest
 
 from tests.e2e.conftest import e2e_label
-from issue_orchestrator.testing.support.test_data import close_issue
 from issue_orchestrator.domain.issue_key import IssueKey
 from tests.e2e.flows import E2EFlow
 
@@ -36,17 +35,16 @@ TIMEOUT_CODE_REVIEW_COMPLETE = 240
 # ---------------------------------------------------------------------------
 
 def create_single_issue(
-    repo: str,
+    flow: E2EFlow,
     title: str,
     labels: list[str],
-    watcher=None,
 ) -> tuple[IssueKey, int]:
-    """Create a single test issue (with labels ensured).
+    """Create a single test issue (with labels ensured) owned by ``flow``,
+    so the flow's cleanup may close its PR.
 
     Returns:
         Tuple of (IssueKey, issue_number)
     """
-    flow = E2EFlow(repo=repo, watcher=watcher)
     return flow.create_issue(title, labels, body=f"Automated test issue.\n\nLabels: {', '.join(labels)}")
 
 
@@ -116,7 +114,7 @@ class TestCodeReviewRuns:
                 if pr_number:
                     flow.close_pr(pr_number)
                 if issue and issue_number is not None:
-                    close_issue(repo_name, issue_number, "E2E code review test completed")
+                    flow.close_issue(issue_number, "E2E code review test completed")
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(420)
@@ -175,7 +173,7 @@ class TestCodeReviewRuns:
                 if pr_number:
                     flow.close_pr(pr_number)
                 if issue and issue_number is not None:
-                    close_issue(repo_name, issue_number, "E2E code review test completed")
+                    flow.close_issue(issue_number, "E2E code review test completed")
 
 
 # ---------------------------------------------------------------------------
@@ -219,10 +217,9 @@ class TestReworkCyclesAndEscalation:
         try:
             logger.info("Creating test issue...")
             issue_key, issue_number = create_single_issue(
-                repo_name,
+                flow,
                 "[M0-720] [E2E-REWORK] Test rework cycle label",
                 ["agent:script-completes", "io-e2e-test-data", e2e_label("rework_cycles")],
-                watcher=orchestrator_watcher,
             )
             logger.info("  Created issue #%d", issue_number)
 
@@ -244,7 +241,7 @@ class TestReworkCyclesAndEscalation:
             if pr_number:
                 flow.close_pr(pr_number)
             if issue_number:
-                close_issue(repo_name, issue_number, "E2E rework cycle label test completed")
+                flow.close_issue(issue_number, "E2E rework cycle label test completed")
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(900)
@@ -274,10 +271,9 @@ class TestReworkCyclesAndEscalation:
         try:
             logger.info("Creating test issue...")
             issue_key, issue_number = create_single_issue(
-                repo_name,
+                flow,
                 "[M0-721] [E2E-REWORK] Test rework escalation",
                 ["agent:script-completes", "io-e2e-test-data", e2e_label("rework_escalation")],
-                watcher=orchestrator_watcher,
             )
             logger.info("  Created issue #%d", issue_number)
 
@@ -300,7 +296,7 @@ class TestReworkCyclesAndEscalation:
             if pr_number:
                 flow.close_pr(pr_number)
             if issue_number:
-                close_issue(repo_name, issue_number, "E2E rework escalation test completed")
+                flow.close_issue(issue_number, "E2E rework escalation test completed")
 
 
 if __name__ == "__main__":

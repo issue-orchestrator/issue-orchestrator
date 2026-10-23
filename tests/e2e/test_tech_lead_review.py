@@ -12,6 +12,7 @@ import copy
 import logging
 import os
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -19,9 +20,8 @@ import pytest
 from tests.e2e.conftest import (
     OrchestratorProcess,
     e2e_label,
-    _github_adapter,
 )
-from issue_orchestrator.testing.support.test_data import close_issue, cleanup_issues_by_label
+from tests.e2e.fixtures.artifact_cleanup import E2EArtifactCleanup, RunLabelScope
 from tests.e2e.flows import (
     E2EFlow,
     start_orchestrator_runtime,
@@ -88,6 +88,7 @@ class TestTechLeadReviewTrigger:
         runtime = None
         flow: E2EFlow | None = None
         run_label: str | None = None
+        run_id = ""
 
         try:
             tech_lead_config = copy.deepcopy(e2e_session_config)
@@ -97,7 +98,8 @@ class TestTechLeadReviewTrigger:
             tech_lead_config.tech_lead_review_threshold = 2
             tech_lead_config.tech_lead_review_on_failure = False
             tech_lead_config.control_api_port = 19081
-            run_id = int(time.time())
+            # Random, so the run label is this run's alone (RunLabelScope).
+            run_id = uuid.uuid4().hex[:12]
             run_label = e2e_label(f"tech_lead_run_{run_id}")
             review_label = e2e_label(f"tech_lead_review_{run_id}")
             reviewed_label = e2e_label(f"tech_lead_reviewed_{run_id}")
@@ -170,21 +172,17 @@ class TestTechLeadReviewTrigger:
         finally:
             if runtime:
                 await runtime.close()
-            for pr_num in pr_numbers:
-                if flow:
+            # pr_numbers fill only after ``flow`` created their issues, so
+            # this flow's cleanup scope owns every one of them.
+            if flow:
+                for pr_num in pr_numbers:
                     flow.close_pr(pr_num)
-                else:
-                    adapter = _github_adapter(repo_name)
-                    pr = adapter.get_pr(pr_num)
-                    branch = pr.branch if pr else None
-                    adapter.close_pr(pr_num)
-                    if branch:
-                        try:
-                            adapter.delete_branch(branch)
-                        except Exception:
-                            pass
             # Always close issues to prevent accumulation
-            for issue_num in issue_numbers:
-                close_issue(repo_name, issue_num, "E2E triage test completed")
+            if flow:
+                for issue_num in issue_numbers:
+                    flow.close_issue(issue_num, "E2E triage test completed")
             if run_label:
-                cleanup_issues_by_label(repo_name, run_label)
+                # The tech-lead issues the engine filed carry the run's label.
+                E2EArtifactCleanup.for_test_repo(repo_name).sweep_issues(
+                    RunLabelScope.for_run(run_label, run_id), comment="E2E triage test completed"
+                )

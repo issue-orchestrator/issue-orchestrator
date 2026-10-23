@@ -25,7 +25,7 @@ from ...ports.pull_request_tracker import (
     StatusCheckRollupRead,
     StatusCheckRollupState,
 )
-from ...ports.engine_audit import OpenIssueLabels
+from ...ports.engine_audit import OpenIssueBody, OpenIssueLabels
 from ...ports.repository_host import DependencyIssueSnapshot, RepositoryHostError
 from ...ports.comment_receipt import IssueCommentReceipt
 from ...infra import gh_audit
@@ -603,11 +603,10 @@ class GitHubAdapter(GitHubIntegrationBranchMixin):
         )
         return found.number if found is not None else None
 
-    def find_open_issue_by_marker(self, *, marker: str) -> int | None:
-        """The open issue whose body carries ``marker``; None proves there is
-        none (uncached, complete or raising)."""
-        found = prove_open_marker_issue(self._client, marker=marker)
-        return found.number if found is not None else None
+    def find_open_issue_by_marker(self, *, marker: str) -> OpenIssueBody | None:
+        """The open issue whose body carries ``marker``, as read; None proves
+        there is none (read fresh, cursor-paged, complete or raising)."""
+        return prove_open_marker_issue(self._client, marker=marker)
 
     def get_default_branch(self) -> str:
         """The repository's real default branch (cached; GitHub is authoritative)."""
@@ -1292,9 +1291,25 @@ class GitHubAdapter(GitHubIntegrationBranchMixin):
             for number, title, labels in self._client.list_open_issue_labels_complete()
         ]
 
+    def list_open_issue_bodies_complete(self) -> list[OpenIssueBody]:
+        """Every open issue with its title, labels and body, read fresh and
+        cursor-paged; raises rather than truncating (#8986)."""
+        return [
+            OpenIssueBody(number=number, title=title, labels=labels, body=body)
+            for number, title, labels, body in self._client.list_open_issue_bodies_complete()
+        ]
+
     def list_open_prs_complete(self) -> list[PRInfo]:
         """Every open PR; raises rather than returning a partial list."""
         return [self._pr_info_from_api(pr) for pr in self._client.list_open_prs_complete()]
+
+    def get_prs_with_label_complete(self, label: str, state: str = "open") -> list[PRInfo]:
+        """Every PR carrying ``label`` in ``state``; raises rather than
+        returning a partial list. See the client method."""
+        return [
+            self._pr_info_from_api(pr)
+            for pr in self._client.list_prs_with_label_complete(label, state=state)
+        ]
 
     def merged_prs_referencing_issues(self, issue_numbers: Sequence[int]) -> frozenset[int]:
         """Merged PRs that reference one of ``issue_numbers`` (closing or partial)."""

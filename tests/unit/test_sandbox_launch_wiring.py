@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from issue_orchestrator.domain.launch_prompt_delivery import LaunchPromptFile
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.execution.agent_runner_providers import (
     sandbox as sandbox_module,
@@ -34,6 +35,9 @@ def _linked_worktree_git_access(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
     monkeypatch.setattr(sandbox_module, "resolve_git_worktree_access", _resolve)
+
+
+_PROMPT = LaunchPromptFile.written(Path("/wt/run/session-prompt.txt"), "do the work")
 
 
 def _agent(*, sandbox: bool) -> AgentConfig:
@@ -60,10 +64,9 @@ def _settings_from_command(command: str) -> dict:
 
 def test_opted_out_command_keeps_bypass_and_no_sandbox() -> None:
     cmd = _agent(sandbox=False).get_command_for_prompt(
-        "do the work",
+        _PROMPT,
         worktree=Path("/wt/issue-42"),
         task_kind="code",
-        prompt_file=".prompts/backend.md",
     )
     assert "--permission-mode bypassPermissions" in cmd
     assert "dontAsk" not in cmd
@@ -75,10 +78,9 @@ def test_opted_out_command_is_stable_across_calls() -> None:
     kwargs = dict(
         worktree=Path("/wt/issue-42"),
         task_kind="code",
-        prompt_file=".prompts/backend.md",
     )
-    first = agent.get_command_for_prompt("do the work", **kwargs)
-    second = agent.get_command_for_prompt("do the work", **kwargs)
+    first = agent.get_command_for_prompt(_PROMPT, **kwargs)
+    second = agent.get_command_for_prompt(_PROMPT, **kwargs)
     assert first == second
     # The sandbox machinery is fully inert on the opt-out path.
     assert "sandbox" not in first.lower()
@@ -105,10 +107,9 @@ def test_opted_out_get_command_review_path_unchanged() -> None:
 def test_opted_in_coder_command_applies_sandbox() -> None:
     worktree = Path("/wt/issue-42")
     cmd = _agent(sandbox=True).get_command_for_prompt(
-        "do the work",
+        _PROMPT,
         worktree=worktree,
         task_kind="code",
-        prompt_file=".prompts/backend.md",
     )
     assert "--permission-mode dontAsk" in cmd
     assert "bypassPermissions" not in cmd
@@ -140,10 +141,9 @@ def test_opted_in_reviewer_command_applies_sandbox() -> None:
 def test_opted_in_worktree_path_flows_into_settings() -> None:
     worktree = Path("/tmp/wt/issue-777-abc")
     cmd = _agent(sandbox=True).get_command_for_prompt(
-        "do the work",
+        _PROMPT,
         worktree=worktree,
         task_kind="code",
-        prompt_file=".prompts/backend.md",
     )
     # The exact worktree the launcher created is the sandbox boundary.
     assert re.search(re.escape(str(worktree)), cmd)
@@ -165,11 +165,10 @@ def test_provider_less_sandbox_optin_fails_closed() -> None:
     )
     with pytest.raises(SandboxUnsupportedError):
         agent.get_command_for_prompt(
-            "do the work",
+            _PROMPT,
             worktree=Path("/wt/issue-1"),
             task_kind="code",
-            prompt_file=".prompts/backend.md",
-        )
+            )
 
 
 def test_provider_less_without_sandbox_is_unchanged() -> None:
@@ -181,10 +180,9 @@ def test_provider_less_without_sandbox_is_unchanged() -> None:
         sandbox=False,
     )
     cmd = agent.get_command_for_prompt(
-        "do the work",
+        _PROMPT,
         worktree=Path("/wt/issue-1"),
         task_kind="code",
-        prompt_file=".prompts/backend.md",
     )
     assert "--settings" not in cmd
     assert "dontAsk" not in cmd

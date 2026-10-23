@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Callable, Protocol
 from ..domain.issue_run_evidence import ReworkTarget
 from ..domain.issue_key import IssueKey
 from ..domain.launch_prompt import LaunchPromptUnavailable, PreparedLaunchPrompt
+from ..domain.launch_prompt_delivery import LaunchCommand, LaunchPromptFile
 from ..domain.models import (
     AgentConfig,
     Issue,
@@ -34,6 +35,7 @@ from ..ports.command_runner import CommandRunner
 from ..ports.worktree_manager import WorktreeInfo, WorktreeManager, WorktreeReuseOptions
 from .session_worktree_briefing import rebase_conflict_warning
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
+from .launch_terminal import LaunchTerminal
 from .scoped_rework_launch import ScopedReworkLaunch
 from .scoped_rework import note_scoped_rework_started
 from .launch_transaction import (
@@ -67,24 +69,6 @@ class SessionExistsFn(Protocol):
     def __call__(self, session_name: str, /) -> bool: ...
 
 
-class SessionCreatorFn(Protocol):
-    def __call__(
-        self,
-        session_name: str,
-        command: str,
-        worktree_path: Path,
-        title: str | None,
-        secret_env: dict[str, str] | None = None,
-        /,
-    ) -> bool: ...
-
-
-class SessionSecretEnvFn(Protocol):
-    """Resolve the provider credentials a launch needs, by provider name."""
-
-    def __call__(self, provider: str | None, /) -> dict[str, str] | None: ...
-
-
 class WorktreeReuseOptionsFactory(Protocol):
     def __call__(
         self,
@@ -115,7 +99,7 @@ class LaunchRetryGuardClearer(Protocol):
 
 
 class PromptPersister(Protocol):
-    def __call__(self, run_dir: Path, prompt_text: str) -> str: ...
+    def __call__(self, run_dir: Path, prompt_text: str) -> LaunchPromptFile: ...
 
 
 class ProviderCommandWrapper(Protocol):
@@ -158,7 +142,8 @@ class ReworkLaunchDependencies:
     issue_run_allocator: IssueRunAllocator
     label_manager: LabelManager
     session_exists: SessionExistsFn
-    create_session: SessionCreatorFn
+    #: The launcher's one terminal boundary: prepare, then start, with credentials (#9012).
+    terminal: LaunchTerminal
     apply_actions: ActionApplierFn
     worktree_reuse_options: WorktreeReuseOptionsFactory
     session_identity_launch_metadata: SessionIdentityMetadataBuilder
@@ -167,7 +152,6 @@ class ReworkLaunchDependencies:
     wrap_provider_command: ProviderCommandWrapper
     build_session_env: SessionEnvBuilder
     check_provider_ready: ProviderReadinessChecker
-    session_secret_env: SessionSecretEnvFn
     resolve_stack_decision: StackDecisionResolverFn
     #: The coder addendum and the issue's standing rulings (#8141).
     launch_prompt: LaunchPromptProvider
@@ -485,9 +469,9 @@ def launch_rework_session(
             existing_work=existing_work,
         )
         rendered_prompt = prepared_coder_prompt.compose(rendered_prompt)
-        prompt_path = deps.persist_session_prompt(run.run_dir, rendered_prompt)
+        launch_prompt = deps.persist_session_prompt(run.run_dir, rendered_prompt)
         base_command = agent_config.get_command_for_prompt(
-            rendered_prompt,
+            launch_prompt,
             issue_number=issue_number,
             issue_title=issue_title,
             worktree=worktree_path,
@@ -500,7 +484,7 @@ def launch_rework_session(
             run.run_dir,
             {
                 "completion_path": completion_path,
-                "session_prompt_path": prompt_path,
+                "session_prompt_path": str(launch_prompt.path),
             },
         )
         env_exports = deps.build_session_env(
@@ -511,7 +495,7 @@ def launch_rework_session(
             run_assets=run,
             worktree_path=worktree_path,
         )
-        command = f"{env_exports} && {base_command}"
+        command = LaunchCommand.composed(env_exports, base_command)
         logger.info(
             "[launch] Rework session command: issue=%s pr=%s session=%s worktree=%s completion=%s command=%s",
             issue_number,
@@ -519,18 +503,18 @@ def launch_rework_session(
             session_name,
             worktree_path,
             completion_path,
-            command,
+            command.text,
         )
+        prepared = deps.terminal.prepare(command, worktree_path)
 
         # Consent once more at the terminal boundary (#7763 review r26 F1).
         if failure := deps.refuse_unapproved(issue_number) or deps.scoped_rework.before_spawn(scoped.keys, run.identity):
             return failure
-        session_created = deps.create_session(
+        session_created = deps.terminal.start(
             session_name,
-            command,
-            worktree_path,
+            prepared,
             f"Rework #{issue_number}",
-            deps.session_secret_env(agent_config.provider),
+            agent_config,
         )
         logger.info(
             "[launch] Rework session create result: issue=%s pr=%s session=%s created=%s",
@@ -593,7 +577,7 @@ def launch_rework_session(
             "run_dir": str(run.run_dir),
             "completion_path": completion_path,
             "completion_path_absolute": str(full_completion_path),
-            "session_prompt_path": prompt_path,
+            "session_prompt_path": str(launch_prompt.path),
         }))
 
         update_rework_cycle_label(

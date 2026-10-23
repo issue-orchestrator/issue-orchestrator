@@ -47,10 +47,9 @@ def _clean_git_env() -> dict[str, str]:
     rather than relying on module-scope os.environ mutations.
     """
     # The fixtures push to local bare repos, so they need the shared test-only
-    # push authorization (see tests/git_push_authorization.py).
-    env = authorized_local_fixture_git_env(
-        strip=["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY"]
-    )
+    # push authorization, which also drops the leaked Git repository and config
+    # overrides (see tests/git_push_authorization.py).
+    env = authorized_local_fixture_git_env()
     # Remove orchestrator session vars that leak into test subprocesses
     for key in list(env):
         if key.startswith("ISSUE_ORCHESTRATOR_"):

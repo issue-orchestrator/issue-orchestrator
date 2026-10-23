@@ -1,13 +1,18 @@
 """Tests for Makefile validation phase orchestration."""
 
 import ast
+import itertools
 import os
 import re
+import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+
+from tests.process_group_run import run_in_process_group
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -332,6 +337,115 @@ def test_every_live_marker_is_excluded_from_the_gate_lanes(target: str):
             f"{target} does not exclude {marker}; a gate run would make real "
             "model calls (and, for a metered provider, spend real money)"
         )
+
+
+# --- the unit lane must actually run quiet ----------------------------------
+#
+# 2026-10-09: pyproject's `log_cli = true` makes pytest force verbose=1 for
+# the whole run, so the unit lane's `-q` still printed every test id (twice
+# under xdist). At ~21k tests `make validate-quick` wrote ~5.2 MB, past the
+# 4 MiB completion custody limit, and completion intake refused every green
+# run as oversized (health review #9241). Pinning `-o log_cli=false` would
+# say nothing about the next setting that forces verbosity, so this runs the
+# lane's own options under this repo's pytest config and asks for the
+# property: no line per test.
+
+_QUIET_PROBE_CASES = 40
+
+
+@pytest.mark.parametrize("unit_parallel", ["0", "2"], ids=["serial", "xdist"])
+def test_the_unit_lane_prints_no_line_per_test(tmp_path: Path, unit_parallel: str):
+    lines = _dry_run("test-unit", LANE_EXECUTOR="direct", UNIT_PARALLEL=unit_parallel)
+    words = shlex.split(
+        _wrapped_command(lines[_find_line(lines, 'target="test-unit"')])
+    )
+    assert Path(words[0]).name == "pytest", words
+    # Swap the lane's test paths for the probe; keep every option it passes.
+    options = list(
+        itertools.dropwhile(lambda word: not word.startswith("-"), words[1:])
+    )
+
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    probe = probe_dir / "test_quiet_probe.py"
+    probe.write_text(
+        "import pytest\n\n\n"
+        f"@pytest.mark.parametrize('case', range({_QUIET_PROBE_CASES}))\n"
+        "def test_case(case):\n"
+        "    assert case >= 0\n",
+        encoding="utf-8",
+    )
+    env = dict(os.environ)
+    # The child must take its options from the lane alone, and must not
+    # believe it is one of this run's xdist workers.
+    for inherited in (
+        "PYTEST_ADDOPTS",
+        "PYTEST_PLUGINS",
+        "PYTEST_CURRENT_TEST",
+        "PYTEST_XDIST_WORKER",
+        "PYTEST_XDIST_WORKER_COUNT",
+        "PYTEST_XDIST_TESTRUNUID",
+    ):
+        env.pop(inherited, None)
+
+    completed = run_in_process_group(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(probe),
+            *options,
+            # This repo's ini, so `log_cli` and every other setting apply...
+            "-c",
+            str(REPO_ROOT / "pyproject.toml"),
+            # ...with collection rooted at the probe. pytest scans every
+            # parent directory inside the confcutdir, and a shared $TMPDIR
+            # can hold hundreds of thousands of entries.
+            "--rootdir",
+            str(probe_dir),
+            "--confcutdir",
+            str(probe_dir),
+            "--basetemp",
+            str(tmp_path / "basetemp"),
+            "-p",
+            "no:cacheprovider",
+        ],
+        cwd=probe_dir,
+        env=env,
+        timeout=300,
+    )
+
+    assert completed.returncode == 0, (
+        f"stdout tail:\n{completed.stdout[-2000:]}\nstderr tail:\n{completed.stderr[-2000:]}"
+    )
+    summary = completed.stdout.strip().splitlines()[-1]
+    assert f"{_QUIET_PROBE_CASES} passed" in summary, summary
+    per_test = [
+        line
+        for line in completed.stdout.splitlines()
+        if "PASSED" in line or line.startswith(probe.name)
+    ]
+    assert not per_test, (
+        f"the unit lane printed {len(per_test)} line(s) for {_QUIET_PROBE_CASES} "
+        "tests; at the suite's size that output overflows the completion "
+        "custody limit and a green validate-quick is refused:\n"
+        + "\n".join(per_test[:5])
+    )
+
+
+def test_no_pytest_lane_asks_for_quiet_with_a_bare_q():
+    """The probe above runs one lane; this keeps the next lane from copying `-x -q`."""
+    commands = (REPO_ROOT / "Makefile").read_text().replace("\\\n", " ").split("\n")
+    bare = [
+        command.strip()
+        for command in commands
+        if re.search(r"\$\$?\(PYTEST\)", command)
+        and re.search(r"(?:^|\s)-q(?:\s|$)", command)
+    ]
+    assert not bare, (
+        "pyproject's `log_cli = true` overrides a bare `-q`; use $(PYTEST_QUIET):\n"
+        + "\n".join(bare)
+    )
 
 
 # --- venv-consuming targets must sync the venv they consume -----------------

@@ -95,7 +95,8 @@ CONTRACT_ADDENDUM = (
     " function must be defined there exactly once (write `Class.method` when two classes define the"
     " method). Omit it, or write null, when the defect lives in no one function. An owner that names no"
     " one definition rejects the whole answer. One defect is filed once: a design finding and another"
-    " finding on the same code site with shared evidence are merged before anything is filed.\n"
+    " finding on the same code site with shared evidence are merged before anything is filed, and a"
+    " finding about the defect of an open issue an earlier run filed is added to that issue (#8986).\n"
 )
 #: Always the last words of the improver's prompt, after every addendum.
 FINAL_ANSWER_REMINDER = (
@@ -359,7 +360,8 @@ class ImproverRun:
         accepted = [AcceptedHeat(record.heat, findings) for record, findings in heats if findings is not None]
         if not accepted:
             return self._finish_unaccepted(base, records)
-        merged = merge_heats(accepted, EffectIdentity(request.engine, evidence.engine_source))
+        identity = EffectIdentity(request.engine, evidence.engine_source)
+        merged = merge_heats(accepted, identity)
         text = merged.findings.model_dump_json(indent=2, by_alias=True) + "\n"
         (run_dir / FINDINGS_FILE).write_text(text, encoding="utf-8")
         try:
@@ -396,7 +398,7 @@ class ImproverRun:
             trend=findings.trend,
             # A blind run's findings may duplicate the issues it was not shown.
             effects=() if request.blind else planned_effects(
-                findings, request.engine, merged.original_ids,
+                findings, identity, merged.original_ids,
                 change_base=None if invitation is None else invitation.champion.id,
             ),
         )

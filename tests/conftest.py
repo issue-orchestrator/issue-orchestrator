@@ -49,6 +49,8 @@ from fastapi.testclient import TestClient
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session
 from issue_orchestrator.infra.config import Config, DangerousConfig
 from issue_orchestrator.infra.hooks.hookspec import hookimpl
+from issue_orchestrator.domain.launch_prompt_delivery import LaunchCommand, PreparedSessionCommand
+from tests.launch_prompt_helpers import prepared_as_given
 from issue_orchestrator.ports.pull_request_tracker import (
     CheckRunAttempt,
     FailedChecksRead,
@@ -71,9 +73,60 @@ from issue_orchestrator.domain.session_key import SessionKey
 from issue_orchestrator.domain.session_kind import SessionKind
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from tests.label_application_helpers import standing_while_present
+from tests.live_e2e_gate import AGENT_SESSION_ENVS, OPT_IN_ENV, LiveE2EGate
 
 TEST_ADMIN_TOKEN = "test-admin-token"
 TEST_AGENT_CALLBACK_TOKEN = "test-agent-callback-token"
+
+
+# =============================================================================
+# Live E2E Gate (#9523)
+# =============================================================================
+# tests/e2e closes real GitHub PRs; it is collected only on IO_E2E=1 and never
+# in an agent session. See tests/live_e2e_gate.py.
+
+_LIVE_E2E_GATE = pytest.StashKey[LiveE2EGate]()
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config: pytest.Config) -> None:
+    gate = LiveE2EGate.from_environ(os.environ)
+    config.stash[_LIVE_E2E_GATE] = gate
+    refusal = gate.refusal(config.args, config.invocation_params.dir)
+    if refusal is not None:
+        raise pytest.UsageError(refusal)
+
+
+def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
+    if config.stash[_LIVE_E2E_GATE].ignores(collection_path):
+        return True
+    return None
+
+
+#: The checkout's ``origin`` in a unit test's simulated live e2e run.
+SIMULATED_PRODUCTION_REPO = "example-owner/production-repo"
+
+
+@pytest.fixture
+def live_e2e_run(monkeypatch: pytest.MonkeyPatch):
+    """Give one unit test a live e2e run's environment: opted in, outside an
+    agent session, against ``test_repo``, from a checkout whose ``origin`` is
+    ``production_repo``. The e2e cleanup owner refuses anything else (#9523).
+
+    The checkout's ``origin`` is environment too: a validation workspace has
+    none, so the real one is never read. This never affects collection, which
+    was decided from the real environment at startup.
+    """
+    from tests.e2e.fixtures import github_utils
+
+    def opt_in(test_repo: str, *, production_repo: str = SIMULATED_PRODUCTION_REPO) -> None:
+        monkeypatch.setenv(OPT_IN_ENV, "1")
+        for name in AGENT_SESSION_ENVS:
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("E2E_TEST_REPO", test_repo)
+        monkeypatch.setattr(github_utils, "get_repo_from_git", lambda: production_repo)
+
+    return opt_in
 
 
 # =============================================================================
@@ -535,6 +588,14 @@ class MockGitHubAdapter:
                     result.append(pr)
         return result
 
+    def get_prs_with_label_complete(self, label: str, state: str = "open") -> list[PRInfo]:
+        """Every PR with ``label`` in ``state`` (closed covers merged)."""
+        states = {"open": {"open"}, "closed": {"closed", "merged"}, "all": {"open", "closed", "merged"}}
+        return [
+            pr for pr in self.get_prs_with_label(label)
+            if pr.state.lower() in states[state]
+        ]
+
     def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list[PRInfo]:
         """Get PRs for an issue by matching branch prefix or title."""
         prefix = f"{issue_number}-"
@@ -903,22 +964,29 @@ class MockTerminalPlugin:
         self.session_exists_override = None  # Set to True/False to override
 
     @hookimpl
+    def prepare_session(self, command: LaunchCommand, working_dir: Path) -> PreparedSessionCommand:
+        """The command as given: this terminal puts nothing around it."""
+        return prepared_as_given(command, working_dir)
+
+    @hookimpl
     def create_session(
         self,
         session_id: int,
-        command: str,
-        working_dir: str,
+        prepared: PreparedSessionCommand,
         title: str | None,
         session_name: str,  # Required - caller must provide explicit name
         secret_env: dict[str, str] | None = None,
     ) -> bool:
         """Track session creation."""
+        command = prepared.launch.text
+        working_dir = str(prepared.working_dir)
         self.create_session_calls.append({
             "session_id": session_id,
             "session_name": session_name,
             "command": command,
             "working_dir": working_dir,
             "title": title,
+            "secret_env": secret_env,
         })
         self.sessions[session_id] = {
             "command": command,
@@ -973,21 +1041,23 @@ class MockPluginManager:
         """Access the underlying mock plugin for assertions."""
         return self._plugin
 
+    def prepare_session(self, command: LaunchCommand, working_dir: Path) -> PreparedSessionCommand:
+        return self._plugin.prepare_session(command=command, working_dir=working_dir)
+
     def create_session(
         self,
         session_id: int,
-        command: str,
-        working_dir: str,
+        prepared: PreparedSessionCommand,
         title: str | None,
         session_name: str,  # Required - caller must provide explicit name
         secret_env: dict[str, str] | None = None,
     ) -> bool:
         return self._plugin.create_session(
             session_id=session_id,
-            command=command,
-            working_dir=working_dir,
+            prepared=prepared,
             title=title,
             session_name=session_name,
+            secret_env=secret_env,
         )
 
     def session_exists(self, session_id: int, session_name: str) -> bool:
@@ -1048,21 +1118,23 @@ class MockSessionRunner:
         """Access the underlying mock plugin for assertions."""
         return self._plugin
 
+    def prepare_session(self, command: LaunchCommand, working_dir: Path) -> PreparedSessionCommand:
+        return self._plugin.prepare_session(command=command, working_dir=working_dir)
+
     def create_session(
         self,
         session_id: int,
-        command: str,
-        working_dir: str,
+        prepared: PreparedSessionCommand,
         title: str | None,
         session_name: str,  # Required - caller must provide explicit name
         secret_env: dict[str, str] | None = None,
     ) -> bool:
         return self._plugin.create_session(
             session_id=session_id,
-            command=command,
-            working_dir=working_dir,
+            prepared=prepared,
             title=title,
             session_name=session_name,
+            secret_env=secret_env,
         )
 
     def session_exists(self, session_id: int, session_name: str) -> bool:

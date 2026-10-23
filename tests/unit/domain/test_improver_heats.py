@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 
 from issue_orchestrator.contracts.improver_findings import ImproverFindings
+from issue_orchestrator.domain.improver_defects import CodeSite
 from issue_orchestrator.domain.improver_heats import AcceptedHeat, merge_heats
-from tests.unit.improver_support import ENGINE_ID, AUDITED_REPO, KeyedIdentity, example
+from tests.unit.improver_support import ENGINE_ID, AUDITED_REPO, FakeEngineSource, KeyedIdentity, example
 
 
 def _findings(*names: str, designs: list[dict] | None = None) -> ImproverFindings:
@@ -86,6 +87,75 @@ def test_a_different_finding_proposing_a_taken_exam_case_is_surfaced_not_merged(
     [conflict] = merged.conflicts
     assert (conflict.finding_id, conflict.heat, conflict.claim) == (exam, 2, "Plant the other anomaly instead.")
     assert "same-case-other-anomaly" in conflict.reason
+
+
+def _capability(**updates: object) -> ImproverFindings:
+    """The capability example, its finding's root cause and reproduction
+    updated and its other fields replaced, under the same effect key."""
+    doc = example("capability_issue")
+    finding = doc["findings"][0]
+    for field, update in updates.items():
+        finding[field] = {**finding[field], **update} if isinstance(update, dict) else update
+    return ImproverFindings.model_validate_json(json.dumps(doc))
+
+
+def test_a_stall_finding_with_a_taken_key_and_another_cause_is_surfaced_not_counted_as_support() -> None:
+    """#8985: one effect key (one output on the same anomalies) can carry two
+    defects. A finding naming another root-cause owner or another
+    reproduction is no support for the kept one: all it claims is recorded
+    as a conflict on it, for the operator."""
+    kept = example("capability_issue")["findings"][0]["id"]
+    variants = [
+        ("another root-cause owner", {"root_cause": {"owner": "issue_orchestrator.control.other:elsewhere"}}),
+        ("another reproduction", {"reproduction": {"harness": "tests/unit/control/test_other.py"}}),
+        ("another reproduction", {"reproduction": {"kind": "integration_test"}}),
+    ]
+
+    for what, update in variants:
+        other = _capability(id="another-defect-same-anomaly", **update)
+        merged = _merge([AcceptedHeat(1, _capability()), AcceptedHeat(2, other)])
+
+        assert [f.id for f in merged.findings.findings] == [kept], what
+        assert merged.support[kept] == (1,), what
+        [conflict] = merged.conflicts
+        assert (conflict.finding_id, conflict.heat) == (kept, 2), what
+        assert "another-defect-same-anomaly" in conflict.reason and what in conflict.reason
+        [finding] = other.findings
+        assert finding.root_cause is not None and finding.reproduction is not None and finding.proposal is not None
+        for claimed in (
+            finding.root_cause.owner, finding.root_cause.why, finding.reproduction.kind,
+            finding.reproduction.harness, finding.reproduction.planted_state, *finding.reproduction.assertions,
+            finding.reproduction.fails_on, finding.proposal,
+        ):
+            assert claimed in conflict.claim, (what, claimed)
+
+
+def test_a_stall_finding_with_a_taken_key_and_the_same_cause_in_other_words_is_support() -> None:
+    """Heats word one cause their own way: one owner, however it is written,
+    and one reproduction kind and harness are one finding (#8985). Unless the
+    staged source resolves two spellings to one definition, nothing guesses
+    they are one: the other is shown as a conflict."""
+    compare_heads = CodeSite(("issue_orchestrator", "control", "validated_work_recovery"), ("compare_heads",))
+    other_words = _capability(
+        id="divergent-heads-in-other-words",
+        root_cause={"owner": "control/validated_work_recovery.py:compare_heads", "why": "Other words."},
+        reproduction={
+            "harness": " ./tests/unit/control/test_validated_work_recovery.py", "planted_state": "Other words.",
+            "assertions": ["Other words."],
+        },
+        proposal="Other words.",
+    )
+    kept = example("capability_issue")["findings"][0]["id"]
+
+    for source in (FakeEngineSource(defined=frozenset({compare_heads})), FakeEngineSource()):
+        merged = merge_heats(
+            [AcceptedHeat(1, _capability()), AcceptedHeat(2, other_words)],
+            KeyedIdentity(_key, _dkey, source),
+        )
+
+        resolved = bool(source.defined)
+        assert merged.support[kept] == ((1, 2) if resolved else (1,)), source
+        assert bool(merged.conflicts) is not resolved, source
 
 
 def test_a_design_finding_is_one_across_heats_only_by_its_effect_key_and_claim() -> None:

@@ -54,6 +54,16 @@ class OpenIssueLabels:
 
 
 @dataclass(frozen=True, slots=True)
+class OpenIssueBody:
+    """One open issue, its title and labels, and its body, as the host stores them."""
+
+    number: int
+    title: str
+    labels: tuple[str, ...]
+    body: str
+
+
+@dataclass(frozen=True, slots=True)
 class CaseFileObservation:
     observation_id: str
     recorded_at: str
@@ -175,6 +185,7 @@ __all__ = [
     "CharterAuditReader",
     "ClaimAuditReader",
     "NeedsHumanCauseAuditReader",
+    "OpenIssueBody",
     "OpenIssueLabels",
     "OpenWorkHost",
     "PromotionAuditReader",
