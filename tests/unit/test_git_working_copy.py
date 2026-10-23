@@ -1,13 +1,20 @@
 """Unit tests for GitWorkingCopy adapter."""
 
 import json
+import logging
 import os
 import subprocess
+from base64 import b64encode
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
 
+from issue_orchestrator.adapters.github.auth import (
+    GitHubAuth,
+    GitHubAuthError,
+    StaticGitHubTokenProvider,
+)
 from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
 from issue_orchestrator.ports.command_runner import OutputNewlines
 from issue_orchestrator.ports.git import GitError, GitResult
@@ -21,6 +28,8 @@ from issue_orchestrator.ports.working_copy import (
     PushResult,
     RebaseResult,
 )
+from tests.unit.foreign_tracking_refs import clone_with_foreign_tracking_refs
+from tests.unit.foreign_tracking_refs import git as tracking_git
 
 
 def git_result(stdout: str = "", stderr: str = "", returncode: int = 0) -> GitResult:
@@ -453,47 +462,77 @@ class TestFetch:
 
 
 class TestListRemoteBranches:
-    """Tests for list_remote_branches method."""
+    """The remote's branches, as the remote holds them now (#9550)."""
 
-    def test_list_remote_branches_success(self, git_wc, worktree_path):
-        """Test listing remote branches."""
-        with patch.object(git_wc, "_run_git") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout="  origin/main\n  origin/feature-1\n  origin/feature-2\n",
-                stderr="",
-            )
+    @pytest.mark.parametrize("fetched", [True, False])
+    def test_lists_the_remotes_branches_not_the_clones_tracking_refs(self, tmp_path, fetched):
+        clone = clone_with_foreign_tracking_refs(
+            tmp_path, foreign_branch="106-test-frontend-feature",
+            remote_branch="106-exam-b-green-pr-awaiting-review", fetched=fetched,
+        )
 
-            branches = git_wc.list_remote_branches(worktree_path)
+        branches = GitWorkingCopy().list_remote_branches(clone.root)
 
-            assert len(branches) == 3
-            assert "origin/main" in branches
-            assert "origin/feature-1" in branches
-            assert "origin/feature-2" in branches
+        assert sorted(branches) == ["106-exam-b-green-pr-awaiting-review", "main"]
 
-    def test_list_remote_branches_empty(self, git_wc, worktree_path):
-        """Test listing remote branches when none exist."""
-        with patch.object(git_wc, "_run_git") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout="",
-                stderr="",
-            )
+    def test_a_remote_branch_deleted_since_the_last_fetch_is_gone(self, tmp_path):
+        clone = clone_with_foreign_tracking_refs(
+            tmp_path, foreign_branch="7-elsewhere", remote_branch="8-retired", fetched=True,
+        )
+        tracking_git(clone.remote, "branch", "-D", "8-retired")
 
-            branches = git_wc.list_remote_branches(worktree_path)
+        assert GitWorkingCopy().list_remote_branches(clone.root) == ["main"]
 
-            assert branches == []
+    def test_an_unreadable_remote_raises_rather_than_listing_nothing(self, tmp_path):
+        clone = clone_with_foreign_tracking_refs(
+            tmp_path, foreign_branch="7-elsewhere", remote_branch="8-real", fetched=True,
+        )
+        tracking_git(clone.root, "remote", "set-url", "origin", str(tmp_path / "missing.git"))
 
-    def test_list_remote_branches_error(self, git_wc, worktree_path):
-        """Test error handling."""
-        with patch.object(git_wc, "_run_git") as mock_run:
-            mock_run.side_effect = git_error(
-                1, "git", stderr="error"
-            )
+        with pytest.raises(GitError):
+            GitWorkingCopy().list_remote_branches(clone.root)
 
-            branches = git_wc.list_remote_branches(worktree_path)
+    def test_the_read_presents_the_configured_git_auth_in_the_environment_only(
+        self, mock_git, tmp_path, caplog
+    ):
+        """GitHub App transport auth reaches ``ls-remote``; the token never
+        reaches argv or a log line (#9550 review r1 F1)."""
+        token = "installation-token-not-live"
+        header = b64encode(f"x-access-token:{token}".encode()).decode()
+        auth = GitHubAuth(
+            token_provider=StaticGitHubTokenProvider(token=token),
+            source_descriptions=(),
+            repo="owner/repo",
+            enable_git_push_auth=True,
+        )
+        mock_git.run.return_value = git_result(stdout="abc123\trefs/heads/8-real\n")
+        caplog.set_level(logging.DEBUG)
 
-            assert branches == []
+        branches = GitWorkingCopy(git=mock_git, git_auth=auth).list_remote_branches(tmp_path)
+
+        assert branches == ["8-real"]
+        mock_git.run.assert_called_once()
+        argv = mock_git.run.call_args.args[1]
+        env = mock_git.run.call_args.kwargs["env"]
+        assert argv == ["ls-remote", "--heads", "origin"]
+        assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraheader"
+        assert env["GIT_CONFIG_VALUE_0"] == f"Authorization: Basic {header}"
+        for secret in (token, header):
+            assert secret not in " ".join(argv)
+            assert secret not in caplog.text
+
+    def test_a_git_auth_failure_raises_rather_than_reading_ambiently(self, mock_git, tmp_path):
+        """An unpreparable credential is loud: no unauthenticated read, no
+        empty branch set (#9550 review r1 F1)."""
+
+        class _BrokenAuth:
+            def git_env_overrides(self, *, remote: str) -> dict[str, str]:
+                raise GitHubAuthError("installation token unavailable")
+
+        with pytest.raises(GitHubAuthError, match="installation token unavailable"):
+            GitWorkingCopy(git=mock_git, git_auth=_BrokenAuth()).list_remote_branches(tmp_path)
+
+        mock_git.run.assert_not_called()
 
 
 class TestIsGitRepo:

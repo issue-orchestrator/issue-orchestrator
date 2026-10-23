@@ -326,8 +326,7 @@ class AuditIssuesCommand:
 
     async def execute(self, request: AuditActionRequest) -> ActionResult:
         from ..infra.audit import audit_queue
-        from ..execution.providers import create_repository_host
-        from ..execution.git_working_copy import GitWorkingCopy
+        from ..execution.providers import create_repository_access
         from ..infra.analysis import extract_issue_branches
         from .control_center_runtime import load_config_for_selection
 
@@ -340,15 +339,14 @@ class AuditIssuesCommand:
             return ActionResult({"error": "No repository configured"}, status_code=400)
 
         try:
-            issue_tracker = create_repository_host(config.repo, config=config)
-            working_copy = GitWorkingCopy()
+            repository = create_repository_access(config.repo, config)
             issue_branches = extract_issue_branches(
-                working_copy.list_remote_branches(config.repo_root),
+                repository.working_copy.list_remote_branches(config.repo_root),
             )
             entries = audit_queue(
                 config,
                 state=None,
-                issue_tracker=issue_tracker,
+                issue_tracker=repository.host,
                 issue_branches=issue_branches,
                 known_proposals=_stored_known_proposals(config),
             )

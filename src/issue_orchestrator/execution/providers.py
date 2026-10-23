@@ -17,11 +17,13 @@ Example:
     host = create_repository_host(repo=repo)
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
+    from ..adapters.github.auth import GitHubAuth
     from ..adapters.github.tokens import TokenValidationResult
     from ..domain.repository_setup_auth import RepositorySetupGitHubAuthorization
     from ..infra.config import Config
@@ -31,6 +33,7 @@ if TYPE_CHECKING:
     from ..ports.promotion_target import PromotionTargetHost
     from ..ports.pattern_registry import PatternCaseFileRegistry
     from ..ports.repository_setup import RepositorySetupGitHubVerification
+    from ..ports.working_copy import WorkingCopy
     from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
 
 
@@ -55,6 +58,55 @@ def create_repository_host(
     from ..adapters.github import GitHubAdapter
 
     return GitHubAdapter(repo=repo, config=config)
+
+
+def create_github_auth(repo: str, config: "Config") -> "GitHubAuth":
+    """The GitHub auth owner ``repo``'s configuration selects.
+
+    API calls present it, and so does Git transport when the configuration
+    authenticates it (a GitHub App installation token). The engine and every
+    standalone entrypoint build it here, so no two paths authenticate one
+    repository differently (#9550 review).
+    """
+    from ..adapters.github import build_github_auth
+
+    return build_github_auth(
+        **config.github_auth_kwargs(),
+        repo=repo,
+        api_url=config.github_api_url,
+        timeout_seconds=float(config.github_http_timeout_seconds),
+    )
+
+
+@dataclass(frozen=True)
+class RepositoryAccess:
+    """A configured repository's API host and Git working copy, sharing one
+    auth owner.
+
+    The working copy's remote reads (the issue->branch map's ``ls-remote``)
+    then authenticate as the API reads beside them do, and an App token one of
+    them mints serves the other.
+    """
+
+    host: "RepositoryHost"
+    working_copy: "WorkingCopy"
+
+
+def create_repository_access(repo: str, config: "Config") -> RepositoryAccess:
+    """The host and working copy a standalone entrypoint reads ``repo`` through.
+
+    An entrypoint that reads remote branches must not build a bare
+    ``GitWorkingCopy()``: it presents only ambient Git credentials, which a
+    private repository served by a GitHub App does not accept (#9550 review).
+    """
+    from ..adapters.github import GitHubAdapter
+    from .git_working_copy import GitWorkingCopy
+
+    auth = create_github_auth(repo, config)
+    return RepositoryAccess(
+        host=GitHubAdapter(repo=repo, config=config, auth=auth),
+        working_copy=GitWorkingCopy(git_auth=auth),
+    )
 
 
 def create_audited_repo_reads(repo: str) -> "AuditedRepoReads":

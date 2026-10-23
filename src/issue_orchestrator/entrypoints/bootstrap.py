@@ -115,7 +115,8 @@ from ..control.governed_label_set import GovernedLabelSet
 from ..control.fact_gatherer import FactGatherer
 from ..control.health_gate import HealthGate
 from ..control.human_gates import HumanGates
-from ..adapters.github import GitHubAuth, GitHubIssueResolver, GitHubCache, build_github_auth
+from ..adapters.github import GitHubAuth, GitHubIssueResolver, GitHubCache
+from ..execution.providers import create_github_auth
 from ..adapters.github.ref_claim_adapter import (
     GitHubRefClaimAdapter,
     GitHubRefRunLedgerAdapter,
@@ -184,16 +185,6 @@ def _resolve_repo(config: Config) -> str | None:
             logger.warning("Could not auto-detect repository: %s", e)
             repo = None
     return repo
-
-
-def _create_github_auth(repo: str, config: Config) -> GitHubAuth:
-    """Create the shared GitHub auth owner for API and git transport."""
-    return build_github_auth(
-        **config.github_auth_kwargs(),
-        repo=repo,
-        api_url=config.github_api_url,
-        timeout_seconds=float(config.github_http_timeout_seconds),
-    )
 
 
 def _create_github_adapter(repo: str, config: Config, auth: GitHubAuth) -> GitHubAdapter:
@@ -494,7 +485,8 @@ def build_orchestrator(
 
     # Resolve repo and create GitHub adapter
     repo = _resolve_repo(config)
-    github_auth = _create_github_auth(repo, config) if repo else None
+    # The one auth owner for API and Git transport; the working copy gets it too.
+    github_auth = create_github_auth(repo, config) if repo else None
     github = _create_github_adapter(repo, config, github_auth) if repo and github_auth else None
 
     # Set up event sinks

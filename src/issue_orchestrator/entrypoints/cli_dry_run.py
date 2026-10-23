@@ -22,15 +22,19 @@ __all__ = ["format_orphan_action", "format_orphan_issue_info", "run_dry_run"]
 def run_dry_run(args: argparse.Namespace, config: "Config") -> int:
     """Show what would be processed without starting the orchestrator."""
     from ..control.scheduler import Scheduler
-    from ..execution.git_working_copy import GitWorkingCopy
-    from ..execution.providers import create_repository_host
+    from ..execution.providers import create_repository_access
     from ..infra.analysis import analyze_all_issues, extract_issue_branches
 
     console.print("\n[cyan]DRY RUN - showing what would be processed:[/cyan]\n")
 
+    if not config.repo:
+        console.print("[yellow]No matching issues found.[/yellow]")
+        return 0
+
     scheduler = Scheduler(config)
-    github = create_repository_host(config.repo, config=config) if config.repo else None
-    working_copy = GitWorkingCopy()
+    repository = create_repository_access(config.repo, config)
+    github = repository.host
+    working_copy = repository.working_copy
     all_issues: list[Issue] = []
 
     milestones = config.get_filter_milestones()
@@ -42,13 +46,12 @@ def run_dry_run(args: argparse.Namespace, config: "Config") -> int:
         if config.filtering.label:
             labels.append(config.filtering.label)
         for milestone in milestones:
-            if github:
-                issues = github.list_issues(
-                    labels=labels,
-                    milestone=milestone,
-                    limit=config.filtering.fetch_limit,
-                )
-                all_issues.extend(issues)
+            issues = github.list_issues(
+                labels=labels,
+                milestone=milestone,
+                limit=config.filtering.fetch_limit,
+            )
+            all_issues.extend(issues)
 
     if not all_issues:
         console.print("[yellow]No matching issues found.[/yellow]")
@@ -68,7 +71,7 @@ def run_dry_run(args: argparse.Namespace, config: "Config") -> int:
 
     _print_dry_run_table(states)
     _print_dry_run_summary(states, all_issues, scheduler, config)
-    _print_orphan_branches(states, config, github, working_copy)
+    _print_orphan_branches(states, issue_branches, config, github, working_copy)
 
     return 0
 
@@ -159,14 +162,19 @@ def _print_dry_run_summary(
 
 
 def _print_orphan_branches(
-    states: list[IssueState], config: Config, github: Any, working_copy: Any
+    states: list[IssueState],
+    issue_branches: dict[int, str],
+    config: Config,
+    github: Any,
+    working_copy: Any,
 ) -> None:
-    """Print orphan branches analysis for dry-run mode."""
-    from ..infra.analysis import analyze_orphan_branches, extract_issue_branches
+    """Print orphan branches analysis for dry-run mode.
 
-    issue_branches = extract_issue_branches(
-        working_copy.list_remote_branches(config.repo_root)
-    )
+    ``issue_branches`` is the map the run already read: reading it again is a
+    second ``ls-remote`` that could disagree with the first (#9550).
+    """
+    from ..infra.analysis import analyze_orphan_branches
+
     in_progress_nums = {s.issue.number for s in states if s.issue.is_in_progress}
     orphan_states = analyze_orphan_branches(
         issue_branches,
