@@ -111,20 +111,33 @@ SIMULATED_PRODUCTION_REPO = "example-owner/production-repo"
 def live_e2e_run(monkeypatch: pytest.MonkeyPatch):
     """Give one unit test a live e2e run's environment: opted in, outside an
     agent session, against ``test_repo``, from a checkout whose ``origin`` is
-    ``production_repo``. The e2e cleanup owner refuses anything else (#9523).
+    ``production_repo``, on a machine where io engines manage
+    ``managed_repos``. The e2e cleanup owner refuses anything else (#9523,
+    #9529).
 
-    The checkout's ``origin`` is environment too: a validation workspace has
-    none, so the real one is never read. This never affects collection, which
-    was decided from the real environment at startup.
+    The checkout's ``origin`` and the operator's io repo registry are
+    environment too: a validation workspace has no origin, and the registry
+    can list any checkout, so the real ones are never read. This never
+    affects collection, which was decided from the real environment at
+    startup.
     """
     from tests.e2e.fixtures import github_utils
 
-    def opt_in(test_repo: str, *, production_repo: str = SIMULATED_PRODUCTION_REPO) -> None:
+    def opt_in(
+        test_repo: str,
+        *,
+        production_repo: str = SIMULATED_PRODUCTION_REPO,
+        managed_repos: tuple[str, ...] = (),
+    ) -> None:
         monkeypatch.setenv(OPT_IN_ENV, "1")
         for name in AGENT_SESSION_ENVS:
             monkeypatch.delenv(name, raising=False)
         monkeypatch.setenv("E2E_TEST_REPO", test_repo)
         monkeypatch.setattr(github_utils, "get_repo_from_git", lambda: production_repo)
+        registered = {
+            repo.casefold(): Path("/simulated-checkouts") / repo for repo in managed_repos
+        }
+        monkeypatch.setattr(github_utils, "get_registered_repos", lambda: registered)
 
     return opt_in
 
