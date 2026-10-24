@@ -754,10 +754,6 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
     return queue_items, queue_total, seen_issues
 
 
-def _scope_issues_for_blocked_projection(state) -> list[Any]:
-    return state.cached_scope_issues if state.cached_scope_issues else state.cached_queue_issues
-
-
 def _build_scope_blocked_items(
     state,
     config,
@@ -769,7 +765,7 @@ def _build_scope_blocked_items(
     if state.startup_status != "complete":
         return blocked_items, seen_issues
 
-    scope_issues = _scope_issues_for_blocked_projection(state)
+    scope_issues = state.in_scope_issues()
     dependency_info = get_issue_dependencies(scope_issues, config)
 
     for issue in scope_issues:
@@ -1171,7 +1167,7 @@ def build_dashboard_view_model(
     if state and config:
         lm = LabelManager(config)
         non_executable_numbers = non_executable_issue_numbers(
-            _scope_issues_for_blocked_projection(state), lm,
+            state.in_scope_issues(), lm,
         )
         active_numbers = {s.issue.number for s in state.active_sessions}
         seen_issues.update(active_numbers)
