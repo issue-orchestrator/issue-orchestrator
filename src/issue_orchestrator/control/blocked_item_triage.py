@@ -218,7 +218,7 @@ def owed_triages(
     """
     blocked = [
         (issue, blocking)
-        for issue in sorted(scope_issues(state), key=lambda item: item.number)
+        for issue in sorted(state.in_scope_issues(), key=lambda item: item.number)
         if issue.number not in exclude
         and (blocking := blocked_work_item(issue, labels, config.tech_lead_review_agent)) is not None
     ]
@@ -317,11 +317,6 @@ def prior_triage(
     )
 
 
-def scope_issues(state: "OrchestratorState") -> Sequence["Issue"]:
-    """The same issue snapshot the dashboard's blocked lane is built from."""
-    return state.cached_scope_issues or state.cached_queue_issues
-
-
 def blocked_work_item(
     issue: "Issue", labels: "LabelManager", tech_lead_agent: str | None
 ) -> tuple[tuple[str, ...], bool] | None:
@@ -358,7 +353,7 @@ def label_blocked_work_items(
 
     labels = LabelManager(config)
     found: list[tuple[int, str]] = []
-    for issue in scope_issues(state):
+    for issue in state.in_scope_issues():
         blocking = blocked_work_item(issue, labels, config.tech_lead_review_agent)
         if blocking is not None:
             found.append((issue.number, block_fingerprint(

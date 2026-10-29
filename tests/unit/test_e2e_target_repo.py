@@ -1,7 +1,12 @@
-"""The live e2e suite's repository is named explicitly and is never production (#9523)."""
+"""The live e2e suite's repository is named explicitly and is never one io
+manages: not production (#9523), nor any repository in the io repo registry
+(#9529)."""
+
+from pathlib import Path
 
 import pytest
 
+from issue_orchestrator.infra.repo_registry import add_repo, registry_file, remove_repo
 from tests.e2e.fixtures import github_utils
 from tests.e2e.fixtures.github_utils import (
     E2ETargetRepoError,
@@ -10,6 +15,13 @@ from tests.e2e.fixtures.github_utils import (
 )
 
 PRODUCTION = "issue-orchestrator/issue-orchestrator"
+MANAGED = "porchpin/porchpin"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_registry(monkeypatch, tmp_path):
+    """Every test reads its own io repo registry, never the operator's."""
+    monkeypatch.setenv("ISSUE_ORCHESTRATOR_CONFIG_DIR", str(tmp_path / "io-config"))
 
 
 def _production() -> str:
@@ -20,10 +32,36 @@ def _never_read() -> str:
     raise AssertionError("an unset target must be refused before origin is read")
 
 
+def _never_read_registry() -> dict[str, Path]:
+    raise AssertionError("an unset target must be refused before the registry is read")
+
+
+def _nothing_registered() -> dict[str, Path]:
+    return {}
+
+
+def _registered() -> dict[str, Path]:
+    return {MANAGED: Path("/home/operator/dev/porchpin")}
+
+
+def _register_checkout(tmp_path: Path, name: str) -> Path:
+    checkout = tmp_path / name
+    checkout.mkdir()
+    add_repo(checkout)
+    return checkout.resolve()
+
+
+def _origins(monkeypatch, by_checkout: dict[Path, str | None]) -> None:
+    """``origin`` of each registered checkout; the harness checkout is production."""
+    monkeypatch.setattr(
+        github_utils, "detect_repo", lambda cwd: by_checkout.get(cwd, PRODUCTION)
+    )
+
+
 @pytest.mark.parametrize("configured", [None, "", "   "])
 def test_an_unset_target_is_refused_not_guessed(configured):
     with pytest.raises(E2ETargetRepoError, match="E2E_TEST_REPO is not set"):
-        resolve_test_repo(configured, _never_read)
+        resolve_test_repo(configured, _never_read, _never_read_registry)
 
 
 @pytest.mark.parametrize(
@@ -31,22 +69,33 @@ def test_an_unset_target_is_refused_not_guessed(configured):
 )
 def test_the_checkouts_own_repository_is_refused(configured):
     with pytest.raises(E2ETargetRepoError, match="this checkout's own repository"):
-        resolve_test_repo(configured, _production)
+        resolve_test_repo(configured, _production, _nothing_registered)
 
 
 @pytest.mark.parametrize("configured", ["issue-orchestrator", "a/b/c", "/repo", "owner/"])
 def test_a_malformed_target_is_refused(configured):
     with pytest.raises(E2ETargetRepoError, match="must be 'owner/name'"):
-        resolve_test_repo(configured, _production)
+        resolve_test_repo(configured, _production, _nothing_registered)
+
+
+@pytest.mark.parametrize("configured", [MANAGED, "PorchPin/PorchPin", f" {MANAGED} "])
+def test_a_repository_another_io_engine_manages_is_refused(configured):
+    with pytest.raises(E2ETargetRepoError, match="managed by an io engine") as refusal:
+        resolve_test_repo(configured, _production, _registered)
+
+    assert "/home/operator/dev/porchpin" in str(refusal.value)
 
 
 def test_a_dedicated_test_repository_is_the_target():
-    assert resolve_test_repo(" someone/io-e2e-sandbox ", _production) == "someone/io-e2e-sandbox"
+    assert (
+        resolve_test_repo(" someone/io-e2e-sandbox ", _production, _registered)
+        == "someone/io-e2e-sandbox"
+    )
 
 
 def test_the_git_remote_is_never_a_fallback(monkeypatch):
     monkeypatch.delenv("E2E_TEST_REPO", raising=False)
-    monkeypatch.setattr(github_utils, "detect_repo", lambda cwd: PRODUCTION)
+    _origins(monkeypatch, {})
 
     with pytest.raises(E2ETargetRepoError, match="E2E_TEST_REPO is not set"):
         get_test_repo()
@@ -54,10 +103,69 @@ def test_the_git_remote_is_never_a_fallback(monkeypatch):
 
 def test_e2e_test_repo_naming_the_checkouts_origin_is_refused(monkeypatch):
     monkeypatch.setenv("E2E_TEST_REPO", PRODUCTION)
-    monkeypatch.setattr(github_utils, "detect_repo", lambda cwd: PRODUCTION)
+    _origins(monkeypatch, {})
 
     with pytest.raises(E2ETargetRepoError, match="this checkout's own repository"):
         get_test_repo()
+
+
+def test_e2e_test_repo_naming_a_registered_checkouts_repository_is_refused(
+    monkeypatch, tmp_path
+):
+    checkout = _register_checkout(tmp_path, "porchpin")
+    _origins(monkeypatch, {checkout: MANAGED})
+    monkeypatch.setenv("E2E_TEST_REPO", MANAGED)
+
+    with pytest.raises(E2ETargetRepoError, match="managed by an io engine"):
+        get_test_repo()
+
+
+@pytest.mark.parametrize("configured", [MANAGED, "someone/io-e2e-sandbox"])
+def test_a_missing_registered_checkout_is_refused_not_skipped(
+    monkeypatch, tmp_path, configured
+):
+    """An engine can outlive its checkout, so a missing one proves nothing
+    about what it managed: any target is refused, not only its old one."""
+    checkout = _register_checkout(tmp_path, "porchpin")
+    checkout.rmdir()
+    _origins(monkeypatch, {checkout: MANAGED})
+    monkeypatch.setenv("E2E_TEST_REPO", configured)
+
+    with pytest.raises(E2ETargetRepoError, match="no longer exists") as refusal:
+        get_test_repo()
+
+    _assert_names_the_unidentified_checkout(str(refusal.value), checkout)
+
+
+def test_unregistering_a_missing_checkout_lifts_its_refusal(monkeypatch, tmp_path):
+    checkout = _register_checkout(tmp_path, "porchpin")
+    checkout.rmdir()
+    _origins(monkeypatch, {})
+    monkeypatch.setenv("E2E_TEST_REPO", "someone/io-e2e-sandbox")
+
+    assert remove_repo(checkout)
+
+    assert get_test_repo() == "someone/io-e2e-sandbox"
+
+
+def test_a_registered_checkout_with_an_unreadable_origin_is_refused(monkeypatch, tmp_path):
+    checkout = _register_checkout(tmp_path, "local-only")
+    _origins(monkeypatch, {checkout: None})
+    monkeypatch.setenv("E2E_TEST_REPO", "someone/io-e2e-sandbox")
+
+    with pytest.raises(E2ETargetRepoError, match="no readable GitHub origin") as refusal:
+        get_test_repo()
+
+    _assert_names_the_unidentified_checkout(str(refusal.value), checkout)
+
+
+def _assert_names_the_unidentified_checkout(diagnostic: str, checkout: Path) -> None:
+    """The refusal names the checkout, the registry listing it, and the way out."""
+    assert str(checkout) in diagnostic
+    assert str(registry_file()) in diagnostic
+    assert "cannot prove" in diagnostic
+    assert "Restore the checkout" in diagnostic
+    assert "remove its entry from the registry" in diagnostic
 
 
 def test_an_unreadable_origin_is_refused_rather_than_trusted(monkeypatch):
@@ -68,8 +176,9 @@ def test_an_unreadable_origin_is_refused_rather_than_trusted(monkeypatch):
         get_test_repo()
 
 
-def test_e2e_test_repo_is_the_target(monkeypatch):
+def test_e2e_test_repo_is_the_target(monkeypatch, tmp_path):
+    checkout = _register_checkout(tmp_path, "porchpin")
+    _origins(monkeypatch, {checkout: MANAGED})
     monkeypatch.setenv("E2E_TEST_REPO", "someone/io-e2e-sandbox")
-    monkeypatch.setattr(github_utils, "detect_repo", lambda cwd: PRODUCTION)
 
     assert get_test_repo() == "someone/io-e2e-sandbox"

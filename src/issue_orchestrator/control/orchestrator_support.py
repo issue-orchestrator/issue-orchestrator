@@ -1004,7 +1004,9 @@ def _fetch_incremental_issues(
     required_stable_ids: set[str] | None,
     sync_plan: _SelectiveSyncPlan,
 ) -> tuple[list["Issue"], set[int], str | None]:
-    issue_map = {issue.number: issue for issue in state.cached_queue_issues}
+    # Start from the scope, not the queue: ``replace_from_refresh`` rebuilds
+    # the scope from this list, and a held issue is in scope but not queued.
+    issue_map = {issue.number: issue for issue in state.in_scope_issues()}
     pending_shrink_due = queue_shrink_confirmation_due(state, time.time())
     hot_issue_numbers = _select_hot_issue_numbers(
         state,

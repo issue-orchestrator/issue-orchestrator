@@ -14,8 +14,9 @@ an unfinished run exits non-zero and keeps the labels for the retry:
         python -m tests.e2e.reconcile --no-live-run-against owner/test-repo
 
 The confirmation must name ``E2E_TEST_REPO``, which must not be this
-checkout's own repository, and agent sessions are refused (the cleanup owner's
-checks).
+checkout's own repository nor any repository a checkout in the io repo
+registry names (one whose checkout is missing or has no GitHub origin refuses
+every target), and agent sessions are refused (the cleanup owner's checks).
 """
 
 from __future__ import annotations

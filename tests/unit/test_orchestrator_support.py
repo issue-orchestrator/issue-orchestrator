@@ -701,6 +701,53 @@ class TestQueueFetchPlanner:
 
         assert all(issue.number != 7 for issue in state.cached_queue_issues)
 
+    def test_incremental_refresh_keeps_in_scope_issues_the_queue_excludes(
+        self, mock_event_sink, mock_repository_host
+    ):
+        """An issue held out of the queue stays in scope across an incremental refresh.
+
+        Session history holds #2 (its PR awaits merge) and #3 (blocked on a
+        human) out of the runnable queue, but both are still in scope: the
+        blocked-item triage agenda, the health-review board fingerprint and the
+        dashboard's blocked lane all read the scope snapshot. An incremental
+        refresh that re-fetches neither must not drop them from it, or each of
+        those readers flaps between full and incremental refreshes (#9562).
+        """
+        config = self._make_config()
+        queued = make_issue(1, labels=["agent:web"])
+        awaiting_merge = make_issue(2, labels=["agent:web", "pr-pending"])
+        blocked = make_issue(3, labels=["agent:web", "needs-human"])
+        state = OrchestratorState(
+            cached_scope_issues=[queued, awaiting_merge, blocked],
+            cached_queue_issues=[queued],
+            session_history=[
+                make_history_entry(2, "completed"),
+                make_history_entry(3, "needs_human"),
+            ],
+            queue_last_full_scan_at=time.time(),
+        )
+        scheduler = Mock()
+        scheduler.evaluate_issues.return_value = []
+        github_workflow = Mock()
+        github_workflow.refresh_issues.return_value = [queued]
+        github_workflow.fetch_discovery_issues.return_value = []
+
+        _fetch_and_update_queue(
+            config=config,
+            events=mock_event_sink,
+            state=state,
+            repository_host=mock_repository_host,
+            scheduler=scheduler,
+            github_workflow=github_workflow,
+            refresh_requested=False,
+            inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
+        )
+
+        assert state.queue_last_refresh_mode == "incremental"
+        assert {issue.number for issue in state.cached_scope_issues} == {1, 2, 3}
+        assert {issue.number for issue in state.cached_queue_issues} == {1}
+
     def test_run_planning_cycle_uses_network_sync_interval_not_queue_refresh(
         self, mock_event_sink, mock_repository_host
     ):
