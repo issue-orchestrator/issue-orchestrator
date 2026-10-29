@@ -17,6 +17,7 @@ from ..ports import EventSink,  make_trace_event
 from ..infra import gh_audit
 from ..ports.label_set import LabelSet
 from ..ports.pull_request_tracker import PullRequestTracker
+from .pull_request_provenance import PullRequestProvenance
 
 if TYPE_CHECKING:
     from .label_manager import LabelManager
@@ -263,18 +264,18 @@ class LabelSync:
         self,
         code_review_label: str,
         code_reviewed_label: str | None,
-        orchestrator_marker: str,
         is_pr_in_scope: Callable[["PRInfo"], bool] | None = None,
     ) -> int:
         """Reconcile labels on agent-created PRs missing review labels.
 
         Called on startup to catch PRs where label addition failed due to
-        orchestrator crash/restart or other failures.
+        orchestrator crash/restart or other failures. Only io's own PRs, as
+        THE provenance owner proves them (#9499): io's marker pasted into a
+        hand-opened PR does not put it in io's review lane.
 
         Args:
             code_review_label: The needs-code-review label to add
             code_reviewed_label: The code-reviewed label (skip if present)
-            orchestrator_marker: Marker to identify orchestrator-created PRs
             is_pr_in_scope: Optional current-run scope predicate. When provided,
                 out-of-scope PRs are not mutated.
 
@@ -286,6 +287,7 @@ class LabelSync:
             return 0
 
         fixed_count = 0
+        provenance = PullRequestProvenance(self.pr_tracker)
 
         try:
             with gh_audit.context(
@@ -298,8 +300,8 @@ class LabelSync:
             return 0
 
         for pr in prs:
-            # Only reconcile PRs created by the orchestrator
-            if orchestrator_marker not in pr.body:
+            # Only reconcile PRs io opened (and never adopted)
+            if not provenance.proven_io_owned(pr):
                 continue
 
             # Check if it already has a review label

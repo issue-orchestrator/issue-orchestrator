@@ -25,6 +25,7 @@ from issue_orchestrator.ports.pull_request_tracker import (
     MergeQueueEntry,
     MergeQueueRead,
     PRInfo,
+    PullRequestAuthor,
     StatusCheckRollupRead,
 )
 from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
@@ -628,6 +629,26 @@ class TestPROperations:
         assert pr.status_check_rollup is None
         mock_http_client.get_pr.assert_called_once_with(10)
         mock_http_client.get_pr_status_check_rollup.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("user", "author"),
+        [
+            ({"login": "porchpin-bot[bot]", "id": 301493143, "type": "Bot"},
+             PullRequestAuthor(301493143, "porchpin-bot[bot]")),
+            (None, None),  # the opening account was deleted (GitHub's ghost)
+            ({"login": "someone", "id": True}, None),  # no readable account id
+        ],
+    )
+    def test_get_pr_carries_the_account_github_records_as_its_author(self, adapter, mock_http_client, user, author):
+        """#9499 review F1: who opened a PR is GitHub's record, not its body's say-so."""
+        mock_http_client.get_pr.return_value = {
+            "number": 10, "title": "t", "html_url": "u", "head": {"ref": "b", "sha": "a" * 40},
+            "body": "", "state": "open", "labels": [], "user": user,
+        }
+
+        pr = adapter.get_pr(10)
+
+        assert pr is not None and pr.author == author
 
     def test_get_pr_reports_merged_state_from_merged_at(self, adapter, mock_http_client):
         """GitHub's REST `state` is only open/closed; a merged PR carries

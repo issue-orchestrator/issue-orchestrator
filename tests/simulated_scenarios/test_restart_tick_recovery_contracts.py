@@ -9,6 +9,7 @@ from pathlib import Path
 from issue_orchestrator.domain.models import Issue, ORCHESTRATOR_PR_MARKER
 from issue_orchestrator.events import EventName
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
+from tests.conftest import IO_AUTHOR
 
 from .conftest import StubWorkingCopy, build_config, build_orchestrator, run_until
 from .scenario_dsl import scenario, script
@@ -48,6 +49,7 @@ def test_startup_recovers_open_pr_label_state_after_restart(scenario_repo: Path)
         url="https://github.com/test/repo/pull/321",
         branch="1-sim",
         body=f"Closes #1\n\n{ORCHESTRATOR_PR_MARKER}",
+        author=IO_AUTHOR,
         state="open",
         labels=[],
         draft=False,
@@ -94,6 +96,7 @@ def test_restart_recovers_pending_review_queue_from_pr_labels(scenario_repo: Pat
         url="https://github.com/test/repo/pull/444",
         branch="1-sim",
         body=f"Closes #1\n\n{ORCHESTRATOR_PR_MARKER}",
+        author=IO_AUTHOR,
         state="open",
         labels=[config.code_review_label],
         draft=True,

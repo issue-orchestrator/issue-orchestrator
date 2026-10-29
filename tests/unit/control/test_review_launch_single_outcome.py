@@ -51,6 +51,7 @@ from issue_orchestrator.domain.pending_work import PendingWorkClaim, PendingWork
 from issue_orchestrator.events import EventContext, EventName
 from issue_orchestrator.infra.config import AgentConfig, Config
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
+from tests.conftest import IO_ACCOUNT_ID, IO_AUTHOR
 from tests.runtime_lifecycle_helpers import make_action_applier
 from tests.unit.control.liveness_doubles import gated
 from tests.unit.test_session_launcher import (
@@ -274,6 +275,7 @@ def _startup_manager(
 ) -> StartupManager:
     """The real startup recovery over a host that shows one PR awaiting review."""
     host = MagicMock()
+    host.engine_account_id.return_value = IO_ACCOUNT_ID
     host.get_prs_with_label.return_value = [
         PRInfo(
             number=PR,
@@ -281,6 +283,7 @@ def _startup_manager(
             url=f"https://github.com/test/repo/pull/{PR}",
             branch=f"{ISSUE}-feature",
             body=f"Closes #{ISSUE}\n\n{ORCHESTRATOR_PR_MARKER}",
+            author=IO_AUTHOR,
             state="open",
             labels=["needs-code-review", *pr_labels],
         )

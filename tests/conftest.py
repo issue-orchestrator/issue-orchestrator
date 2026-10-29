@@ -57,6 +57,7 @@ from issue_orchestrator.ports.pull_request_tracker import (
     MergeQueueEntry,
     MergeQueueRead,
     PRInfo,
+    PullRequestAuthor,
     PRRef,
     StatusCheckRollupRead,
 )
@@ -420,6 +421,14 @@ def logged_in_dashboard_client(
     return auth_enabled_dashboard_client
 
 
+#: The account the in-memory fake's engine opens PRs as (``engine_account_id``).
+IO_ACCOUNT_ID = 9_499_001
+#: io's own account as a PR's author: what every PR io opened carries (#9499).
+IO_AUTHOR = PullRequestAuthor(IO_ACCOUNT_ID, "issue-orchestrator[bot]")
+#: Someone else's account: a PR a person or another tool opened.
+HAND_AUTHOR = PullRequestAuthor(4_242, "a-person")
+
+
 class MockGitHubAdapter:
     """Mock GitHub adapter implementing port interfaces for testing.
 
@@ -663,6 +672,13 @@ class MockGitHubAdapter:
             for pr in merged
         )
 
+    def engine_account_id(self) -> int:
+        """The account this engine opens PRs as (mock): ``IO_ACCOUNT_ID``,
+        unless a test seeds an ``engine_account_id`` failure."""
+        if "engine_account_id" in self.integration_failures:
+            raise self.integration_failures["engine_account_id"]
+        return IO_ACCOUNT_ID
+
     def list_open_prs_complete(self) -> list[PRInfo]:
         """Every open PR, as the complete listing contract promises."""
         return [
@@ -705,6 +721,18 @@ class MockGitHubAdapter:
     def issue_comment_marker_present(self, issue_number: int, marker: str) -> bool:
         """Whether a recorded comment on the issue/PR carries ``marker`` (mock)."""
         return any(c["number"] == issue_number and marker in c["body"] for c in self.comments)
+
+    def find_issue_comment_receipt(self, issue_number: int, *, body: str):
+        """An exact-body comment written under THIS credential (mock): every
+        ``add_comment`` is the engine's own; a test records another author's
+        comment with an ``author`` key."""
+        from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
+
+        for index, comment in enumerate(self.comments):
+            if comment["number"] == issue_number and comment["body"] == body and comment.get("author") is None:
+                return IssueCommentReceipt(str(index + 1), f"https://github.com/test/repo/issues/{issue_number}"
+                                           f"#issuecomment-{index + 1}", "github-user:1", "sha256")
+        return None
 
     # IntegrationBranchHost (#8144) -------------------------------------------
 
@@ -841,6 +869,7 @@ class MockGitHubAdapter:
             labels=[],
             draft=draft,
             base_branch=base,
+            author=IO_AUTHOR,  # opened under the engine's own credential
         )
         self.prs.setdefault(head, []).append(pr)
         self.open_pr_refs[(head, base)] = OpenPullRequestRef(number=pr.number, url=pr.url, body=body)

@@ -214,6 +214,23 @@ class CheckRunAttempt:
     started_at: datetime
 
 
+@dataclass(frozen=True)
+class PullRequestAuthor:
+    """The account GitHub records as a pull request's author.
+
+    GitHub sets it when the PR is opened, to the credential that opened it,
+    and nothing can edit it afterwards - unlike the PR's body, which its
+    author controls. ``account_id`` is GitHub's immutable numeric id.
+    """
+
+    account_id: int
+    login: str
+
+    def __post_init__(self) -> None:
+        if type(self.account_id) is not int or self.account_id <= 0:
+            raise ValueError(f"a PR author's account id is a positive int, got {self.account_id!r}")
+
+
 @dataclass
 class PRInfo:
     """Information about a pull request.
@@ -242,6 +259,9 @@ class PRInfo:
             close-on-merge fallback can ask for close-event evidence at/after
             the merge instead of inferring from issue state alone. `None` when
             unmerged or when the source did not provide it.
+        author: The account GitHub records as the PR's author
+            (:class:`PullRequestAuthor`). `None` when the source did not
+            provide it, or the account no longer exists.
     """
 
     number: int
@@ -257,6 +277,7 @@ class PRInfo:
     base_branch: str | None = None
     merged_at: str | None = None
     head_sha: str | None = None
+    author: PullRequestAuthor | None = None
 
     @property
     def is_closed_unmerged(self) -> bool:
@@ -568,6 +589,18 @@ class PullRequestTracker(Protocol):
             RepositoryError: If any page cannot be read, any PR or its labels
                 come back incomplete, or the listing cannot be proven
                 complete. Never returns a truncated list.
+        """
+        ...
+
+    def engine_account_id(self) -> int:
+        """The GitHub account id this engine opens pull requests as.
+
+        Its token's user under a personal token; its App's bot account under a
+        GitHub App. Compared with :attr:`PRInfo.author` it says whether io
+        opened a PR (#9499). Read once and kept.
+
+        Raises:
+            RepositoryError: If the account cannot be read.
         """
         ...
 

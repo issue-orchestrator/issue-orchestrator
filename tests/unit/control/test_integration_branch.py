@@ -14,6 +14,7 @@ from dataclasses import replace
 import pytest
 
 from issue_orchestrator.control.awaiting_merge_reconciler import AwaitingMergeReconciler
+from issue_orchestrator.control.external_pr_adoption import routing_gate, write_gate
 from issue_orchestrator.control.integration_branch import (
     INTEGRATION_UPKEEP_INTERVAL_SECONDS,
     IntegrationBranchOwner,
@@ -38,7 +39,7 @@ from issue_orchestrator.domain.integration_branch import (
     delivered_tip,
     delivery_marker,
 )
-from issue_orchestrator.domain.models import Issue, OrchestratorState, SessionHistoryEntry
+from issue_orchestrator.domain.models import ORCHESTRATOR_PR_MARKER, Issue, OrchestratorState, SessionHistoryEntry
 from issue_orchestrator.events import EventName
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.config_models import IntegrationConfig
@@ -46,6 +47,7 @@ from issue_orchestrator.ports import InMemoryEventSink
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.ports.repository_host import RepositoryHostError
 from tests.conftest import MockGitHubAdapter
+from tests.conftest import IO_AUTHOR
 from tests.standing_ruling_helpers import IssueBodies, a_ruling, body_with, rulings_owner
 
 TIP = "1" * 40
@@ -86,9 +88,10 @@ class _World:
         return IntegrationBranchOwner(
             config=self.config.integration, host=self.host, label_manager=self.labels,
             standing_rulings=self.rulings, clock=self.clock,
+            external=routing_gate(self.config, self.host, self.state),
         )
 
-    def approved_pr(
+    def approved_pr(  # io's own PR: its body carries io's marker (#9499)
         self, issue_number: int, pr_number: int, head: str, *, mergeable_state: str = "clean",
         current: bool = True, base: str = "integration", labels: list[str] | None = None,
         rollup: str | None = "SUCCESS",
@@ -98,7 +101,8 @@ class _World:
         self.host.issues.append(issue)
         pr = PRInfo(
             number=pr_number, title=f"Fix {issue_number}", url=f"https://github.com/owner/repo/pull/{pr_number}",
-            branch=f"{issue_number}-fix", body=f"Closes #{issue_number}", state="open",
+            branch=f"{issue_number}-fix", body=f"Closes #{issue_number}\n\n*{ORCHESTRATOR_PR_MARKER}*", state="open",
+            author=IO_AUTHOR,
             labels=labels if labels is not None else [self.labels.code_reviewed],
             mergeable_state=mergeable_state, base_branch=base, head_sha=head,
             status_check_rollup=rollup,  # type: ignore[arg-type]
@@ -458,6 +462,7 @@ def test_an_upkeep_read_failure_is_contained() -> None:
 def _apply(world: _World, step) -> object:
     [action] = plan_integration_steps([step])
     return apply_integration_step(action, host=world.host, labels=world.labels, rulings=world.rulings,
+                                  external=write_gate(world.config, world.host, lambda: world.state),
                                   events=world.events)
 
 

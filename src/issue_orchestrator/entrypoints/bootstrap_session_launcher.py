@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Callable, Optional
 
 from ..control.needs_human_block import SharedNeedsHumanBlock
 from ..control.recovery_review_hold import NO_RECOVERY_HOLDS, RecoveryHolds
+from ..control.external_pr_launch import launch_gate
 from ..control.session_launcher import SessionLauncher
 from ..control.session_routing import session_presence, session_starter
 from ..control.launch_prompt import NO_LAUNCH_PROMPT
@@ -31,6 +32,7 @@ if TYPE_CHECKING:
     from ..domain.state_machines.session_machine import SessionStateMachine
     from ..infra.config import Config
     from ..ports.agent_callback_endpoint import AgentCallbackEndpoint
+    from ..domain.models import OrchestratorState
     from ..ports.blocked_item_triage import BlockedItemTriageAgenda
     from ..ports.board_snapshot_provider import BoardSnapshotProvider
     from ..ports.issue import Issue as IssueProtocol
@@ -83,6 +85,7 @@ def build_session_launcher_factory(
         get_review_machine: Callable[[int, int], Optional["ReviewStateMachine"]],
         refresh_issue_fn: Optional[Callable[[int], Optional["IssueProtocol"]]],
         dependency_evaluator: Optional["DependencyEvaluator"],
+        state: Callable[[], "OrchestratorState"],
     ) -> SessionLauncher:
         return SessionLauncher(
             config, events, repository_host, action_applier, session_manager,
@@ -108,6 +111,8 @@ def build_session_launcher_factory(
             needs_human_block=needs_human_block,
             launch_prompt=launch_prompt,
             recovery_holds=recovery_holds,
+            # Re-asked at each launch, over io's live state (#9499).
+            external_admission=launch_gate(config, repository_host, state),
         )
 
     return _factory

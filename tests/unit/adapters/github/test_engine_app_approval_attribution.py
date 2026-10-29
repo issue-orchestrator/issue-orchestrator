@@ -114,6 +114,8 @@ class FakeGitHub:
         if path == "/app":
             assert token == "app-jwt", "GET /app authenticates as the App itself, not the installation"
             return httpx.Response(200, json=self.app)
+        if request.method == "GET" and path == "/user":
+            return httpx.Response(200, json=self.writers[token])
         if path.startswith("/users/"):
             found = self.users.get(path.removeprefix("/users/"))
             return httpx.Response(200, json=found) if found else httpx.Response(404, json={})
@@ -349,3 +351,15 @@ def test_a_misconfigured_app_identity_is_an_auth_error(monkeypatch) -> None:
 
     with pytest.raises(GitHubAuthError, match="did not answer the configured App"):
         adapter.is_own_write(standing.application)
+
+
+@pytest.mark.parametrize(("app", "account"), [(True, BOT_ID), (False, MAINTAINER_ID)], ids=["app", "personal-token"])
+def test_the_engine_opens_its_prs_as_its_app_s_bot_or_its_token_s_user(monkeypatch, app: bool, account: int) -> None:
+    """#9499 review F1: io's own PRs are the ones GitHub records this account
+    as opening. Read once, whatever asks how often."""
+    github = FakeGitHub()
+    adapter = _adapter(github, monkeypatch, app=app)
+
+    assert adapter.engine_account_id() == account
+    assert adapter.engine_account_id() == account
+    assert sum(read in ("GET /user", f"GET /users/{BOT_LOGIN}") for read in github.reads) == 1

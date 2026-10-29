@@ -22,6 +22,7 @@ from ..domain.tech_lead_approval import (
     is_approval_model_label,
     proposal_label_state,
 )
+from ..domain.external_pr_adoption import ORIGIN_EXTERNAL_LABEL
 from ..domain.tech_lead_session import (
     TECH_LEAD_AREA_LABEL_PREFIX,
     TECH_LEAD_OBSERVATION_LABEL,
@@ -220,6 +221,9 @@ class LabelManager:
             # Pattern case-file issues (#6781): same treatment as the gate
             # label — blocking-class (never picked up), raw (never prefixed).
             LabelEntry("tech_lead_observation", TECH_LEAD_OBSERVATION_LABEL, LabelCategory.BLOCKING, "Pattern case file (tech_lead observation ledger)", raw=True),
+            # Adopted external work (#9499): raw, so every engine and analysis
+            # reads the same origin on a PR.
+            LabelEntry("origin_external", ORIGIN_EXTERNAL_LABEL, LabelCategory.INFORMATIONAL, "Externally authored PR adopted into an integration effort", raw=True),
         ]
         for e in entries:
             self._entries[e.key] = e
@@ -357,6 +361,11 @@ class LabelManager:
     def gated_proposal_labels(self) -> tuple[str, str]:
         """What a gated proposal is filed with (#7763): provenance + waiting state."""
         return (self._resolved["tech_lead_proposal"], self._resolved["awaiting_approval"])
+
+    @property
+    def origin_external(self) -> str:
+        """The adopted-external-PR origin label (#9499). Raw — never prefixed."""
+        return self._resolved["origin_external"]
 
     @property
     def tech_lead_observation(self) -> str:

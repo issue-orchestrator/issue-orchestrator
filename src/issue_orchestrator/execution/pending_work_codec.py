@@ -23,6 +23,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
+from ..domain.external_pr_adoption import LaunchAuthority
 from ..domain.issue_key import GitHubIssueKey, IssueKey
 from ..domain.models import (
     DiscoveredFailure,
@@ -149,6 +150,7 @@ def _encode_review(request: PendingWorkRequest) -> dict[str, Any]:
         "issue_number": request.issue_number,
         "agent_label": request.agent_label,
         "issue_labels": list(request.issue_labels),
+        "authority": _encode_authority(request.authority),
     }
 
 
@@ -161,7 +163,35 @@ def _decode_review(payload: dict[str, Any]) -> PendingReview:
         _issue_number=int(payload["issue_number"]),
         agent_label=payload["agent_label"],
         issue_labels=tuple(payload["issue_labels"]),
+        authority=_decode_authority(payload),
     )
+
+
+def _encode_authority(authority: LaunchAuthority | None) -> dict[str, Any] | None:
+    if authority is None:
+        return None
+    return {
+        "effort": authority.effort, "issue_number": authority.issue_number,
+        "pr_number": authority.pr_number, "agent": authority.agent,
+    }
+
+
+def _decode_authority(payload: dict[str, Any]) -> LaunchAuthority | None:
+    """The authority queued external-PR work carries (#9499): exact, or refused.
+
+    Absent only from a claim recorded before it existed - work no effort governed then.
+    """
+    value = payload.get("authority")
+    if value is None:
+        return None
+    if not (
+        isinstance(value, dict)
+        and isinstance(value.get("effort"), str) and isinstance(value.get("agent"), str)
+        and type(value.get("issue_number")) is int and type(value.get("pr_number")) is int
+    ):
+        raise ValueError(f"a queued authority names its effort, issue, PR and agent, got {value!r}")
+    return LaunchAuthority(effort=value["effort"], issue_number=value["issue_number"],
+                           pr_number=value["pr_number"], agent=value["agent"])
 
 
 def _encode_retrospective_review(request: PendingWorkRequest) -> dict[str, Any]:
@@ -204,6 +234,7 @@ def _encode_rework(request: PendingWorkRequest) -> dict[str, Any]:
         "source": request.source,
         "feedback": request.feedback,
         "scoped_request_keys": list(request.scoped_request_keys),
+        "authority": _encode_authority(request.authority),
     }
 
 
@@ -217,6 +248,7 @@ def _decode_rework(payload: dict[str, Any]) -> PendingRework:
         source=str(payload["source"]),
         feedback=payload["feedback"],
         scoped_request_keys=tuple(payload.get("scoped_request_keys", ())),
+        authority=_decode_authority(payload),
     )
 
 

@@ -56,7 +56,6 @@ from ..domain.models import (
     PendingRework,
     PendingTechLeadReview,
     AgentConfig,
-    ORCHESTRATOR_PR_MARKER,
 )
 from ..observation.observer import SessionObserver
 from ..control.scheduler import Scheduler
@@ -331,6 +330,7 @@ class Orchestrator:
             get_review_machine=self._get_review_machine,
             refresh_issue_fn=self._refresh_issue,
             dependency_evaluator=self.scheduler.dependency_evaluator,
+            state=lambda: self.state,
         )
 
     @cached_property
@@ -1114,7 +1114,7 @@ class Orchestrator:
         self._github_workflow.scan_needs_rework_prs(self.state)
 
     def reconcile_orphaned_pr_labels(self) -> int:
-        return self._github_workflow.reconcile_orphaned_pr_labels(ORCHESTRATOR_PR_MARKER)
+        return self._github_workflow.reconcile_orphaned_pr_labels()
 
     def launch_rework_session(self, rework: PendingRework) -> Optional[Session]:
         return _launch_rework_session(rework, self.state, self._session_launcher, self.deps.session_restorer, self.deps.pending_work_claims).session
