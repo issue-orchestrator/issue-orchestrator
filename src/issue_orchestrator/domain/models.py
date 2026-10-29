@@ -2508,6 +2508,21 @@ class OrchestratorState:
         self.launch_deferred_this_cycle.clear()
         return failed
 
+    def in_scope_issues(self) -> list["IssueProtocol"]:
+        """Every open issue the scope filter selects, as of the last refresh.
+
+        The runnable queue is a subset: eligibility (the session-history hold,
+        an active session) is applied on top, so an issue whose PR awaits merge
+        or whose block waits on a human is in scope but not queued. A snapshot
+        persisted before the scope cache existed falls back to the queue.
+
+        One owner, because the blocked-item triage agenda, the health-review
+        board fingerprint and the dashboard's blocked lane all read it, and an
+        incremental refresh starts from it: one that started from the queue
+        instead dropped every held issue until the next full scan (#9562).
+        """
+        return self.cached_scope_issues or self.cached_queue_issues
+
     def record_discovered_review(self, review: DiscoveredReview) -> None:
         """Record a completion-discovered review once per issue/PR pair."""
         if any(

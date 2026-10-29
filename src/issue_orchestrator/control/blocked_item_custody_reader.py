@@ -304,7 +304,7 @@ class StateBlockedItemCustodyReader:
         )
         waits = _rate_limit_waits(state, self._clock())
         return _SharedFacts(
-            issues={issue.number: issue for issue in _scope_issues(state)},
+            issues={issue.number: issue for issue in state.in_scope_issues()},
             history={entry.issue_number: entry for entry in state.session_history},
             investigations=investigations,
             fixes=fixes,
@@ -354,11 +354,6 @@ def _blocked_at(history: "SessionHistoryEntry | None") -> datetime | None:
     if history.status not in BLOCKED_HISTORY_STATUSES:
         return None
     return _aware(history.completed_at)
-
-
-def _scope_issues(state: "OrchestratorState") -> Sequence["Issue"]:
-    """The same issue snapshot the dashboard's blocked lane is built from."""
-    return state.cached_scope_issues or state.cached_queue_issues
 
 
 _Waits = Callable[[str, int], "RateLimitWait | None"]

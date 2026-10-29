@@ -76,7 +76,7 @@ class QueueProjection:
         """
         try:
             scope_issues = self.compute_queue(state)
-            prior_issues = state.cached_scope_issues if state.cached_scope_issues else state.cached_queue_issues
+            prior_issues = state.in_scope_issues()
             old_numbers = {i.number for i in prior_issues}
             new_numbers = {i.number for i in scope_issues}
 
