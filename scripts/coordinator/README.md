@@ -7,7 +7,7 @@ Operational scripts the coordinator uses to run io's development loop and porchp
 | `merge_into_improver.sh <pr>:<sha>` | Merge an approved sub-PR into the integration branch (`tech-lead-improver`): waits for `validate-fast` by name, merge commit, full gate on the merge result, push; aborts a conflicted merge. Holds `gate.lock`. |
 | `integration_merger.sh` | Loop (`HOURS=24`): merges ready porchpin PRs into porchpin's `integration`; skips PRs whose issue carries a standing ruling (checked by hand). |
 | `merge_into_integration.sh <pr>:<sha>` | One porchpin PR into `integration`. |
-| `exam_all.sh <sha>` | Full tech-lead exam (A–J, U) against a commit, under `exam.lock`. Exports `IO_E2E=1` and `E2E_TEST_REPO` (below). |
+| `exam_all.sh <sha>` | Full tech-lead exam against a commit, under `exam.lock`: every case pytest collects from `tests/e2e/test_tech_lead_exam.py`, one log per case; a collection that fails or finds no case exits non-zero. Exports `IO_E2E=1` and `E2E_TEST_REPO` (below). |
 | `deploy_porchpin.sh <sha> [reason]` | Redeploy the Control Center + porchpin engine at the first idle moment; re-checks the commit right before acting; starts the CC detached with no `CLAUDE*`/`PYTHONPATH` from the caller (#9293). |
 
 `exam_all.sh` runs the live suite (`tests/e2e`), so it sets the two variables that suite requires (#9523):
