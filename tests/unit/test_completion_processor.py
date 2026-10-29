@@ -3052,6 +3052,41 @@ class TestAdoptedPullRequestApproval:
         assert mock_label_adapter.add_label.call_args_list == [call(456, "code-reviewed")] * 2
         mock_label_adapter.remove_label.assert_has_calls([call(456, "needs-rework"), call(456, "needs-code-review")])
 
+    @pytest.mark.parametrize("requested", [
+        pytest.param(["remove_code_review_label", "add_code_reviewed_label", "post_comment"], id="retirement-first"),
+        pytest.param(["remove_needs_rework_label", "remove_code_review_label", "post_comment"], id="approval-omitted"),
+        pytest.param(["add_code_reviewed_label", "remove_code_review_label", "remove_code_review_label"],
+                     id="retirement-duplicated"),
+        pytest.param(["add_needs_rework_label", "remove_code_review_label"], id="other-verdict"),
+    ])
+    def test_an_agent_cannot_order_the_review_lane_out_before_the_approval(
+        self, requested, processor, mock_pr_adapter, mock_git_adapter, mock_label_adapter, worktree_with_completion
+    ):
+        """Review F1: the requested actions are untrusted; an approval whose
+        review-lane actions are not its transition, approval first, is refused
+        before any of them runs - even where the approval itself would fail."""
+        from issue_orchestrator.ports.repository_host import RepositoryHostError
+
+        self._adopted(mock_pr_adapter)
+        mock_git_adapter.get_head_sha.return_value = "a" * 40
+        mock_pr_adapter.add_comment.side_effect = RepositoryHostError("502")  # the receipt cannot be written
+        worktree = worktree_with_completion(make_record(
+            outcome=CompletionOutcome.REVIEW_APPROVED, requested_actions=[], summary="LGTM",
+            review_summary="Code looks good", comment_body="## Code Review Approved",
+        ))
+        completion = worktree / ".issue-orchestrator" / "completion.json"
+        completion.write_text(json.dumps({**json.loads(completion.read_text()), "requested_actions": requested}))
+
+        result = processor.process(
+            worktree, run_assets=make_session_run_assets(worktree), issue_number=42, issue_title="Fix bug",
+            pr_number=456,
+        )
+
+        assert not result.success
+        mock_label_adapter.remove_label.assert_not_called()  # needs-code-review stays: reviewed again
+        mock_label_adapter.add_label.assert_not_called()
+        mock_pr_adapter.add_comment.assert_not_called()
+
     def test_io_s_own_pr_approval_writes_no_receipt(
         self, processor, mock_pr_adapter, mock_label_adapter, worktree_with_completion
     ):

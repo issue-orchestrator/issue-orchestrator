@@ -18,9 +18,13 @@ PR io did not open, is given here, to an adopted PR.
 The transition is idempotent and ordered: an exact receipt already written
 under io's credential satisfies the receipt step (a retry never posts it
 twice), and ANY failure - reading the PR, the receipt, writing either - halts
-the completion's remaining actions, so the review label is never retired
-without the approval label in its place. The PR then stays in io's review
-lane and its next review converges on the same state.
+the completion's remaining actions. The review label's retirement is always
+one of those remaining actions, whatever the agent asked: a
+:class:`~..domain.models.CompletionRecord` admits an approval's review-lane
+actions only in the order of its verdict's transition, this approval first
+(a record asking otherwise is rejected before anything runs). So the review
+label is never retired without the approval label in its place; the PR stays
+in io's review lane and its next review converges on the same state.
 
 The completion processor's approval boundary, extracted for its line budget:
 it runs ONLY for the ``ADD_CODE_REVIEWED_LABEL`` completion action on a PR.

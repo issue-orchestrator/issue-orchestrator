@@ -311,6 +311,52 @@ def _check_upheld_rulings(value: Any, outcome: "CompletionOutcome") -> list[str]
     return list(parse_upheld_rulings(value))
 
 
+#: Each review verdict's transition out of io's review lane (#9499), in the
+#: order the orchestrator runs it: the verdict's label first. Writing it halts
+#: the completion on failure, so nothing after it - above all the retirement of
+#: the review label - runs without the verdict in place.
+_REVIEW_LANE_TRANSITIONS: dict["CompletionOutcome", tuple["RequestedAction", ...]] = {
+    CompletionOutcome.REVIEW_APPROVED: (
+        RequestedAction.ADD_CODE_REVIEWED_LABEL,
+        RequestedAction.REMOVE_NEEDS_REWORK_LABEL,
+        RequestedAction.REMOVE_CODE_REVIEW_LABEL,
+    ),
+    CompletionOutcome.REVIEW_CHANGES_REQUESTED: (
+        RequestedAction.ADD_NEEDS_REWORK_LABEL,
+        RequestedAction.REMOVE_CODE_REVIEW_LABEL,
+    ),
+}
+#: Every label action of a verdict's transition: on a review, each is the verdict's to order.
+_REVIEW_LANE_ACTIONS = frozenset(action for transition in _REVIEW_LANE_TRANSITIONS.values() for action in transition)
+#: The ones only a review's verdict may ask for (clearing needs-rework is not io's review lane).
+_REVIEW_VERDICT_ACTIONS = _REVIEW_LANE_ACTIONS - {RequestedAction.REMOVE_NEEDS_REWORK_LABEL}
+
+
+def _check_review_lane_transition(outcome: "CompletionOutcome", actions: Iterable["RequestedAction"]) -> None:
+    """A record moves its PR out of io's review lane only by its own verdict, in the owner's order (#9499).
+
+    Requested actions are untrusted and run in the order given, and a review
+    label retired before the verdict's label is written cannot be put back
+    when that write fails: the PR would leave io's review lane with no verdict
+    on it. So a review's lane actions must be an in-order subsequence of its
+    verdict's transition that starts with the verdict label, each at most
+    once; a record that is not a review asks for none of the verdict actions.
+    """
+    transition = _REVIEW_LANE_TRANSITIONS.get(outcome)
+    if transition is None:
+        if asked := [action.value for action in actions if action in _REVIEW_VERDICT_ACTIONS]:
+            raise ValueError(f"requested_actions {asked} are only valid for a review verdict, not {outcome.value}")
+        return
+    lane = [action for action in actions if action in _REVIEW_LANE_ACTIONS]
+    remaining = iter(transition)  # each membership test consumes it: an in-order subsequence, no repeats
+    if lane and (lane[0] is not transition[0] or not all(action in remaining for action in lane)):
+        raise ValueError(
+            f"a {outcome.value} record moves its PR out of review only by "
+            f"{' then '.join(action.value for action in transition)}, starting with the first, each at most once; "
+            f"requested {[action.value for action in lane]}"
+        )
+
+
 def _check_pr_labels(value: Any) -> list[str] | None:
     if value is None:
         return None
@@ -522,6 +568,10 @@ class CompletionRecord:
     # The standing rulings (#8141) an approving review attests the diff
     # upholds (``reviewer-done approved --upholds-ruling ID``). REVIEW_APPROVED only.
     upheld_rulings: Optional[list[str]] = None
+
+    def __post_init__(self) -> None:
+        # Every record the orchestrator can act on, however it was made (#9499).
+        _check_review_lane_transition(self.outcome, self.requested_actions)
 
     @property
     def approves(self) -> bool:
