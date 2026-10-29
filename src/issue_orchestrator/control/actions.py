@@ -24,10 +24,14 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from ..domain.integration_branch import IntegrationStep
+from ..domain.external_pr_adoption import LaunchAuthority
+from ..domain.issue_key import IssueKey
 from ..domain.models import (
     AwaitingMergeReconciliationSource,
     AwaitingMergeTerminalStatus,
     DiscoveredFailure,
+    PendingReview,
+    PendingRework,
 )
 from .needs_human_block import NeedsHumanCause
 from .action_base import Action as Action, ActionType as ActionType
@@ -250,7 +254,16 @@ class QueueReviewAction(Action):
     agent_label: Optional[str] = None  # Agent that created the PR (for per-agent reviewer)
     issue_key: str = ""  # stable_id for SSE events; falls back to str(issue_number) when empty
     issue_labels: tuple[str, ...] = ()
+    authority: LaunchAuthority | None = None  # when an integration effort admitted it (#9499)
     action_type: ActionType = field(default=ActionType.QUEUE_REVIEW, init=False)
+
+    def pending(self, issue_key: IssueKey) -> PendingReview:
+        """The queued review this action creates: its PR, issue, agent and authority, as admitted."""
+        return PendingReview(
+            issue_key=issue_key, pr_number=self.pr_number, pr_url=self.pr_url, branch_name=self.branch_name,
+            _issue_number=self.issue_number, agent_label=self.agent_label, issue_labels=self.issue_labels,
+            authority=self.authority,
+        )
 
 
 @dataclass(frozen=True)
@@ -280,7 +293,16 @@ class QueueReworkAction(Action):
     source: str = "review_label"
     feedback: str | None = None
     scoped_request_keys: tuple[str, ...] = ()
+    authority: LaunchAuthority | None = None  # when an integration effort admitted it (#9499)
     action_type: ActionType = field(default=ActionType.QUEUE_REWORK, init=False)
+
+    def pending(self, issue_key: IssueKey, agent_type: str) -> PendingRework:
+        """The queued rework this action creates; an authority's agent is the one it runs as."""
+        return PendingRework(
+            issue_key, self.authority.agent if self.authority is not None else agent_type, self.rework_cycle,
+            issue_number=self.issue_number, pr_number=self.pr_number or None, source=self.source,
+            feedback=self.feedback, scoped_request_keys=self.scoped_request_keys, authority=self.authority,
+        )
 
 
 @dataclass(frozen=True)

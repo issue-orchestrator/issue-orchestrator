@@ -9,6 +9,7 @@ fields, and unbounded list fields.
 from __future__ import annotations
 
 import copy
+import dataclasses
 from typing import Any
 
 import pytest
@@ -320,6 +321,76 @@ class TestRequestedActionsBounds:
         payload = _minimal_payload(requested_actions="create_pr")
         with pytest.raises(ValueError, match="requested_actions must be a list"):
             CompletionRecord.from_dict(payload)
+
+
+class TestReviewLaneTransition:
+    """#9499 review F1: a record moves its PR out of io's review lane only by
+    its own verdict, written first - whatever order the agent asked for."""
+
+    @pytest.mark.parametrize(("outcome", "actions"), [
+        (CompletionOutcome.REVIEW_APPROVED,
+         ["add_code_reviewed_label", "remove_needs_rework_label", "remove_code_review_label", "post_comment"]),
+        (CompletionOutcome.REVIEW_APPROVED, ["add_code_reviewed_label", "remove_code_review_label"]),
+        (CompletionOutcome.REVIEW_APPROVED, ["post_comment", "add_code_reviewed_label"]),
+        (CompletionOutcome.REVIEW_CHANGES_REQUESTED,
+         ["add_needs_rework_label", "remove_code_review_label", "post_comment"]),
+        (CompletionOutcome.COMPLETED, ["push_branch", "create_pr", "remove_needs_rework_label"]),
+    ])
+    def test_accepts_each_verdict_s_own_transition(self, outcome, actions):
+        payload = _minimal_payload(outcome=outcome.value, requested_actions=actions)
+
+        record = CompletionRecord.from_dict(payload)
+
+        assert [action.value for action in record.requested_actions] == actions
+        assert CompletionRecord.from_dict(record.to_dict()) == record
+
+    @pytest.mark.parametrize(("outcome", "actions"), [
+        pytest.param(CompletionOutcome.REVIEW_APPROVED,
+                     ["remove_code_review_label", "add_code_reviewed_label"], id="retirement-before-approval"),
+        pytest.param(CompletionOutcome.REVIEW_APPROVED,
+                     ["remove_needs_rework_label", "add_code_reviewed_label"], id="rework-retired-before-approval"),
+        pytest.param(CompletionOutcome.REVIEW_APPROVED,
+                     ["add_code_reviewed_label", "remove_code_review_label", "remove_needs_rework_label"],
+                     id="retirements-out-of-order"),
+        pytest.param(CompletionOutcome.REVIEW_APPROVED, ["remove_code_review_label"], id="approval-omitted"),
+        pytest.param(CompletionOutcome.REVIEW_APPROVED,
+                     ["add_code_reviewed_label", "add_code_reviewed_label"], id="approval-duplicated"),
+        pytest.param(CompletionOutcome.REVIEW_APPROVED,
+                     ["add_code_reviewed_label", "remove_code_review_label", "remove_code_review_label"],
+                     id="retirement-duplicated"),
+        pytest.param(CompletionOutcome.REVIEW_APPROVED,
+                     ["add_needs_rework_label", "remove_code_review_label"], id="other-verdict"),
+        pytest.param(CompletionOutcome.REVIEW_CHANGES_REQUESTED,
+                     ["remove_code_review_label", "add_needs_rework_label"], id="rework-retirement-first"),
+        pytest.param(CompletionOutcome.REVIEW_CHANGES_REQUESTED,
+                     ["add_code_reviewed_label", "remove_code_review_label"], id="approval-under-changes-requested"),
+        pytest.param(CompletionOutcome.REVIEW_CHANGES_REQUESTED,
+                     ["add_needs_rework_label", "remove_needs_rework_label"], id="rework-undone"),
+    ])
+    def test_rejects_any_other_review_lane_request(self, outcome, actions):
+        payload = _minimal_payload(outcome=outcome.value, requested_actions=actions)
+
+        with pytest.raises(ValueError, match="moves its PR out of review only by"):
+            CompletionRecord.from_dict(payload)
+
+    @pytest.mark.parametrize("action", ["add_code_reviewed_label", "add_needs_rework_label", "remove_code_review_label"])
+    @pytest.mark.parametrize("outcome", [
+        CompletionOutcome.COMPLETED, CompletionOutcome.BLOCKED, CompletionOutcome.NEEDS_HUMAN,
+    ])
+    def test_rejects_a_verdict_action_on_a_record_that_is_not_a_review(self, outcome, action):
+        payload = _minimal_payload(outcome=outcome.value, requested_actions=["post_comment", action])
+
+        with pytest.raises(ValueError, match="only valid for a review verdict"):
+            CompletionRecord.from_dict(payload)
+
+    def test_holds_for_a_record_made_in_process_too(self):
+        approval = CompletionRecord.from_dict(_minimal_payload(
+            outcome=CompletionOutcome.REVIEW_APPROVED.value,
+            requested_actions=["add_code_reviewed_label", "remove_code_review_label"],
+        ))
+
+        with pytest.raises(ValueError, match="moves its PR out of review only by"):
+            dataclasses.replace(approval, requested_actions=list(reversed(approval.requested_actions)))
 
 
 class TestListBounds:

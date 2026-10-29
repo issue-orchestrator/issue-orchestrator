@@ -617,6 +617,7 @@ def _restore_claim_context(session: Session, claim: PendingWorkClaim) -> None:
             _fill_unrecorded_rework_target(session, request.pr_number, request.rework_cycle)
         case PendingRework() as request:
             _fill_unrecorded_rework_target(session, request.pr_number, request.rework_cycle)
+            session.launch_authority = request.authority  # its next review is queued under it (#9499)
         case _:
             return
 

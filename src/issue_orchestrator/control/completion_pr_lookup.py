@@ -47,7 +47,8 @@ class ResolvedCompletionPr:
         if self.publication is None or self.number is None or self.url != self.publication.url:
             raise ValueError("review routing requires the publication identity")
         return DiscoveredReview(session.issue.number, self.number, self.publication.url, self.publication.branch,
-            agent_label=session.agent_label, issue_key=session.issue.key.stable_id())
+            agent_label=session.agent_label, issue_key=session.issue.key.stable_id(),
+            authority=session.launch_authority)  # a governed rework's next review: the same authority (#9499)
 
 
 #: The answer whenever a session produced no PR — not completed, a

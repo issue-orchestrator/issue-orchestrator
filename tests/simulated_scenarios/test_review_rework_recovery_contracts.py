@@ -6,6 +6,7 @@ from pathlib import Path
 from issue_orchestrator.domain.models import Issue, ORCHESTRATOR_PR_MARKER
 from issue_orchestrator.events import EventName
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
+from tests.conftest import IO_AUTHOR
 
 from .conftest import build_config, build_orchestrator, run_until
 from .scenario_dsl import scenario, script
@@ -26,6 +27,7 @@ def _pr(*, number: int, issue_number: int, branch: str, labels: list[str]) -> PR
         url=f"https://github.com/test/repo/pull/{number}",
         branch=branch,
         body=f"Closes #{issue_number}\n\n{ORCHESTRATOR_PR_MARKER}",
+        author=IO_AUTHOR,
         state="open",
         labels=labels,
         draft=True,

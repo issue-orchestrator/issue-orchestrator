@@ -43,6 +43,7 @@ from ..domain.board_snapshot import (
     SessionActivityFacts,
     project_idle_minutes,
 )
+from ..domain.external_pr_adoption import ORIGIN_EXTERNAL_LABEL
 from ..domain.tech_lead_write_health import unavailable
 from ..domain.models import (
     DiscoveredFailure,
@@ -343,6 +344,8 @@ class BoardSnapshotBuilder:
         test can derive the expected set from the planner contract.
         """
         entries: list[BoardQueueEntry] = []
+        # Adopted external work rides io's own queues; its origin says so (#9499).
+        adopted = state.external_pull_requests.adopted_pr_numbers()
         for review in state.pending_reviews:
             entries.append(
                 BoardQueueEntry(
@@ -350,6 +353,7 @@ class BoardSnapshotBuilder:
                     issue_number=review.issue_number,
                     detail=_clip(
                         f"PR #{review.pr_number} awaiting review ({review.pr_url})"
+                        f"{_origin_note(review.pr_number, adopted)}"
                     ),
                 )
             )
@@ -366,7 +370,7 @@ class BoardSnapshotBuilder:
                 BoardQueueEntry(
                     queue="pending_reworks",
                     issue_number=_rework_issue_number(rework),
-                    detail=_clip(_rework_detail(rework)),
+                    detail=_clip(_rework_detail(rework, adopted)),
                 )
             )
         for tech_lead in state.pending_tech_lead_reviews:
@@ -534,11 +538,16 @@ def _rework_issue_number(rework: PendingRework) -> int:
     return issue_number
 
 
-def _rework_detail(rework: PendingRework) -> str:
+def _origin_note(pr_number: int | None, adopted: frozenset[int]) -> str:
+    """Names an adopted external PR's origin label; io's own PRs carry none (#9499)."""
+    return f" [{ORIGIN_EXTERNAL_LABEL}]" if pr_number in adopted else ""
+
+
+def _rework_detail(rework: PendingRework, adopted: frozenset[int]) -> str:
     """Short human-readable elaboration for a rework queue entry."""
     parts = [f"rework cycle {rework.rework_cycle}"]
     if rework.pr_number is not None:
-        parts.append(f"PR #{rework.pr_number}")
+        parts.append(f"PR #{rework.pr_number}{_origin_note(rework.pr_number, adopted)}")
     if rework.feedback:
         parts.append(rework.feedback)
     return "; ".join(parts)

@@ -258,6 +258,13 @@ def mock_pr_adapter():
         )
     )
     adapter.add_comment = Mock(return_value="comment-id")
+    # No review receipt stands on any PR yet (#9499).
+    adapter.find_issue_comment_receipt = Mock(return_value=None)
+    # A reviewed PR is io's own unless a test says otherwise: no origin label (#9499).
+    adapter.get_pr = Mock(side_effect=lambda number: PRInfo(
+        number=number, title="Test PR", url=f"https://github.com/owner/repo/pull/{number}", branch="issue-123",
+        body="Test body", state="open", labels=[],
+    ))
     return adapter
 
 
@@ -2953,6 +2960,141 @@ class TestReviewExchangeExecution:
 
         assert result.success
         assert not (run_assets.run_dir / "reviewer-feedback.json").exists()
+
+
+class TestAdoptedPullRequestApproval:
+    """io's approval of an adopted PR binds to the head its reviewer read (#9499)."""
+
+    @staticmethod
+    def _approve(processor, worktree_with_completion):
+        record = make_record(
+            outcome=CompletionOutcome.REVIEW_APPROVED,
+            requested_actions=[
+                RequestedAction.ADD_CODE_REVIEWED_LABEL,
+                RequestedAction.REMOVE_NEEDS_REWORK_LABEL,
+                RequestedAction.REMOVE_CODE_REVIEW_LABEL,
+            ],
+            summary="LGTM",
+            review_summary="Code looks good",
+        )
+        worktree = worktree_with_completion(record)
+        return processor.process(
+            worktree, run_assets=make_session_run_assets(worktree), issue_number=42, issue_title="Fix bug",
+            pr_number=456,
+        )
+
+    @staticmethod
+    def _adopted(mock_pr_adapter) -> None:
+        mock_pr_adapter.get_pr.side_effect = lambda number: PRInfo(
+            number=number, title="Hand-made", url=f"https://github.com/owner/repo/pull/{number}",
+            branch="42-by-hand", body="Closes #42", state="open", labels=["origin:external", "needs-code-review"],
+        )
+
+    def test_the_receipt_for_the_reviewed_head_precedes_the_approval_label(
+        self, processor, mock_pr_adapter, mock_git_adapter, mock_label_adapter, worktree_with_completion
+    ):
+        from issue_orchestrator.domain.external_pr_adoption import reviewed_head_receipt
+
+        self._adopted(mock_pr_adapter)
+        mock_git_adapter.get_head_sha.return_value = "a" * 40
+        order = Mock()
+        order.attach_mock(mock_pr_adapter.add_comment, "add_comment")
+        order.attach_mock(mock_label_adapter.add_label, "add_label")
+
+        result = self._approve(processor, worktree_with_completion)
+
+        assert result.success
+        assert order.mock_calls[:2] == [
+            call.add_comment(456, reviewed_head_receipt(456, "a" * 40)),
+            call.add_label(456, "code-reviewed"),
+        ]
+
+    def test_an_unwritable_receipt_leaves_the_pr_in_review(
+        self, processor, mock_pr_adapter, mock_git_adapter, mock_label_adapter, worktree_with_completion
+    ):
+        from issue_orchestrator.ports.repository_host import RepositoryHostError
+
+        self._adopted(mock_pr_adapter)
+        mock_git_adapter.get_head_sha.return_value = "a" * 40
+        mock_pr_adapter.add_comment.side_effect = RepositoryHostError("502")
+
+        result = self._approve(processor, worktree_with_completion)
+
+        assert not result.success
+        mock_label_adapter.add_label.assert_not_called()
+        mock_label_adapter.remove_label.assert_not_called()  # needs-code-review stays: reviewed again
+
+    def test_an_approval_label_failing_after_the_receipt_halts_and_its_retry_converges(
+        self, processor, mock_pr_adapter, mock_git_adapter, mock_label_adapter, worktree_with_completion
+    ):
+        """Review r3 F7: receipt written, approval label refused -> the review lane
+        stays; the retry finds the receipt (no second comment) and approves."""
+        from issue_orchestrator.ports.comment_receipt import IssueCommentReceipt
+        from issue_orchestrator.ports.repository_host import RepositoryHostError
+
+        self._adopted(mock_pr_adapter)
+        mock_git_adapter.get_head_sha.return_value = "a" * 40
+        posted: list[str] = []
+        mock_pr_adapter.add_comment.side_effect = lambda number, body: posted.append(body) or "comment-url"
+        mock_pr_adapter.find_issue_comment_receipt.side_effect = lambda number, *, body: (
+            IssueCommentReceipt("1", "url", "github-user:1", "sha") if body in posted else None
+        )
+        mock_label_adapter.add_label.side_effect = [RepositoryHostError("502"), None]
+
+        first = self._approve(processor, worktree_with_completion)
+
+        assert not first.success
+        mock_label_adapter.remove_label.assert_not_called()  # still in io's review lane
+        retry = self._approve(processor, worktree_with_completion)
+
+        assert retry.success
+        assert [body for body in posted if "io:reviewed-head" in body] == [posted[0]]  # one receipt, whatever the retries
+        assert mock_label_adapter.add_label.call_args_list == [call(456, "code-reviewed")] * 2
+        mock_label_adapter.remove_label.assert_has_calls([call(456, "needs-rework"), call(456, "needs-code-review")])
+
+    @pytest.mark.parametrize("requested", [
+        pytest.param(["remove_code_review_label", "add_code_reviewed_label", "post_comment"], id="retirement-first"),
+        pytest.param(["remove_needs_rework_label", "remove_code_review_label", "post_comment"], id="approval-omitted"),
+        pytest.param(["add_code_reviewed_label", "remove_code_review_label", "remove_code_review_label"],
+                     id="retirement-duplicated"),
+        pytest.param(["add_needs_rework_label", "remove_code_review_label"], id="other-verdict"),
+    ])
+    def test_an_agent_cannot_order_the_review_lane_out_before_the_approval(
+        self, requested, processor, mock_pr_adapter, mock_git_adapter, mock_label_adapter, worktree_with_completion
+    ):
+        """Review F1: the requested actions are untrusted; an approval whose
+        review-lane actions are not its transition, approval first, is refused
+        before any of them runs - even where the approval itself would fail."""
+        from issue_orchestrator.ports.repository_host import RepositoryHostError
+
+        self._adopted(mock_pr_adapter)
+        mock_git_adapter.get_head_sha.return_value = "a" * 40
+        mock_pr_adapter.add_comment.side_effect = RepositoryHostError("502")  # the receipt cannot be written
+        worktree = worktree_with_completion(make_record(
+            outcome=CompletionOutcome.REVIEW_APPROVED, requested_actions=[], summary="LGTM",
+            review_summary="Code looks good", comment_body="## Code Review Approved",
+        ))
+        completion = worktree / ".issue-orchestrator" / "completion.json"
+        completion.write_text(json.dumps({**json.loads(completion.read_text()), "requested_actions": requested}))
+
+        result = processor.process(
+            worktree, run_assets=make_session_run_assets(worktree), issue_number=42, issue_title="Fix bug",
+            pr_number=456,
+        )
+
+        assert not result.success
+        mock_label_adapter.remove_label.assert_not_called()  # needs-code-review stays: reviewed again
+        mock_label_adapter.add_label.assert_not_called()
+        mock_pr_adapter.add_comment.assert_not_called()
+
+    def test_io_s_own_pr_approval_writes_no_receipt(
+        self, processor, mock_pr_adapter, mock_label_adapter, worktree_with_completion
+    ):
+        result = self._approve(processor, worktree_with_completion)
+
+        assert result.success
+        mock_pr_adapter.add_comment.assert_not_called()
+        mock_label_adapter.add_label.assert_called_once_with(456, "code-reviewed")
 
 
 class TestCompletionProcessorPRActions:

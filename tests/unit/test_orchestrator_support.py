@@ -1888,6 +1888,7 @@ class TestOrchestratorSupportClearDiscoveredFacts:
         mock_config.cleanup.without_tech_lead = MagicMock()
         mock_config.cleanup.without_tech_lead.close_ai_session_tabs = False
         mock_config.code_review_agent = None
+        mock_config.integration.enabled = False  # no integration effort (#9499)
 
         return OrchestratorSupport(
             config=mock_config,
@@ -2030,6 +2031,7 @@ class TestUpdateStateAfterAction:
         mock_config.cleanup.without_tech_lead = MagicMock()
         mock_config.cleanup.without_tech_lead.close_ai_session_tabs = False
         mock_config.code_review_agent = None
+        mock_config.integration.enabled = False  # no integration effort (#9499)
 
         return OrchestratorSupport(
             config=mock_config,

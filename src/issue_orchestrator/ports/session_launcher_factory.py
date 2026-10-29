@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from ..domain.state_machines.session_machine import SessionStateMachine
     from .blocked_item_triage import BlockedItemTriageAgenda
     from .board_snapshot_provider import BoardSnapshotProvider
+    from ..domain.models import OrchestratorState
     from .issue import Issue as IssueProtocol
 
 
@@ -52,7 +53,9 @@ class SessionLauncherFactory(Protocol):
     The implementation closes over the application dependencies; callers
     pass only what the facade owns. The terminal a launch prepares on, checks
     for conflicts on, and starts on is not among them: the implementation
-    binds all three to one SessionManager (#9012).
+    binds all three to one SessionManager (#9012). Nor is the external-PR
+    launch gate: the implementation builds it over the facade's live state
+    (#9499).
     """
 
     def __call__(
@@ -71,5 +74,6 @@ class SessionLauncherFactory(Protocol):
             Callable[[int], Optional["IssueProtocol"]]
         ],
         dependency_evaluator: Optional["DependencyEvaluator"],
+        state: Callable[[], "OrchestratorState"],
     ) -> "SessionLauncher":
         ...

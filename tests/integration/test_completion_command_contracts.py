@@ -40,6 +40,7 @@ from issue_orchestrator.ports.tech_lead_authority import InMemoryTechLeadAuthori
 from issue_orchestrator.ports.open_issue_corpus_store import (
     InMemoryOpenIssueCorpusStore,
 )
+from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.observation.observation import (
     SessionObservation,
     SessionObservationResult,
@@ -265,6 +266,19 @@ class _RecordingPRAdapter:
 
     def merged_pr_history(self, issue_number: int) -> tuple:
         return ()
+
+    def get_pr(self, pr_number: int) -> PRInfo:
+        # An io-native PR: no origin-external label, so approving it writes
+        # only the approval label (no reviewed-head receipt).
+        return PRInfo(
+            number=pr_number,
+            title="Test PR",
+            url=f"https://example.test/pr/{pr_number}",
+            branch="issue-1",
+            body="",
+            state="open",
+            labels=[],
+        )
 
     def create_pr(
         self,
