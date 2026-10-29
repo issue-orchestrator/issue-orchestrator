@@ -209,64 +209,61 @@ class TestCmdStart:
                 "issue_orchestrator.entrypoints.bootstrap.build_orchestrator"
             ) as mock_build:
                 with patch(
-                    "issue_orchestrator.execution.providers.create_repository_host"
-                ) as mock_create_host:
+                    "issue_orchestrator.execution.providers.create_repository_access"
+                ) as mock_create_access:
                     with patch("issue_orchestrator.control.scheduler.Scheduler"):
                         with patch(
                             "issue_orchestrator.infra.analysis.analyze_all_issues",
                             return_value=[],
                         ):
                             with patch(
-                                "issue_orchestrator.execution.git_working_copy.GitWorkingCopy.list_remote_branches",
+                                "issue_orchestrator.infra.analysis.analyze_orphan_branches",
                                 return_value=[],
                             ):
-                                with patch(
-                                    "issue_orchestrator.infra.analysis.analyze_orphan_branches",
-                                    return_value=[],
-                                ):
-                                    mock_config = Mock()
-                                    mock_config.agents = {"agent:test": Mock()}
-                                    mock_config.max_concurrent_sessions = 2
-                                    mock_config.repo = "test/repo"
-                                    mock_config.filtering.label = None
-                                    mock_config.filtering.milestone = None
-                                    mock_config.filtering.milestones = []
-                                    mock_config.get_filter_milestones.return_value = []
-                                    mock_config.repo_root = Path("/tmp")
-                                    mock_config.worktree_base = Path("/tmp/worktrees")
-                                    mock_config.get_label_in_progress.return_value = (
-                                        "in-progress"
-                                    )
-                                    mock_config.github_api_url = (
-                                        "https://api.github.com"
-                                    )
-                                    mock_config.github_http_timeout_seconds = 20.0
-                                    mock_config.queue_refresh_seconds = 0
-                                    mock_config.validate.return_value = []  # Pass validation
-                                    mock_find.return_value = mock_config
+                                mock_config = Mock()
+                                mock_config.agents = {"agent:test": Mock()}
+                                mock_config.max_concurrent_sessions = 2
+                                mock_config.repo = "test/repo"
+                                mock_config.filtering.label = None
+                                mock_config.filtering.milestone = None
+                                mock_config.filtering.milestones = []
+                                mock_config.get_filter_milestones.return_value = []
+                                mock_config.repo_root = Path("/tmp")
+                                mock_config.worktree_base = Path("/tmp/worktrees")
+                                mock_config.get_label_in_progress.return_value = (
+                                    "in-progress"
+                                )
+                                mock_config.github_api_url = (
+                                    "https://api.github.com"
+                                )
+                                mock_config.github_http_timeout_seconds = 20.0
+                                mock_config.queue_refresh_seconds = 0
+                                mock_config.validate.return_value = []  # Pass validation
+                                mock_find.return_value = mock_config
 
-                                    # Mock repository host
-                                    mock_github = Mock()
-                                    mock_github.list_issues.return_value = []
-                                    mock_create_host.return_value = mock_github
+                                # Mock repository host and working copy
+                                mock_access = Mock()
+                                mock_access.host.list_issues.return_value = []
+                                mock_access.working_copy.list_remote_branches.return_value = []
+                                mock_create_access.return_value = mock_access
 
-                                    args = argparse.Namespace(
-                                        test_mode=False,
-                                        milestone=None,
-                                        dry_run=True,
-                                        no_dashboard=False,
-                                        debug=False,
-                                        start_paused=False,
-                                    )
+                                args = argparse.Namespace(
+                                    test_mode=False,
+                                    milestone=None,
+                                    dry_run=True,
+                                    no_dashboard=False,
+                                    debug=False,
+                                    start_paused=False,
+                                )
 
-                                    result = cmd_start(args)
+                                result = cmd_start(args)
 
-                                    assert result == 0
-                                    mock_create_host.assert_called_once_with(
-                                        "test/repo", config=mock_config
-                                    )
-                                    # Orchestrator should NOT be instantiated for dry-run
-                                    mock_build.assert_not_called()
+                                assert result == 0
+                                mock_create_access.assert_called_once_with(
+                                    "test/repo", mock_config
+                                )
+                                # Orchestrator should NOT be instantiated for dry-run
+                                mock_build.assert_not_called()
 
 
 class TestClientDashboardLink:
@@ -1984,33 +1981,35 @@ class TestCmdAudit:
             with patch("issue_orchestrator.infra.audit.audit_queue") as mock_audit:
                 with patch("issue_orchestrator.infra.audit.print_audit") as mock_print:
                     with patch(
-                        "issue_orchestrator.execution.providers.create_repository_host"
-                    ):
+                        "issue_orchestrator.execution.providers.create_repository_access"
+                    ) as mock_create_access:
                         with patch(
-                            "issue_orchestrator.execution.git_working_copy.GitWorkingCopy"
+                            "issue_orchestrator.infra.analysis.extract_issue_branches"
                         ):
+                            mock_config = Mock()
+                            mock_config.repo = "owner/repo"
+                            mock_config.agents = {"agent:test": Mock()}
+                            mock_find.return_value = mock_config
+
+                            mock_audit.return_value = []
+
+                            args = argparse.Namespace()
+                            # The audit asks the authority store which issues are
+                            # tech-lead proposals (#7763 review r27 F1).
                             with patch(
-                                "issue_orchestrator.infra.analysis.extract_issue_branches"
+                                "issue_orchestrator.entrypoints.cli_queue_commands._stored_known_proposals",
+                                return_value=frozenset({7}),
                             ):
-                                mock_config = Mock()
-                                mock_config.repo = "owner/repo"
-                                mock_config.agents = {"agent:test": Mock()}
-                                mock_find.return_value = mock_config
+                                result = cmd_audit(args)
+                            assert mock_audit.call_args.kwargs["known_proposals"] == frozenset({7})
 
-                                mock_audit.return_value = []
-
-                                args = argparse.Namespace()
-                                # The audit asks the authority store which issues are
-                                # tech-lead proposals (#7763 review r27 F1).
-                                with patch(
-                                    "issue_orchestrator.entrypoints.cli_queue_commands._stored_known_proposals",
-                                    return_value=frozenset({7}),
-                                ):
-                                    result = cmd_audit(args)
-                                assert mock_audit.call_args.kwargs["known_proposals"] == frozenset({7})
-
-                                assert result == 0
-                                mock_audit.assert_called_once()
+                            assert result == 0
+                            mock_audit.assert_called_once()
+                            mock_create_access.assert_called_once_with("owner/repo", mock_config)
+                            assert (
+                                mock_audit.call_args.kwargs["issue_tracker"]
+                                is mock_create_access.return_value.host
+                            )
 
     def test_cmd_audit_missing_config(self):
         """Verify audit command fails without config."""

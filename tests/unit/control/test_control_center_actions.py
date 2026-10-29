@@ -527,8 +527,8 @@ async def test_initialize_labels_uses_loaded_config_for_repository_host() -> Non
 @pytest.mark.asyncio
 async def test_audit_command_reports_repository_host_error(tmp_path: Path) -> None:
     config = Mock(repo="owner/repo", repo_root=tmp_path)
-    working_copy = Mock()
-    working_copy.list_remote_branches.return_value = []
+    repository = Mock()
+    repository.working_copy.list_remote_branches.return_value = []
     upstream_error = GitHubHttpError(
         "GitHub unavailable",
         status_code=503,
@@ -540,27 +540,23 @@ async def test_audit_command_reports_repository_host_error(tmp_path: Path) -> No
         return_value=config,
     ):
         with patch(
-            "issue_orchestrator.execution.providers.create_repository_host",
-            return_value=Mock(),
+            "issue_orchestrator.execution.providers.create_repository_access",
+            return_value=repository,
         ):
             with patch(
-                "issue_orchestrator.execution.git_working_copy.GitWorkingCopy",
-                return_value=working_copy,
+                "issue_orchestrator.infra.analysis.extract_issue_branches",
+                return_value={},
             ):
                 with patch(
-                    "issue_orchestrator.infra.analysis.extract_issue_branches",
-                    return_value={},
+                    "issue_orchestrator.infra.audit.audit_queue",
+                    side_effect=upstream_error,
                 ):
-                    with patch(
-                        "issue_orchestrator.infra.audit.audit_queue",
-                        side_effect=upstream_error,
-                    ):
-                        result = await AuditIssuesCommand().execute(
-                            AuditActionRequest(
-                                repo_root=tmp_path,
-                                selection=RepositoryLaunchSelection.default(),
-                            ),
-                        )
+                    result = await AuditIssuesCommand().execute(
+                        AuditActionRequest(
+                            repo_root=tmp_path,
+                            selection=RepositoryLaunchSelection.default(),
+                        ),
+                    )
 
     assert result.status_code == 502
     assert result.payload["error"] == "GitHub issue query failed"

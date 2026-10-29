@@ -275,7 +275,7 @@ class StartupManager:
             self._standing_rulings.backfill((*state.cached_scope_issues, *state.cached_queue_issues) if self._queue_labels_fresh else ())  # the page's rulings index, from the bodies just synced (#8347)
 
         # Step 6: Check in-progress issues and determine action
-        state.startup_message = "Scanning local branches..."
+        state.startup_message = "Listing remote branches..."
         with self._phase("issue_branches_scan", timings):
             issue_branches = self._issue_branches()
 

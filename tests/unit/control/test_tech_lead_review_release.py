@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -53,6 +54,9 @@ from issue_orchestrator.control.issue_work_claims import claims_on_issue
 from issue_orchestrator.ports.event_sink import TraceEvent
 from issue_orchestrator.ports.pull_request_tracker import PRInfo, StatusCheckRollupRead
 from issue_orchestrator.control.session_history import SessionHistoryOwner
+from issue_orchestrator.control.worktree_manager import extract_issue_branches
+from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
+from tests.unit.foreign_tracking_refs import clone_with_foreign_tracking_refs
 
 ISSUE = 7395
 PR = 7396
@@ -356,6 +360,25 @@ def test_a_prior_attempts_pr_is_ignored_like_review_discovery_ignores_it() -> No
     result = board.executor().apply(_action())
 
     assert result.success and result.details["pr_number"] == 7398
+
+
+@pytest.mark.parametrize("fetched", [True, False], ids=["seeded-branch-fetched", "seeded-branch-unfetched"])
+def test_a_branch_the_remote_never_had_does_not_hide_the_issues_pr(tmp_path: Path, fetched: bool) -> None:
+    """Exam Case B (#9550): the engine's clone tracked a branch of the repository
+    it was cloned from, ``origin/<issue>-test-frontend-feature``, that its remote
+    never had. It sorted after the seeded PR's branch, so the branch map named it
+    the issue's active branch and the release refused ``no_open_pr`` while the PR
+    was open the whole time. The map is the remote's own branches now."""
+    clone = clone_with_foreign_tracking_refs(
+        tmp_path, foreign_branch=f"{ISSUE}-test-frontend-feature", remote_branch=f"{ISSUE}-green",
+        fetched=fetched,
+    )
+    board = Board(branches=extract_issue_branches(GitWorkingCopy(), clone.root))
+
+    result = board.executor().apply(_action())
+
+    assert result.success, result.error
+    assert result.details["pr_number"] == PR
 
 
 @pytest.mark.parametrize("failing", [AddLabelAction, RemoveLabelAction])
