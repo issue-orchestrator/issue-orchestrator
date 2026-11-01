@@ -12,9 +12,12 @@ import gc
 import hashlib
 import json
 import logging
+import os
 import shutil
 import sqlite3
 import tempfile
+import time
+from collections.abc import Iterator
 from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -78,6 +81,30 @@ from tests.unit.test_tech_lead_charter_ledger import _decision
 from tests.unit.validated_work_support import Rig, begin, capture, claim, finalize
 
 NOW = datetime.now(UTC).replace(microsecond=0)
+
+
+@pytest.fixture(autouse=True)
+def _local_time_without_dst() -> Iterator[None]:
+    """Run every test here on a local clock with no repeated hour.
+
+    The fixtures date engine-log lines relative to the wall clock, and the log
+    stores naive local time. On a fall-back night ``NOW - 1h`` can land in the
+    repeated hour, which the reader rightly refuses to date when the tail starts
+    there (test_engine_log_census covers that rule). These tests are about the
+    audit window, not daylight saving, so pin local time to UTC. Autouse runs
+    before ``state`` writes the log.
+    """
+    original = os.environ.get("TZ")
+    os.environ["TZ"] = "UTC"
+    time.tzset()
+    try:
+        yield
+    finally:
+        if original is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = original
+        time.tzset()
 REPO = "owner/repo"
 
 

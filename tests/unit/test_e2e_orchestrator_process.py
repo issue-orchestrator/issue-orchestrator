@@ -3,8 +3,10 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import yaml
@@ -108,7 +110,7 @@ def test_start_runs_source_from_separate_repo_root(
     try:
         process.start(max_issues=1)
     finally:
-        process._close_log_file()  # noqa: SLF001
+        process.stop()
 
     cmd = captured["cmd"]
     env = captured["env"]
@@ -121,15 +123,20 @@ def test_start_runs_source_from_separate_repo_root(
     assert str(source_root / "src") == env["PYTHONPATH"].split(":", maxsplit=1)[0]
 
 
+@pytest.mark.parametrize(
+    "end", [OrchestratorProcess.stop, OrchestratorProcess.crash], ids=["stop", "crash"]
+)
 @pytest.mark.parametrize("overridden", [False, True])
 def test_an_engine_registers_its_checkout_in_a_registry_of_its_own(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     overridden: bool,
+    end: Callable[[OrchestratorProcess], tuple[str, str]],
 ) -> None:
     """get_test_repo refuses every repository the operator's io registry
     names, and the exam and onboarding engines run from clones of the test
-    repository, so no e2e engine registers there (#9529)."""
+    repository, so no e2e engine registers there (#9529). Each way a run
+    ends its engine removes that registry."""
     operator_registry = tmp_path / "operator-io-config"
     monkeypatch.setenv("ISSUE_ORCHESTRATOR_CONFIG_DIR", str(operator_registry))
     test_repo_clone = tmp_path / "exam-engine-clone"
@@ -155,41 +162,77 @@ def test_an_engine_registers_its_checkout_in_a_registry_of_its_own(
         monkeypatch.setenv("ISSUE_ORCHESTRATOR_CONFIG_DIR", str(engine_registry))
         record_launched_selection(test_repo_clone, RepositoryLaunchSelection.default())
         assert [repo.path for repo in list_repos()] == [str(test_repo_clone.resolve())]
-        monkeypatch.setenv("ISSUE_ORCHESTRATOR_CONFIG_DIR", str(operator_registry))
-
-        assert list_repos() == []
     finally:
-        process._close_log_file()  # noqa: SLF001
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_CONFIG_DIR", str(operator_registry))
+        end(process)
 
+    assert list_repos() == []
     assert not engine_registry.exists()
 
 
 def _capture_engine_launch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> dict[str, object]:
-    """Replace the engine launch: return what ``start`` would run it with.
+    """Replace the engine with a fake: return what ``start`` would run it with.
 
-    Its logs go to ``tmp_path``, not the machine-wide e2e log directory that
-    every concurrent run prunes.
+    The fake runs until signalled, so ``stop`` and ``crash`` take their real
+    paths. It owns no process groups: its made-up PID never reaches ``ps`` or
+    ``killpg``, where it could name an unrelated process. Its logs go to
+    ``tmp_path``, not the machine-wide e2e log directory that every
+    concurrent run prunes.
     """
     captured: dict[str, object] = {}
     log_dir = tmp_path / "e2e-logs"
     log_dir.mkdir()
     monkeypatch.setattr("tests.e2e.fixtures.orchestrator_process.E2E_LOG_DIR", log_dir)
 
-    class FakeProcess:
+    class FakeEngine:
         pid = 12345
         stdout = None
         stderr = None
+        returncode: int | None = None
 
-    def fake_popen(cmd: list[str], **kwargs: object) -> FakeProcess:
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def send_signal(self, signum: int) -> None:
+            self.returncode = -signum
+
+        def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
+            return b"", b""
+
+    class NoProcessGroups:
+        def __init__(self, root_pid: int) -> None:
+            assert root_pid == FakeEngine.pid
+
+        def snapshot(self) -> frozenset[int]:
+            return frozenset()
+
+        def signal(self, snapshot: frozenset[int], signum: int) -> None:
+            assert snapshot == frozenset()
+
+        def terminate_survivors(self, snapshot: frozenset[int]) -> None:
+            assert snapshot == frozenset()
+
+    real_popen = subprocess.Popen
+
+    def fake_popen(cmd: list[str], **kwargs: Any) -> object:
+        # Only the engine launch, the one process ``start`` runs, is fake: the
+        # log-tailer sweep ``stop`` and ``crash`` run reaches Popen through
+        # ``subprocess.run`` and stays real.
+        if "cmd" in captured:
+            return real_popen(cmd, **kwargs)
         captured["cmd"] = cmd
         captured.update(kwargs)
-        return FakeProcess()
+        return FakeEngine()
 
     monkeypatch.setattr(
         "tests.e2e.fixtures.orchestrator_process.subprocess.Popen",
         fake_popen,
+    )
+    monkeypatch.setattr(
+        "tests.e2e.fixtures.orchestrator_process.ProcessGroupOwner",
+        NoProcessGroups,
     )
     monkeypatch.setattr(OrchestratorProcess, "wait_until_ready", lambda self: None)
     monkeypatch.setattr(OrchestratorProcess, "_log_reader", lambda self: None)
