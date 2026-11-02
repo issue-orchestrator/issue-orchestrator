@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .terminal_recording import TerminalRecordingWriter
+from .terminal_recording import TerminalOutputEdges, TerminalRecordingWriter
 
 # ---------------------------------------------------------------------------
 # ANSI / control-character patterns
@@ -50,6 +50,46 @@ _SPINNER_CHARS = set("·✶✻✽✳✢*/-\\|●○◉◎◯◐◑◒◓⎿⏵�
 def strip_ansi_codes(text: str) -> str:
     """Strip ANSI escape sequences from *text*."""
     return _ANSI_ESCAPE_PATTERN.sub("", text)
+
+
+_HORIZONTAL_WHITESPACE = re.compile(r"[ \t]+")
+
+
+def read_plain_output_edges(path: Path, edge_bytes: int) -> TerminalOutputEdges:
+    """The first and last ``edge_bytes`` of a plain PTY log (``ui-session.log``).
+
+    A plain log holds the PTY bytes as written, so its byte edges are its output
+    edges: two bounded reads, or one when the whole log fits in both windows.
+    Raises ``OSError`` when the file cannot be read.
+    """
+    with path.open("rb") as handle:
+        size = handle.seek(0, 2)
+        handle.seek(0)
+        if size <= 2 * edge_bytes:
+            return TerminalOutputEdges(head=handle.read(), tail=None)
+        head = handle.read(edge_bytes)
+        handle.seek(size - edge_bytes)
+        return TerminalOutputEdges(head=head, tail=handle.read(edge_bytes))
+
+
+def displayed_text(edges: TerminalOutputEdges) -> str:
+    """What the terminal showed in a session's output edges, for matching words in.
+
+    Terminal control sequences become a single space, so a banner a TUI drew
+    with cursor moves between its words still reads as one phrase. Two ends
+    are joined by a newline, which keeps a phrase from being manufactured
+    across the gap between them. Decode noise is tolerated (an edge can cut a
+    character in half): the result feeds a signature match, not a parser.
+    """
+    head = _visible_text(edges.head)
+    if edges.tail is None:
+        return head
+    return f"{head}\n{_visible_text(edges.tail)}"
+
+
+def _visible_text(pty_bytes: bytes) -> str:
+    text = _ANSI_ESCAPE_PATTERN.sub(" ", pty_bytes.decode("utf-8", errors="replace"))
+    return _HORIZONTAL_WHITESPACE.sub(" ", text)
 
 
 def clean_terminal_line(line: str) -> str:

@@ -102,6 +102,34 @@ SRC_ROOT = REPO_ROOT / "src" / "issue_orchestrator"
 # recordings in the incident (offset 2740 ms for #6463, 522 ms for #5336).
 EXPIRED_LOGIN_BANNER = "Login expired · Please run /login"
 
+
+def write_terminal_recording(path: Path, chunks: list[str]) -> None:
+    """Write ``chunks`` as a real ``terminal-recording.jsonl``, one PTY chunk per row.
+
+    The recording format, not a stand-in: the subprocess backend stores every
+    chunk base64-encoded in ``data_b64``. A fixture that wrote the text in the
+    clear let the live auth check pass its tests while it could never match a
+    production recording (health review #9586 sat at "Login expired" for 90
+    minutes).
+    """
+    import base64
+
+    from issue_orchestrator.infra.terminal_recording import TerminalRecordingEvent
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = (
+        TerminalRecordingEvent(
+            event_type="output",
+            offset_ms=offset,
+            data_b64=base64.b64encode(f"{chunk}\r\n".encode("utf-8")).decode("ascii"),
+        ).to_dict()
+        for offset, chunk in enumerate(chunks)
+    )
+    path.write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
 # The banner the startup AI gate sees, verbatim from tests/unit/test_hooks.py.
 # It reaches a different surface than the TUI banner above — a one-shot
 # ``claude --print`` rather than a live session — which is precisely why it
@@ -1344,10 +1372,7 @@ class TestLiveSessionObservation:
             prompt_path=session.agent_config.prompt_path, provider=provider
         )
         recording = session.run_assets.run_dir / TERMINAL_RECORDING_FILENAME
-        recording.parent.mkdir(parents=True, exist_ok=True)
-        recording.write_text(
-            json.dumps({"kind": "output", "data": text}) + "\n", encoding="utf-8"
-        )
+        write_terminal_recording(recording, [text])
         return session
 
     def test_confirmed_auth_banner_fails_the_session_immediately(
@@ -2395,11 +2420,7 @@ class TestAuthDiagnosisOutranksTimeAndTimeout:
             prompt_path=session.agent_config.prompt_path, provider="claude-code"
         )
         recording = session.run_assets.run_dir / TERMINAL_RECORDING_FILENAME
-        recording.parent.mkdir(parents=True, exist_ok=True)
-        recording.write_text(
-            json.dumps({"kind": "output", "data": EXPIRED_LOGIN_BANNER}) + "\n",
-            encoding="utf-8",
-        )
+        write_terminal_recording(recording, [EXPIRED_LOGIN_BANNER])
         session.started_at = datetime.now() - timedelta(seconds=age_seconds)
         return session
 
@@ -2670,11 +2691,7 @@ class TestLiveAuthEventIsToldOnce:
             prompt_path=session.agent_config.prompt_path, provider="claude-code"
         )
         recording = session.run_assets.run_dir / TERMINAL_RECORDING_FILENAME
-        recording.parent.mkdir(parents=True, exist_ok=True)
-        recording.write_text(
-            json.dumps({"kind": "output", "data": EXPIRED_LOGIN_BANNER}) + "\n",
-            encoding="utf-8",
-        )
+        write_terminal_recording(recording, [EXPIRED_LOGIN_BANNER])
         observer = SessionObserver(
             config=sample_config,
             session_output=FileSystemSessionOutput(),
@@ -4188,16 +4205,10 @@ class _BannerConfirmingProbe:
         return (self.lane_for(provider, model),)
 
 
-class TestAnAuthBannerPastTheHeadOfTheLog:
-    """A credential can expire long after the session started working.
+class _RecordedBannerHarness:
+    """A live session whose terminal recording holds given lines, and its observer."""
 
-    The observer used to read only the first 8 KiB of the terminal log. Once
-    ordinary output passed that mark, a banner appended later could never reach
-    the probe, and the session fell through to the generic timeout path — the
-    90-minute burn this issue exists to remove (#6999 F3).
-    """
-
-    def _observer(self, config, probe):
+    def _observer(self, config, probe, session_output=None):
         from issue_orchestrator.observation.observer import SessionObserver
 
         class _AlwaysRunning:
@@ -4212,30 +4223,30 @@ class TestAnAuthBannerPastTheHeadOfTheLog:
 
         return SessionObserver(
             config=config,
-            session_output=FileSystemSessionOutput(),
+            session_output=session_output or FileSystemSessionOutput(),
             events=RecordingEvents(),
             session_runner=_AlwaysRunning(),
             provider_readiness_probe=probe,
         )
 
-    def _session_with_lines(self, make_session, lines: list[str]):
+    @staticmethod
+    def _claude_session(make_session):
         from issue_orchestrator.infra.config import AgentConfig
-        from issue_orchestrator.infra.terminal_recording import (
-            TERMINAL_RECORDING_FILENAME,
-        )
 
         session = make_session()
         session.agent_config = AgentConfig(
             prompt_path=session.agent_config.prompt_path, provider="claude-code"
         )
-        recording = session.run_assets.run_dir / TERMINAL_RECORDING_FILENAME
-        recording.parent.mkdir(parents=True, exist_ok=True)
-        recording.write_text(
-            "".join(
-                json.dumps({"kind": "output", "data": line}) + "\n" for line in lines
-            ),
-            encoding="utf-8",
+        return session
+
+    def _session_with_lines(self, make_session, lines: list[str]):
+        from issue_orchestrator.infra.terminal_recording import (
+            TERMINAL_RECORDING_FILENAME,
         )
+
+        session = self._claude_session(make_session)
+        recording = session.run_assets.run_dir / TERMINAL_RECORDING_FILENAME
+        write_terminal_recording(recording, lines)
         return session
 
     @staticmethod
@@ -4243,6 +4254,16 @@ class TestAnAuthBannerPastTheHeadOfTheLog:
         """Believable agent chatter, comfortably past the head window."""
         chunk = "reading src/issue_orchestrator/control/planner.py ... ok"
         return [chunk] * (total_bytes // len(chunk) + 1)
+
+
+class TestAnAuthBannerPastTheHeadOfTheLog(_RecordedBannerHarness):
+    """A credential can expire long after the session started working.
+
+    The observer used to read only the first 8 KiB of the terminal log. Once
+    ordinary output passed that mark, a banner appended later could never reach
+    the probe, and the session fell through to the generic timeout path — the
+    90-minute burn this issue exists to remove (#6999 F3).
+    """
 
     def test_a_banner_after_8kib_of_output_still_fails_the_session(
         self, sample_config, make_session
@@ -4383,6 +4404,207 @@ def _restart(state, session, harness):
     )
     assert restored, "the terminal itself must restore, or the test proves nothing"
     return restarted, restored[0]
+
+
+class TestAnAuthBannerInTheRecordingFormat(_RecordedBannerHarness):
+    """The live auth check reads what the terminal showed, not the file's bytes.
+
+    A ``terminal-recording.jsonl`` stores each PTY chunk base64-encoded, and a
+    TUI draws its banner with colour and cursor sequences around the words.
+    Scanning the raw file matched nothing, so on 2026-11-02 health review #9586
+    (subprocess backend) printed "Login expired" within a second of launch and
+    still burned its whole 90-minute timeout.
+    """
+
+    # The chunks #9586's recording held, minus the logo: positioning, colour
+    # and the banner, with a cursor-forward move standing in for one space.
+    TUI_BANNER_CHUNKS = [
+        "\x1b[?2026h\x1b[?25l\x1b[2D\x1b[5B\r\x1b[8A"
+        "\x1b[38;2;150;108;30m\u23fa\x1b[3GLogin\x1b[1Cexpired \u00b7 Please run /login"
+        "\x1b[39m\x1b[K",
+        "\x1b[77C\x1b[1A\x1b[38;2;171;43;63mNot logged in \u00b7 Run /login\x1b[39m",
+    ]
+
+    def test_a_tui_drawn_banner_fails_the_session(
+        self, sample_config, make_session
+    ) -> None:
+        probe = _BannerConfirmingProbe()
+        observer = self._observer(sample_config, probe)
+        session = self._session_with_lines(make_session, self.TUI_BANNER_CHUNKS)
+
+        result = observer.observe_session(session)
+
+        assert result.observation is SessionObservation.PROVIDER_AUTH_FAILED
+        assert result.provider_readiness is not None
+        assert result.provider_readiness.human_fixable
+
+    def test_the_recording_bytes_alone_never_carry_the_banner(
+        self, sample_config, make_session
+    ) -> None:
+        """Why the decode is needed: the raw file has no banner text in it."""
+        session = self._session_with_lines(make_session, self.TUI_BANNER_CHUNKS)
+        recording = next(session.run_assets.run_dir.glob("terminal-recording.jsonl"))
+
+        assert classify_provider_output(recording.read_text(encoding="utf-8")) is None
+
+    def test_a_tui_drawn_banner_after_long_output_fails_the_session(
+        self, sample_config, make_session
+    ) -> None:
+        probe = _BannerConfirmingProbe()
+        observer = self._observer(sample_config, probe)
+        session = self._session_with_lines(
+            make_session, self._ordinary_output(256 * 1024) + self.TUI_BANNER_CHUNKS
+        )
+
+        result = observer.observe_session(session)
+
+        assert result.observation is SessionObservation.PROVIDER_AUTH_FAILED
+
+    def test_a_banner_followed_by_single_byte_reads_fails_the_session(
+        self, sample_config, make_session
+    ) -> None:
+        """Shown 2 KB from the end of the output, yet past any fixed raw window.
+
+        Every PTY read becomes a row with its own JSON envelope, so a run of
+        single-byte reads after the banner puts it far more raw bytes from the
+        end of the file than it is output bytes from the end of the session.
+        The first fix read a fixed 4x raw window and missed it (review F1).
+        """
+        from issue_orchestrator.infra.terminal_recording import TerminalRecordingWriter
+        from issue_orchestrator.observation.observer import (
+            PROVIDER_FAILURE_CHECK_MAX_BYTES,
+        )
+
+        probe = _BannerConfirmingProbe()
+        observer = self._observer(sample_config, probe)
+        session = self._claude_session(make_session)
+        recording = session.run_assets.terminal_recording.path
+        writer = TerminalRecordingWriter(recording, initial_rows=40, initial_cols=120)
+        for line in self._ordinary_output(64 * 1024):
+            writer.write_output(f"{line}\r\n".encode("utf-8"))
+        writer.write_output(self.TUI_BANNER_CHUNKS[0].encode("utf-8"))
+        size_at_banner = recording.stat().st_size
+        for _ in range(2000):
+            writer.write_output(b".")
+        writer.close()
+        assert (
+            recording.stat().st_size - size_at_banner
+            > 4 * PROVIDER_FAILURE_CHECK_MAX_BYTES
+        ), "the banner is still inside a 4x raw window: the shape proves nothing"
+
+        result = observer.observe_session(session)
+
+        assert result.observation is SessionObservation.PROVIDER_AUTH_FAILED
+
+    def test_a_banner_split_where_the_two_scans_meet_fails_the_session(
+        self, sample_config, make_session
+    ) -> None:
+        """2x the edge in PTY-read-sized rows, the banner split across the meeting row.
+
+        Both scans fill exactly where they meet, so the whole output was read;
+        reporting it as two ends with a gap turned the banner into
+        "Not log" / "ged in" and the classifier matched neither (review round 2).
+        """
+        from issue_orchestrator.infra.terminal_recording import TerminalRecordingWriter
+        from issue_orchestrator.observation.observer import (
+            PROVIDER_FAILURE_CHECK_MAX_BYTES,
+        )
+
+        banner = b"Not logged in"
+        half = len(banner) // 2
+        row = PROVIDER_FAILURE_CHECK_MAX_BYTES // 2
+        probe = _BannerConfirmingProbe()
+        observer = self._observer(sample_config, probe)
+        session = self._claude_session(make_session)
+        writer = TerminalRecordingWriter(
+            session.run_assets.terminal_recording.path, initial_rows=40, initial_cols=120
+        )
+        for chunk in (
+            b"." * row,
+            b"." * (row - half) + banner[:half],
+            banner[half:] + b"." * (row - (len(banner) - half)),
+            b"." * row,
+        ):
+            writer.write_output(chunk)
+        writer.close()
+
+        result = observer.observe_session(session)
+
+        assert result.observation is SessionObservation.PROVIDER_AUTH_FAILED
+        assert "Not logged in" in probe.seen[0]
+
+    def test_a_plain_text_session_log_is_still_scanned_as_text(
+        self, sample_config, make_session
+    ) -> None:
+        """A run with no recording falls back to its legacy text log, unchanged."""
+        probe = _BannerConfirmingProbe()
+        observer = self._observer(sample_config, probe)
+        session = self._claude_session(make_session)
+        log = session.run_assets.run_dir / "ui-session.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(f"starting\n{EXPIRED_LOGIN_BANNER}\n", encoding="utf-8")
+
+        result = observer.observe_session(session)
+
+        assert result.observation is SessionObservation.PROVIDER_AUTH_FAILED
+
+
+class _DisplayedTextOnlySessionOutput:
+    """A session-output port that serves displayed text and no log path at all.
+
+    Whatever a compliant adapter names or stores its logs as, the live auth
+    check must still work: it classifies the text the port hands it.
+    """
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.reads: list[tuple[object, int]] = []
+
+    def get_log_path(self, worktree_path: Path, session_name: str) -> Path | None:
+        del worktree_path, session_name
+        return None
+
+    def read_displayed_output_edges(self, run_assets, *, edge_bytes: int) -> str:
+        self.reads.append((run_assets, edge_bytes))
+        return self.text
+
+
+class TestTheLiveAuthCheckReadsThroughTheSessionOutputPort(_RecordedBannerHarness):
+    """The observer consumes text; the session-output owner owns the log (#9587 F2).
+
+    It used to recognise a recording by its file name and open it itself, so an
+    adapter returning the same recording under another name would have been
+    scanned raw again: the production failure, back.
+    """
+
+    def test_the_text_the_port_serves_decides_the_verdict(
+        self, sample_config, make_session
+    ) -> None:
+        from issue_orchestrator.observation.observer import (
+            PROVIDER_FAILURE_CHECK_MAX_BYTES,
+        )
+
+        port = _DisplayedTextOnlySessionOutput(f"starting\n{EXPIRED_LOGIN_BANNER} ")
+        observer = self._observer(sample_config, _BannerConfirmingProbe(), port)
+        session = self._claude_session(make_session)
+
+        result = observer.observe_session(session)
+
+        assert result.observation is SessionObservation.PROVIDER_AUTH_FAILED
+        assert port.reads == [(session.run_assets, PROVIDER_FAILURE_CHECK_MAX_BYTES)]
+
+    def test_no_text_from_the_port_reaches_no_verdict(
+        self, sample_config, make_session
+    ) -> None:
+        probe = _BannerConfirmingProbe()
+        port = _DisplayedTextOnlySessionOutput("")
+        observer = self._observer(sample_config, probe, port)
+        session = self._claude_session(make_session)
+
+        result = observer.observe_session(session)
+
+        assert result.observation is not SessionObservation.PROVIDER_AUTH_FAILED
+        assert probe.seen == []
 
 
 @pytest.mark.parametrize("queue", _PENDING_QUEUES)

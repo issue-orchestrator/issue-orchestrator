@@ -55,8 +55,11 @@ logger = logging.getLogger(__name__)
 # #6999 exists to remove (F3).
 #
 # Both windows are bounded, so the read stays O(1) in session length no matter
-# how much the agent prints: at most this many bytes from each end, and they
-# collapse to a single read for a log smaller than both. The signature match is
+# how much the agent prints: at most this many bytes of PTY output from each
+# end, and a shorter output comes back whole. The session-output owner reads
+# them in the log's own format: a terminal recording stores every PTY chunk
+# base64-encoded, so its raw bytes never carry the banner (#9587). The
+# signature match is
 # only a trigger — the provider adapter confirms it against the credential probe
 # — so pulling in the agent's own working output cannot by itself kill a session
 # (this orchestrator echoes provider auth banners while working on its own auth
@@ -535,20 +538,15 @@ class SessionObserver:
         The scanned window is bounded at both ends rather than at the head
         alone, so a credential that dies mid-session — after the agent has
         already written megabytes of ordinary output — is still diagnosable
-        (#6999 F3).
+        (#6999 F3). It is the text the terminal displayed, as the session-output
+        owner reads it from the run's log in that log's format; the observer
+        never opens the log or guesses its format from a file name (#9587).
         """
         provider = session.agent_config.provider
-        if not provider:
+        if not provider or not self._session_output:
             return None
-        log_path = (
-            self._session_output.get_log_path(session.worktree_path, session.terminal_id)
-            if self._session_output
-            else None
-        )
-        if not log_path or not log_path.exists():
-            return None
-        window = self._read_provider_failure_scan_window(
-            log_path, PROVIDER_FAILURE_CHECK_MAX_BYTES
+        window = self._session_output.read_displayed_output_edges(
+            session.run_assets, edge_bytes=PROVIDER_FAILURE_CHECK_MAX_BYTES
         )
         if not window:
             return None
@@ -605,39 +603,6 @@ class SessionObserver:
         return SessionObservationResult.provider_auth_failed(
             readiness, runtime_minutes=runtime, session_exists=session_exists
         )
-
-    @staticmethod
-    def _read_provider_failure_scan_window(log_path, edge_bytes: int) -> str:
-        """Read the first and last ``edge_bytes`` of a session log.
-
-        Two bounded reads rather than one: the head carries a launch-time
-        refusal, the tail carries a credential that expired while the session
-        was already working (#6999 F3). A log shorter than both windows is read
-        once and returned whole, so the common case costs exactly what the
-        head-only read used to.
-
-        Decode noise is tolerated (a tail slice can start mid-codepoint) because
-        the result feeds a signature match, not a parser.
-        """
-        try:
-            with open(log_path, "rb") as handle:
-                head = handle.read(edge_bytes)
-                # `tell()` after a short read is the true size for the part we
-                # care about; seek from the end for the rest.
-                handle.seek(0, 2)
-                size = handle.tell()
-                if size <= edge_bytes:
-                    tail = b""
-                else:
-                    handle.seek(max(edge_bytes, size - edge_bytes))
-                    tail = handle.read(edge_bytes)
-        except OSError:
-            return ""
-        if not tail:
-            return head.decode("utf-8", errors="replace")
-        # A separator keeps a signature from being manufactured across the gap
-        # by two unrelated fragments happening to abut.
-        return b"\n".join((head, tail)).decode("utf-8", errors="replace")
 
     def _emit_no_output_if_stale(self, session: Session) -> None:
         """Emit a session_no_output event if the session log is idle too long."""
