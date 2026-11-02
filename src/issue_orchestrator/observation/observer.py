@@ -13,6 +13,7 @@ Components that act are named Adapters.
 import logging
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -26,6 +27,8 @@ from ..domain import ProcessState
 from ..domain.process_state import ProcessExitInfo
 from ..infra.config import Config
 from ..infra.logging_config import issue_log
+from ..infra.terminal_cleaning import recording_text_window
+from ..infra.terminal_recording import TERMINAL_RECORDING_FILENAME
 from ..events import EventName
 from ..domain.models import Session, SessionStatus
 from ..ports import EventSink, TraceEvent, NullEventSink
@@ -618,7 +621,15 @@ class SessionObserver:
 
         Decode noise is tolerated (a tail slice can start mid-codepoint) because
         the result feeds a signature match, not a parser.
+
+        A ``terminal-recording.jsonl`` is read through its decoder instead: it
+        stores every PTY chunk base64-encoded, so its raw bytes never contain
+        the banner text the session displayed. Scanning them raw is what let
+        health review #9586 sit at "Login expired" for its whole 90-minute
+        timeout on the subprocess backend.
         """
+        if Path(log_path).name == TERMINAL_RECORDING_FILENAME:
+            return recording_text_window(Path(log_path), edge_bytes)
         try:
             with open(log_path, "rb") as handle:
                 head = handle.read(edge_bytes)

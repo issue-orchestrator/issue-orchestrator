@@ -417,3 +417,40 @@ class TestGeometryBoundsAgreeAcrossTheLanguageBoundary:
     def test_the_javascript_names_its_python_counterpart(self) -> None:
         """A reader of either side must be able to find the other."""
         assert "screen_dimension" in self._session_replay_source()
+
+
+def _output_row(data: bytes, offset: int = 0) -> bytes:
+    return (
+        json.dumps(
+            {
+                "schema_version": 1,
+                "event_type": "output",
+                "offset_ms": offset,
+                "data_b64": base64.b64encode(data).decode("ascii"),
+            }
+        ).encode("utf-8")
+        + b"\n"
+    )
+
+
+def test_output_bytes_in_decodes_every_complete_output_row() -> None:
+    from issue_orchestrator.infra.terminal_recording import output_bytes_in
+
+    raw = _output_row(b"Login ", 0) + _output_row(b"expired", 1)
+
+    assert output_bytes_in(raw) == b"Login expired"
+
+
+def test_output_bytes_in_skips_what_it_cannot_trust() -> None:
+    """Cut edges, non-output events and bad payloads drop out; the rest decodes."""
+    from issue_orchestrator.infra.terminal_recording import output_bytes_in
+
+    whole = _output_row(b"kept", 2)
+    resize = json.dumps({"event_type": "resize", "rows": 40, "cols": 120}).encode() + b"\n"
+    bad_payload = json.dumps({"event_type": "output", "data_b64": "@@not-b64@@"}).encode() + b"\n"
+    cut_front = _output_row(b"front", 0)[7:]
+    cut_back = _output_row(b"back", 3)[:-9]
+
+    raw = cut_front + resize + bad_payload + whole + cut_back
+
+    assert output_bytes_in(raw) == b"kept"

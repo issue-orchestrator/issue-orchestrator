@@ -320,6 +320,37 @@ def iter_terminal_recording(path: Path) -> Iterator[dict[str, Any]]:
             yield json.loads(raw_line)
 
 
+def output_bytes_in(raw: bytes) -> bytes:
+    """Concatenate the PTY bytes of every complete output row in a recording slice.
+
+    A recording stores each output chunk base64-encoded in ``data_b64``, so the
+    text a session displayed never appears in the file's raw bytes: anything
+    that scans a recording for words (an auth banner) must decode it first.
+    ``raw`` may be an arbitrary byte window of the file; the rows its edges cut
+    in half fail to parse and are skipped, as are non-output events and rows
+    whose payload does not decode. The result feeds signature matching, not
+    replay, so skipping a damaged row is the right degradation here.
+    """
+    chunks: list[bytes] = []
+    for raw_row in raw.split(b"\n"):
+        if not raw_row.strip():
+            continue
+        try:
+            event = json.loads(raw_row)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if not isinstance(event, dict) or event.get("event_type") != "output":
+            continue
+        payload = event.get("data_b64")
+        if not isinstance(payload, str):
+            continue
+        try:
+            chunks.append(base64.b64decode(payload, validate=True))
+        except ValueError:  # binascii.Error is a ValueError
+            continue
+    return b"".join(chunks)
+
+
 #: Nothing real reports a terminal larger than this; a recording that claims
 #: more is malformed rather than unusual.
 MAX_TERMINAL_ROWS = 500

@@ -403,3 +403,65 @@ class TestCleaningLogWriter:
         payload = base64.b64decode(events[0]["data_b64"])
         assert b"the original tests don't provide deps, it works." in payload
         assert events[0]["event_type"] == "output"
+
+
+class TestRecordingTextWindow:
+    """What a recording displayed, bounded at both ends of the file."""
+
+    @staticmethod
+    def _record(path: Path, chunks: list[bytes]) -> Path:
+        from issue_orchestrator.infra.terminal_recording import TerminalRecordingWriter
+
+        writer = TerminalRecordingWriter(path)
+        for chunk in chunks:
+            writer.write_output(chunk)
+        writer.close()
+        return path
+
+    def test_reads_decoded_text_with_control_sequences_spaced_out(
+        self, tmp_path: Path
+    ) -> None:
+        from issue_orchestrator.infra.terminal_cleaning import recording_text_window
+
+        path = self._record(
+            tmp_path / "terminal-recording.jsonl",
+            [b"\x1b[38;2;150;108;30mLogin\x1b[1Cexpired\x1b[39m \xc2\xb7 Please run /login"],
+        )
+
+        assert "Login expired · Please run /login" in recording_text_window(path, 8192)
+
+    def test_keeps_both_ends_of_a_small_file_whose_text_overflows_the_budget(
+        self, tmp_path: Path
+    ) -> None:
+        """One read of a small file still yields its head and its tail."""
+        from issue_orchestrator.infra.terminal_cleaning import recording_text_window
+
+        path = self._record(
+            tmp_path / "terminal-recording.jsonl",
+            [b"HEAD-MARK " + b"x" * 20_000, b" TAIL-MARK"],
+        )
+
+        window = recording_text_window(path, 8192)
+
+        assert window.startswith("HEAD-MARK")
+        assert window.endswith("TAIL-MARK")
+        assert len(window.encode("utf-8")) <= 2 * 8192 + 1
+
+    def test_stays_bounded_on_a_long_recording(self, tmp_path: Path) -> None:
+        from issue_orchestrator.infra.terminal_cleaning import recording_text_window
+
+        path = self._record(
+            tmp_path / "terminal-recording.jsonl",
+            [b"HEAD-MARK"] + [b"ordinary output line\r\n"] * 40_000 + [b"TAIL-MARK"],
+        )
+
+        window = recording_text_window(path, 8192)
+
+        assert window.startswith("HEAD-MARK")
+        assert window.endswith("TAIL-MARK")
+        assert len(window.encode("utf-8")) <= 2 * 8192 + 1
+
+    def test_an_unreadable_recording_yields_no_text(self, tmp_path: Path) -> None:
+        from issue_orchestrator.infra.terminal_cleaning import recording_text_window
+
+        assert recording_text_window(tmp_path / "missing.jsonl", 8192) == ""
