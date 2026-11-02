@@ -4496,6 +4496,43 @@ class TestAnAuthBannerInTheRecordingFormat(_RecordedBannerHarness):
 
         assert result.observation is SessionObservation.PROVIDER_AUTH_FAILED
 
+    def test_a_banner_split_where_the_two_scans_meet_fails_the_session(
+        self, sample_config, make_session
+    ) -> None:
+        """2x the edge in PTY-read-sized rows, the banner split across the meeting row.
+
+        Both scans fill exactly where they meet, so the whole output was read;
+        reporting it as two ends with a gap turned the banner into
+        "Not log" / "ged in" and the classifier matched neither (review round 2).
+        """
+        from issue_orchestrator.infra.terminal_recording import TerminalRecordingWriter
+        from issue_orchestrator.observation.observer import (
+            PROVIDER_FAILURE_CHECK_MAX_BYTES,
+        )
+
+        banner = b"Not logged in"
+        half = len(banner) // 2
+        row = PROVIDER_FAILURE_CHECK_MAX_BYTES // 2
+        probe = _BannerConfirmingProbe()
+        observer = self._observer(sample_config, probe)
+        session = self._claude_session(make_session)
+        writer = TerminalRecordingWriter(
+            session.run_assets.terminal_recording.path, initial_rows=40, initial_cols=120
+        )
+        for chunk in (
+            b"." * row,
+            b"." * (row - half) + banner[:half],
+            banner[half:] + b"." * (row - (len(banner) - half)),
+            b"." * row,
+        ):
+            writer.write_output(chunk)
+        writer.close()
+
+        result = observer.observe_session(session)
+
+        assert result.observation is SessionObservation.PROVIDER_AUTH_FAILED
+        assert "Not logged in" in probe.seen[0]
+
     def test_a_plain_text_session_log_is_still_scanned_as_text(
         self, sample_config, make_session
     ) -> None:

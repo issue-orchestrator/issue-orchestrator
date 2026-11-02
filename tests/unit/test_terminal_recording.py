@@ -461,6 +461,63 @@ class TestRecordingOutputEdges:
 
         assert edges == TerminalOutputEdges(head=b"a" * 6000 + b"b" * 6000, tail=None)
 
+    @staticmethod
+    def _split_at_the_meeting_point(phrase: bytes) -> list[bytes]:
+        """Four PTY-read-sized rows (2x the edge), ``phrase`` split between rows 2 and 3.
+
+        The head scan fills on row 2 and the tail scan fills on row 3, the last
+        row before the head scan's end: the scans meet exactly.
+        """
+        half = len(phrase) // 2
+        row = 4096
+        return [
+            b"a" * row,
+            b"b" * (row - half) + phrase[:half],
+            phrase[half:] + b"c" * (row - (len(phrase) - half)),
+            b"d" * row,
+        ]
+
+    def test_scans_that_meet_on_the_filling_row_come_back_whole(
+        self, tmp_path: Path
+    ) -> None:
+        """Exactly 2x the edge: no gap, so no separator splits the phrase."""
+        chunks = self._split_at_the_meeting_point(b"Not logged in")
+        assert sum(map(len, chunks)) == 2 * self.EDGE
+        path = self._record(tmp_path / "terminal-recording.jsonl", chunks)
+
+        edges = read_recording_output_edges(path, self.EDGE)
+
+        assert edges == TerminalOutputEdges(head=b"".join(chunks), tail=None)
+
+    def test_a_resize_at_the_meeting_point_is_not_a_gap(self, tmp_path: Path) -> None:
+        """Rows that carry no output between the ends leave them contiguous."""
+        chunks = self._split_at_the_meeting_point(b"Not logged in")
+        path = tmp_path / "terminal-recording.jsonl"
+        writer = TerminalRecordingWriter(path, initial_rows=40, initial_cols=120)
+        writer.write_output(chunks[0])
+        writer.write_output(chunks[1])
+        writer.write_resize(rows=50, cols=160)
+        writer.write_output(chunks[2])
+        writer.write_output(chunks[3])
+        writer.close()
+
+        edges = read_recording_output_edges(path, self.EDGE)
+
+        assert edges == TerminalOutputEdges(head=b"".join(chunks), tail=None)
+
+    def test_one_more_byte_between_the_ends_is_a_gap(self, tmp_path: Path) -> None:
+        """The other side of the boundary: unread output between them keeps them apart."""
+        chunks = self._split_at_the_meeting_point(b"Not logged in")
+        chunks.insert(2, b"!")
+        path = self._record(tmp_path / "terminal-recording.jsonl", chunks)
+        output = b"".join(chunks)
+
+        edges = read_recording_output_edges(path, self.EDGE)
+
+        assert edges == TerminalOutputEdges(
+            head=output[: self.EDGE], tail=output[-self.EDGE :]
+        )
+
     @pytest.mark.parametrize("seed", range(4))
     def test_each_end_is_exact_whatever_the_chunk_sizes(
         self, seed: int, tmp_path: Path

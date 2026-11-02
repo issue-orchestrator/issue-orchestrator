@@ -394,18 +394,9 @@ def read_recording_output_edges(path: Path, edge_bytes: int) -> TerminalOutputEd
         if at_eof:
             return TerminalOutputEdges.of_whole(head.output(), edge_bytes)
         tail = _OutputCollector(edge_bytes, budget, backward=True)
-        size = handle.seek(0, 2)
-        met_head = True
-        try:
-            for row in _rows_backward(handle, size, head_end, budget):
-                tail.add(row)
-                if tail.done:
-                    met_head = False
-                    break
-        except _OverlongRow:
-            met_head = False
+        met_head = _collect_back_to(handle, tail, head_end, budget)
     if met_head:
-        # Nothing lies between the two scans: the output was read in full.
+        # No output lies between the two scans: the output was read in full.
         return TerminalOutputEdges.of_whole(head.output() + tail.output(), edge_bytes)
     return TerminalOutputEdges(
         head=head.output()[:edge_bytes], tail=tail.output()[-edge_bytes:]
@@ -424,8 +415,18 @@ class _OutputCollector:
         self._idle_bytes = 0
 
     @property
+    def filled(self) -> bool:
+        """This end holds its ``edge_bytes`` of output."""
+        return self._collected >= self._edge_bytes
+
+    @property
+    def exhausted(self) -> bool:
+        """Rows that carry no output have spent this end's budget."""
+        return self._idle_bytes >= self._budget
+
+    @property
     def done(self) -> bool:
-        return self._collected >= self._edge_bytes or self._idle_bytes >= self._budget
+        return self.filled or self.exhausted
 
     def add(self, row: bytes) -> None:
         chunk = _output_chunk(row)
@@ -454,6 +455,29 @@ def _collect_from_start(
         collector.add(line[:-1])
         offset += len(line)
     return offset, False
+
+
+def _collect_back_to(
+    handle: BinaryIO, collector: _OutputCollector, start: int, max_row: int
+) -> bool:
+    """Feed rows from the end of the file back toward ``start``; whether it got there.
+
+    True means no output row lies between ``start`` and the rows collected:
+    the two ends are contiguous, even when the row that filled this end was
+    the last one before ``start``. Once the end is full the scan goes on only
+    through rows that carry no output (within their budget), so a trailing
+    resize cannot pass for a gap; the next output row is the gap.
+    """
+    try:
+        for row in _rows_backward(handle, handle.seek(0, 2), start, max_row):
+            if collector.filled and _output_chunk(row):
+                return False
+            collector.add(row)
+            if collector.exhausted:
+                return False
+    except _OverlongRow:
+        return False
+    return True
 
 
 class _OverlongRow(Exception):
