@@ -5,16 +5,23 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
+import pytest
+
 from issue_orchestrator.infra.terminal_cleaning import (
     CleaningLogWriter,
     _is_garbled_subsequence,
     clean_terminal_line,
     dedupe_consecutive_lines,
+    displayed_text,
     extract_stream_json_text,
     is_spinner_fragment,
+    read_plain_output_edges,
     strip_ansi_codes,
 )
-from issue_orchestrator.infra.terminal_recording import iter_terminal_recording
+from issue_orchestrator.infra.terminal_recording import (
+    TerminalOutputEdges,
+    iter_terminal_recording,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -405,63 +412,49 @@ class TestCleaningLogWriter:
         assert events[0]["event_type"] == "output"
 
 
-class TestRecordingTextWindow:
-    """What a recording displayed, bounded at both ends of the file."""
+class TestDisplayedText:
+    """What the terminal showed, from a session's output edges."""
 
-    @staticmethod
-    def _record(path: Path, chunks: list[bytes]) -> Path:
-        from issue_orchestrator.infra.terminal_recording import TerminalRecordingWriter
-
-        writer = TerminalRecordingWriter(path)
-        for chunk in chunks:
-            writer.write_output(chunk)
-        writer.close()
-        return path
-
-    def test_reads_decoded_text_with_control_sequences_spaced_out(
-        self, tmp_path: Path
-    ) -> None:
-        from issue_orchestrator.infra.terminal_cleaning import recording_text_window
-
-        path = self._record(
-            tmp_path / "terminal-recording.jsonl",
-            [b"\x1b[38;2;150;108;30mLogin\x1b[1Cexpired\x1b[39m \xc2\xb7 Please run /login"],
+    def test_control_sequences_read_as_one_space(self) -> None:
+        edges = TerminalOutputEdges(
+            head=b"\x1b[38;2;150;108;30mLogin\x1b[1Cexpired\x1b[39m \xc2\xb7 Please run /login",
+            tail=None,
         )
 
-        assert "Login expired · Please run /login" in recording_text_window(path, 8192)
+        assert "Login expired · Please run /login" in displayed_text(edges)
 
-    def test_keeps_both_ends_of_a_small_file_whose_text_overflows_the_budget(
-        self, tmp_path: Path
-    ) -> None:
-        """One read of a small file still yields its head and its tail."""
-        from issue_orchestrator.infra.terminal_cleaning import recording_text_window
+    def test_two_ends_are_kept_apart_by_a_newline(self) -> None:
+        """No phrase is manufactured across the gap between the ends."""
+        edges = TerminalOutputEdges(head=b"Login", tail=b"expired")
 
-        path = self._record(
-            tmp_path / "terminal-recording.jsonl",
-            [b"HEAD-MARK " + b"x" * 20_000, b" TAIL-MARK"],
+        assert displayed_text(edges) == "Login\nexpired"
+
+
+class TestPlainOutputEdges:
+    """A legacy plain log's edges are its byte edges."""
+
+    EDGE = 8192
+
+    def test_a_log_within_both_ends_comes_back_whole(self, tmp_path: Path) -> None:
+        """No separator lands inside a phrase that straddles the first edge."""
+        content = b"x" * (self.EDGE - 5) + b"Login expired" + b"y" * 3000
+        path = tmp_path / "ui-session.log"
+        path.write_bytes(content)
+
+        assert read_plain_output_edges(path, self.EDGE) == TerminalOutputEdges(
+            head=content, tail=None
         )
 
-        window = recording_text_window(path, 8192)
+    def test_a_long_log_gives_its_first_and_last_edge(self, tmp_path: Path) -> None:
+        content = b"HEAD-MARK" + b"." * (5 * self.EDGE) + b"TAIL-MARK"
+        path = tmp_path / "pane.log"
+        path.write_bytes(content)
 
-        assert window.startswith("HEAD-MARK")
-        assert window.endswith("TAIL-MARK")
-        assert len(window.encode("utf-8")) <= 2 * 8192 + 1
+        edges = read_plain_output_edges(path, self.EDGE)
 
-    def test_stays_bounded_on_a_long_recording(self, tmp_path: Path) -> None:
-        from issue_orchestrator.infra.terminal_cleaning import recording_text_window
+        assert edges.head == content[: self.EDGE]
+        assert edges.tail == content[-self.EDGE :]
 
-        path = self._record(
-            tmp_path / "terminal-recording.jsonl",
-            [b"HEAD-MARK"] + [b"ordinary output line\r\n"] * 40_000 + [b"TAIL-MARK"],
-        )
-
-        window = recording_text_window(path, 8192)
-
-        assert window.startswith("HEAD-MARK")
-        assert window.endswith("TAIL-MARK")
-        assert len(window.encode("utf-8")) <= 2 * 8192 + 1
-
-    def test_an_unreadable_recording_yields_no_text(self, tmp_path: Path) -> None:
-        from issue_orchestrator.infra.terminal_cleaning import recording_text_window
-
-        assert recording_text_window(tmp_path / "missing.jsonl", 8192) == ""
+    def test_an_unreadable_log_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(OSError):
+            read_plain_output_edges(tmp_path / "missing.log", self.EDGE)

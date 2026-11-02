@@ -14,7 +14,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any, BinaryIO, Iterator, Sequence
 
 
 TERMINAL_RECORDING_FILENAME = "terminal-recording.jsonl"
@@ -320,35 +320,195 @@ def iter_terminal_recording(path: Path) -> Iterator[dict[str, Any]]:
             yield json.loads(raw_line)
 
 
-def output_bytes_in(raw: bytes) -> bytes:
-    """Concatenate the PTY bytes of every complete output row in a recording slice.
+@dataclass(frozen=True)
+class TerminalOutputEdges:
+    """The first and last PTY bytes a session wrote, at most ``edge_bytes`` each.
 
-    A recording stores each output chunk base64-encoded in ``data_b64``, so the
-    text a session displayed never appears in the file's raw bytes: anything
-    that scans a recording for words (an auth banner) must decode it first.
-    ``raw`` may be an arbitrary byte window of the file; the rows its edges cut
-    in half fail to parse and are skipped, as are non-output events and rows
-    whose payload does not decode. The result feeds signature matching, not
-    replay, so skipping a damaged row is the right degradation here.
+    ``tail`` is ``None`` when ``head`` is the session's whole output: it was no
+    longer than both ends together, so there is no gap between them to mark.
     """
-    chunks: list[bytes] = []
-    for raw_row in raw.split(b"\n"):
-        if not raw_row.strip():
-            continue
+
+    head: bytes
+    tail: bytes | None
+
+    @classmethod
+    def of_whole(cls, output: bytes, edge_bytes: int) -> TerminalOutputEdges:
+        """The edges of an output that was read in full."""
+        if len(output) <= 2 * edge_bytes:
+            return cls(head=output, tail=None)
+        return cls(head=output[:edge_bytes], tail=output[-edge_bytes:])
+
+
+#: The largest ``offset_ms`` a row is sized for: 10**13 ms is over 300 years.
+_SIZED_OFFSET_MS = 10**13 - 1
+
+#: The most raw bytes an output row spends per PTY byte it carries. The writer
+#: never records an empty chunk (``write_output``), and a one-byte chunk is the
+#: worst case: its whole JSON envelope pays for a single byte, while base64
+#: only grows by 4 bytes per 3 after that. So the rows holding ``n`` PTY bytes
+#: span at most ``n`` times this many raw bytes, whatever sizes the PTY reads
+#: came in.
+MAX_ROW_BYTES_PER_OUTPUT_BYTE = (
+    len(
+        json.dumps(
+            TerminalRecordingEvent(
+                event_type="output",
+                offset_ms=_SIZED_OFFSET_MS,
+                data_b64=base64.b64encode(b"\x00").decode("ascii"),
+            ).to_dict(),
+            sort_keys=True,
+        )
+    )
+    + 1  # the row's newline
+)
+
+_READ_BLOCK_BYTES = 32 * 1024
+
+
+def read_recording_output_edges(path: Path, edge_bytes: int) -> TerminalOutputEdges:
+    """The first and last ``edge_bytes`` of PTY output a recording holds.
+
+    A recording stores each PTY chunk base64-encoded in ``data_b64``, so the
+    text a session displayed never appears in the file's raw bytes. This scans
+    whole rows forward from the start and backward from the end, decoding each
+    output row, until each end holds ``edge_bytes`` of PTY output or the two
+    scans meet. The window is exact for any chunking the PTY readers produce,
+    and the read stays bounded however long the session runs. With
+    ``budget = edge_bytes * MAX_ROW_BYTES_PER_OUTPUT_BYTE`` per end:
+
+    * output rows span less than ``budget`` raw bytes before the window fills
+      (every one carries at least one byte), plus the row that fills it;
+    * rows that carry no output (a resize, a damaged row) may span at most
+      ``budget`` more. Past that the end stops short: the window shrinks
+      rather than the read growing without limit;
+    * a row longer than ``budget`` (a single PTY write of hundreds of KiB, which
+      no reader makes) is not taken for a row and ends that end's scan.
+
+    The bytes after the last newline are a row a live writer has not finished
+    and are skipped. Raises ``OSError`` when the file cannot be read.
+    """
+    budget = edge_bytes * MAX_ROW_BYTES_PER_OUTPUT_BYTE
+    with path.open("rb") as handle:
+        head = _OutputCollector(edge_bytes, budget)
+        head_end, at_eof = _collect_from_start(handle, head, budget)
+        if at_eof:
+            return TerminalOutputEdges.of_whole(head.output(), edge_bytes)
+        tail = _OutputCollector(edge_bytes, budget, backward=True)
+        size = handle.seek(0, 2)
+        met_head = True
         try:
-            event = json.loads(raw_row)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            continue
-        if not isinstance(event, dict) or event.get("event_type") != "output":
-            continue
-        payload = event.get("data_b64")
-        if not isinstance(payload, str):
-            continue
-        try:
-            chunks.append(base64.b64decode(payload, validate=True))
-        except ValueError:  # binascii.Error is a ValueError
-            continue
-    return b"".join(chunks)
+            for row in _rows_backward(handle, size, head_end, budget):
+                tail.add(row)
+                if tail.done:
+                    met_head = False
+                    break
+        except _OverlongRow:
+            met_head = False
+    if met_head:
+        # Nothing lies between the two scans: the output was read in full.
+        return TerminalOutputEdges.of_whole(head.output() + tail.output(), edge_bytes)
+    return TerminalOutputEdges(
+        head=head.output()[:edge_bytes], tail=tail.output()[-edge_bytes:]
+    )
+
+
+class _OutputCollector:
+    """The PTY bytes of rows fed to it from one end, until that end is done."""
+
+    def __init__(self, edge_bytes: int, budget: int, *, backward: bool = False) -> None:
+        self._edge_bytes = edge_bytes
+        self._budget = budget
+        self._backward = backward
+        self._chunks: list[bytes] = []
+        self._collected = 0
+        self._idle_bytes = 0
+
+    @property
+    def done(self) -> bool:
+        return self._collected >= self._edge_bytes or self._idle_bytes >= self._budget
+
+    def add(self, row: bytes) -> None:
+        chunk = _output_chunk(row)
+        if chunk:
+            self._chunks.append(chunk)
+            self._collected += len(chunk)
+        else:
+            self._idle_bytes += len(row) + 1
+
+    def output(self) -> bytes:
+        """The collected bytes in file order, whichever direction they came in."""
+        return b"".join(reversed(self._chunks) if self._backward else self._chunks)
+
+
+def _collect_from_start(
+    handle: BinaryIO, collector: _OutputCollector, max_row: int
+) -> tuple[int, bool]:
+    """Feed rows from the start of the file; (where the scan stopped, whether at EOF)."""
+    offset = 0
+    while not collector.done:
+        line = handle.readline(max_row + 1)
+        if not line.endswith(b"\n"):
+            # The end of the file, perhaps after a row a live writer has not
+            # finished; or a row too long to be one, which the scan stops at.
+            return offset, len(line) <= max_row
+        collector.add(line[:-1])
+        offset += len(line)
+    return offset, False
+
+
+class _OverlongRow(Exception):
+    """A backward scan reached a "row" longer than any the writer produces."""
+
+
+def _rows_backward(handle: BinaryIO, end: int, start: int, max_row: int) -> Iterator[bytes]:
+    """Each newline-terminated row in ``[start, end)`` of the file, last first.
+
+    ``start`` is a row boundary. The bytes after the last newline are a row a
+    live writer has not finished, not a row, and are skipped. Raises
+    ``_OverlongRow`` at a row (or unfinished tail) longer than ``max_row``.
+    """
+    pos = end
+    carry = b""  # the start of a row whose end has been read, newline included
+    unfinished = True  # still inside the bytes after the last newline
+    while pos > start:
+        step = min(_READ_BLOCK_BYTES, pos - start)
+        pos -= step
+        handle.seek(pos)
+        block = handle.read(step)
+        if unfinished:
+            cut = block.rfind(b"\n")
+            if cut < 0:
+                if end - pos > max_row:
+                    raise _OverlongRow
+                continue
+            unfinished = False
+            block = block[: cut + 1]
+        rows = (block + carry).split(b"\n")
+        rows.pop()  # what follows the final newline: nothing
+        carry = b""
+        if pos > start:
+            # The first piece may begin mid-row; finish it on the next read.
+            carry = rows.pop(0) + b"\n"
+        yield from reversed(rows)
+        if len(carry) > max_row + 1:
+            raise _OverlongRow
+
+
+def _output_chunk(row: bytes) -> bytes:
+    """The PTY bytes an output row carries; ``b""`` for any other or damaged row."""
+    try:
+        event = json.loads(row)
+    except (ValueError, RecursionError):  # JSON and Unicode decode errors
+        return b""
+    if not isinstance(event, dict) or event.get("event_type") != "output":
+        return b""
+    payload = event.get("data_b64")
+    if not isinstance(payload, str):
+        return b""
+    try:
+        return base64.b64decode(payload, validate=True)
+    except ValueError:  # binascii.Error is a ValueError
+        return b""
 
 
 #: Nothing real reports a terminal larger than this; a recording that claims

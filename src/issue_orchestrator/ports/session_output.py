@@ -697,6 +697,23 @@ class SessionOutput(Protocol):
         """Get the best available UI log path for a specific run directory."""
         ...
 
+    def read_displayed_output_edges(
+        self,
+        run_assets: SessionRunAssets,
+        *,
+        edge_bytes: int,
+    ) -> str:
+        """What a run's terminal showed in its first and last ``edge_bytes`` of output.
+
+        For matching words a session displayed (a provider's auth banner)
+        without knowing how its log is stored: the owner reads the run's log by
+        its format, so a base64 terminal recording is decoded rather than
+        scanned raw. Control sequences read as a single space and the two ends
+        are joined by a newline; a short output comes back whole. Returns
+        ``""`` when the run has no log to read.
+        """
+        ...
+
     def attach_claude_log(
         self,
         run_dir: Path,

@@ -6,11 +6,19 @@ import json
 import logging
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from ..infra.terminal_recording import TERMINAL_RECORDING_FILENAME
+from ..domain.session_run import SessionRunAssets
+from ..infra.terminal_cleaning import displayed_text, read_plain_output_edges
+from ..infra.terminal_recording import (
+    TERMINAL_RECORDING_FILENAME,
+    TerminalOutputEdges,
+    read_recording_output_edges,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +34,37 @@ ReadManifest = Callable[[Path], dict[str, Any] | None]
 UpdateManifest = Callable[[Path, dict[str, Any]], None]
 WriteText = Callable[[Path, str], None]
 EnsureSymlink = Callable[[Path, Path], None]
+
+
+class SessionLogFormat(Enum):
+    """How a session log stores the PTY output it holds."""
+
+    #: NDJSON rows, each PTY chunk base64-encoded: never readable raw.
+    TERMINAL_RECORDING = "terminal_recording"
+    #: The PTY bytes as written (legacy ``ui-session.log`` / ``pane.log``).
+    PLAIN_TEXT = "plain_text"
+
+
+@dataclass(frozen=True)
+class SessionLogArtifact:
+    """A run's session log and the format its output is stored in."""
+
+    path: Path
+    format: SessionLogFormat
+
+    def read_output_edges(self, edge_bytes: int) -> TerminalOutputEdges:
+        """The first and last ``edge_bytes`` of PTY output, read by format."""
+        if self.format is SessionLogFormat.TERMINAL_RECORDING:
+            return read_recording_output_edges(self.path, edge_bytes)
+        return read_plain_output_edges(self.path, edge_bytes)
+
+
+#: The logs a run directory may hold, canonical recording first.
+_RUN_LOG_CANDIDATES = (
+    (TERMINAL_RECORDING_NAME, SessionLogFormat.TERMINAL_RECORDING),
+    (LEGACY_UI_LOG_NAME, SessionLogFormat.PLAIN_TEXT),
+    (PANE_LOG_NAME, SessionLogFormat.PLAIN_TEXT),
+)
 
 
 class SessionLogArtifacts:
@@ -60,6 +99,26 @@ class SessionLogArtifacts:
     def get_log_path_for_run_dir(self, run_dir: Path) -> Path | None:
         """Get the canonical session artifact path for a known run directory."""
         return self._find_log_in_run_dir(run_dir)
+
+    def read_displayed_output_edges(
+        self, run_assets: SessionRunAssets, *, edge_bytes: int
+    ) -> str:
+        """What a run's terminal showed in its first and last ``edge_bytes`` of output.
+
+        The run's log is read by the format it is stored in: a terminal
+        recording is decoded row by row (its raw bytes carry no displayed
+        text), a legacy plain log is read as the PTY bytes it is. Returns
+        ``""`` when the run has no log yet, or it vanished before the read.
+        """
+        artifact = self._find_artifact_in_run_dir(run_assets.run_dir)
+        if artifact is None:
+            return ""
+        try:
+            edges = artifact.read_output_edges(edge_bytes)
+        except OSError:
+            logger.debug("Session log %s could not be read", artifact.path, exc_info=True)
+            return ""
+        return displayed_text(edges)
 
     def attach_claude_log(self, run_dir: Path) -> Path | None:
         """Find and attach Claude log to run directory."""
@@ -289,15 +348,21 @@ class SessionLogArtifacts:
 
         return result if result else lines
 
+    @classmethod
+    def _find_log_in_run_dir(cls, run_dir: Path) -> Path | None:
+        """Find the best log file in a run directory."""
+        artifact = cls._find_artifact_in_run_dir(run_dir)
+        return artifact.path if artifact else None
+
     @staticmethod
-    def _find_log_in_run_dir(run_dir: Path) -> Path | None:
-        """Find the best log file in a run directory.
+    def _find_artifact_in_run_dir(run_dir: Path) -> SessionLogArtifact | None:
+        """Find the best log in a run directory, with the format it is stored in.
 
         Prefer the canonical terminal recording, falling back to legacy logs.
         """
-        for filename in (TERMINAL_RECORDING_NAME, LEGACY_UI_LOG_NAME, PANE_LOG_NAME):
+        for filename, log_format in _RUN_LOG_CANDIDATES:
             candidate = run_dir / filename
             if candidate.exists() and candidate.stat().st_size > 0:
-                return candidate
+                return SessionLogArtifact(path=candidate, format=log_format)
 
         return None

@@ -1192,6 +1192,17 @@ Timestamp: {self._now_iso()}
         """Get the canonical session artifact path for a known run directory."""
         return self._log_artifacts.get_log_path_for_run_dir(run_dir)
 
+    def read_displayed_output_edges(
+        self,
+        run_assets: SessionRunAssets,
+        *,
+        edge_bytes: int,
+    ) -> str:
+        """What a run's terminal showed in its first and last ``edge_bytes`` of output."""
+        return self._log_artifacts.read_displayed_output_edges(
+            run_assets, edge_bytes=edge_bytes
+        )
+
     def attach_claude_log(
         self,
         run_dir: Path,

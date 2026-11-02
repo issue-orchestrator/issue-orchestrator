@@ -4208,7 +4208,7 @@ class _BannerConfirmingProbe:
 class _RecordedBannerHarness:
     """A live session whose terminal recording holds given lines, and its observer."""
 
-    def _observer(self, config, probe):
+    def _observer(self, config, probe, session_output=None):
         from issue_orchestrator.observation.observer import SessionObserver
 
         class _AlwaysRunning:
@@ -4223,22 +4223,28 @@ class _RecordedBannerHarness:
 
         return SessionObserver(
             config=config,
-            session_output=FileSystemSessionOutput(),
+            session_output=session_output or FileSystemSessionOutput(),
             events=RecordingEvents(),
             session_runner=_AlwaysRunning(),
             provider_readiness_probe=probe,
         )
 
-    def _session_with_lines(self, make_session, lines: list[str]):
+    @staticmethod
+    def _claude_session(make_session):
         from issue_orchestrator.infra.config import AgentConfig
-        from issue_orchestrator.infra.terminal_recording import (
-            TERMINAL_RECORDING_FILENAME,
-        )
 
         session = make_session()
         session.agent_config = AgentConfig(
             prompt_path=session.agent_config.prompt_path, provider="claude-code"
         )
+        return session
+
+    def _session_with_lines(self, make_session, lines: list[str]):
+        from issue_orchestrator.infra.terminal_recording import (
+            TERMINAL_RECORDING_FILENAME,
+        )
+
+        session = self._claude_session(make_session)
         recording = session.run_assets.run_dir / TERMINAL_RECORDING_FILENAME
         write_terminal_recording(recording, lines)
         return session
@@ -4454,18 +4460,49 @@ class TestAnAuthBannerInTheRecordingFormat(_RecordedBannerHarness):
 
         assert result.observation is SessionObservation.PROVIDER_AUTH_FAILED
 
+    def test_a_banner_followed_by_single_byte_reads_fails_the_session(
+        self, sample_config, make_session
+    ) -> None:
+        """Shown 2 KB from the end of the output, yet past any fixed raw window.
+
+        Every PTY read becomes a row with its own JSON envelope, so a run of
+        single-byte reads after the banner puts it far more raw bytes from the
+        end of the file than it is output bytes from the end of the session.
+        The first fix read a fixed 4x raw window and missed it (review F1).
+        """
+        from issue_orchestrator.infra.terminal_recording import TerminalRecordingWriter
+        from issue_orchestrator.observation.observer import (
+            PROVIDER_FAILURE_CHECK_MAX_BYTES,
+        )
+
+        probe = _BannerConfirmingProbe()
+        observer = self._observer(sample_config, probe)
+        session = self._claude_session(make_session)
+        recording = session.run_assets.terminal_recording.path
+        writer = TerminalRecordingWriter(recording, initial_rows=40, initial_cols=120)
+        for line in self._ordinary_output(64 * 1024):
+            writer.write_output(f"{line}\r\n".encode("utf-8"))
+        writer.write_output(self.TUI_BANNER_CHUNKS[0].encode("utf-8"))
+        size_at_banner = recording.stat().st_size
+        for _ in range(2000):
+            writer.write_output(b".")
+        writer.close()
+        assert (
+            recording.stat().st_size - size_at_banner
+            > 4 * PROVIDER_FAILURE_CHECK_MAX_BYTES
+        ), "the banner is still inside a 4x raw window: the shape proves nothing"
+
+        result = observer.observe_session(session)
+
+        assert result.observation is SessionObservation.PROVIDER_AUTH_FAILED
+
     def test_a_plain_text_session_log_is_still_scanned_as_text(
         self, sample_config, make_session
     ) -> None:
         """A run with no recording falls back to its legacy text log, unchanged."""
-        from issue_orchestrator.infra.config import AgentConfig
-
         probe = _BannerConfirmingProbe()
         observer = self._observer(sample_config, probe)
-        session = make_session()
-        session.agent_config = AgentConfig(
-            prompt_path=session.agent_config.prompt_path, provider="claude-code"
-        )
+        session = self._claude_session(make_session)
         log = session.run_assets.run_dir / "ui-session.log"
         log.parent.mkdir(parents=True, exist_ok=True)
         log.write_text(f"starting\n{EXPIRED_LOGIN_BANNER}\n", encoding="utf-8")
@@ -4473,6 +4510,64 @@ class TestAnAuthBannerInTheRecordingFormat(_RecordedBannerHarness):
         result = observer.observe_session(session)
 
         assert result.observation is SessionObservation.PROVIDER_AUTH_FAILED
+
+
+class _DisplayedTextOnlySessionOutput:
+    """A session-output port that serves displayed text and no log path at all.
+
+    Whatever a compliant adapter names or stores its logs as, the live auth
+    check must still work: it classifies the text the port hands it.
+    """
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.reads: list[tuple[object, int]] = []
+
+    def get_log_path(self, worktree_path: Path, session_name: str) -> Path | None:
+        del worktree_path, session_name
+        return None
+
+    def read_displayed_output_edges(self, run_assets, *, edge_bytes: int) -> str:
+        self.reads.append((run_assets, edge_bytes))
+        return self.text
+
+
+class TestTheLiveAuthCheckReadsThroughTheSessionOutputPort(_RecordedBannerHarness):
+    """The observer consumes text; the session-output owner owns the log (#9587 F2).
+
+    It used to recognise a recording by its file name and open it itself, so an
+    adapter returning the same recording under another name would have been
+    scanned raw again: the production failure, back.
+    """
+
+    def test_the_text_the_port_serves_decides_the_verdict(
+        self, sample_config, make_session
+    ) -> None:
+        from issue_orchestrator.observation.observer import (
+            PROVIDER_FAILURE_CHECK_MAX_BYTES,
+        )
+
+        port = _DisplayedTextOnlySessionOutput(f"starting\n{EXPIRED_LOGIN_BANNER} ")
+        observer = self._observer(sample_config, _BannerConfirmingProbe(), port)
+        session = self._claude_session(make_session)
+
+        result = observer.observe_session(session)
+
+        assert result.observation is SessionObservation.PROVIDER_AUTH_FAILED
+        assert port.reads == [(session.run_assets, PROVIDER_FAILURE_CHECK_MAX_BYTES)]
+
+    def test_no_text_from_the_port_reaches_no_verdict(
+        self, sample_config, make_session
+    ) -> None:
+        probe = _BannerConfirmingProbe()
+        port = _DisplayedTextOnlySessionOutput("")
+        observer = self._observer(sample_config, probe, port)
+        session = self._claude_session(make_session)
+
+        result = observer.observe_session(session)
+
+        assert result.observation is not SessionObservation.PROVIDER_AUTH_FAILED
+        assert probe.seen == []
 
 
 @pytest.mark.parametrize("queue", _PENDING_QUEUES)

@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .terminal_recording import TerminalRecordingWriter, output_bytes_in
+from .terminal_recording import TerminalOutputEdges, TerminalRecordingWriter
 
 # ---------------------------------------------------------------------------
 # ANSI / control-character patterns
@@ -52,58 +52,39 @@ def strip_ansi_codes(text: str) -> str:
     return _ANSI_ESCAPE_PATTERN.sub("", text)
 
 
-#: Raw recording bytes read from each end per byte of visible text wanted.
-#: Base64 inflates PTY bytes by 4/3 and every row adds its JSON envelope, so a
-#: raw window this many times the text budget still holds the rows that
-#: displayed it, and the read stays bounded however long the session runs.
-RECORDING_RAW_WINDOW_FACTOR = 4
-
 _HORIZONTAL_WHITESPACE = re.compile(r"[ \t]+")
 
 
-def recording_text_window(path: Path, edge_bytes: int) -> str:
-    """The text a terminal recording displayed, at most ``edge_bytes`` from each end.
+def read_plain_output_edges(path: Path, edge_bytes: int) -> TerminalOutputEdges:
+    """The first and last ``edge_bytes`` of a plain PTY log (``ui-session.log``).
 
-    A ``terminal-recording.jsonl`` carries every PTY chunk base64-encoded, so a
-    caller looking for words in a session's output (a provider's auth banner)
-    finds nothing in the file's raw bytes. This reads a bounded raw window from
-    each end, decodes the complete output rows inside it, and replaces terminal
-    control sequences with a single space, so a banner the TUI drew with cursor
-    moves between its words still reads as one phrase.
-
-    The head shows a launch-time refusal and the tail a credential that expired
-    mid-session, so both ends are kept, joined by a newline that stops a
-    signature from being manufactured across the gap. Returns ``""`` when the
-    file cannot be read.
+    A plain log holds the PTY bytes as written, so its byte edges are its output
+    edges: two bounded reads, or one when the whole log fits in both windows.
+    Raises ``OSError`` when the file cannot be read.
     """
-    raw_edge = edge_bytes * RECORDING_RAW_WINDOW_FACTOR
-    try:
-        with path.open("rb") as handle:
-            head = handle.read(raw_edge)
-            handle.seek(0, 2)
-            size = handle.tell()
-            tail = None
-            if size > raw_edge:
-                # The tail window may overlap the head; a row the head window
-                # cut in half is then still whole in the tail.
-                handle.seek(size - raw_edge)
-                tail = handle.read(raw_edge)
-    except OSError:
-        return ""
-    head_text = _visible_text(output_bytes_in(head)).encode("utf-8")
-    if tail is None:
-        # The whole file was read once: keep both ends of its text.
-        tail_text = head_text
-    else:
-        tail_text = _visible_text(output_bytes_in(tail)).encode("utf-8")
-    if tail is None and len(head_text) <= 2 * edge_bytes:
-        return head_text.decode("utf-8", errors="ignore")
-    return "\n".join(
-        (
-            head_text[:edge_bytes].decode("utf-8", errors="ignore"),
-            tail_text[-edge_bytes:].decode("utf-8", errors="ignore"),
-        )
-    )
+    with path.open("rb") as handle:
+        size = handle.seek(0, 2)
+        handle.seek(0)
+        if size <= 2 * edge_bytes:
+            return TerminalOutputEdges(head=handle.read(), tail=None)
+        head = handle.read(edge_bytes)
+        handle.seek(size - edge_bytes)
+        return TerminalOutputEdges(head=head, tail=handle.read(edge_bytes))
+
+
+def displayed_text(edges: TerminalOutputEdges) -> str:
+    """What the terminal showed in a session's output edges, for matching words in.
+
+    Terminal control sequences become a single space, so a banner a TUI drew
+    with cursor moves between its words still reads as one phrase. Two ends
+    are joined by a newline, which keeps a phrase from being manufactured
+    across the gap between them. Decode noise is tolerated (an edge can cut a
+    character in half): the result feeds a signature match, not a parser.
+    """
+    head = _visible_text(edges.head)
+    if edges.tail is None:
+        return head
+    return f"{head}\n{_visible_text(edges.tail)}"
 
 
 def _visible_text(pty_bytes: bytes) -> str:

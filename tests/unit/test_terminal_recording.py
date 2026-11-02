@@ -2,16 +2,22 @@ from __future__ import annotations
 
 import base64
 import json
+import random
 from pathlib import Path
 
+import pytest
+
 from issue_orchestrator.infra.terminal_recording import (
+    MAX_ROW_BYTES_PER_OUTPUT_BYTE,
     MAX_TERMINAL_COLS,
     MAX_TERMINAL_ROWS,
     MirroredTerminalRecordingWriter,
+    TerminalOutputEdges,
     TerminalRecordingWriter,
     append_output_event,
     first_terminal_geometry,
     iter_terminal_recording,
+    read_recording_output_edges,
 )
 
 
@@ -419,38 +425,196 @@ class TestGeometryBoundsAgreeAcrossTheLanguageBoundary:
         assert "screen_dimension" in self._session_replay_source()
 
 
-def _output_row(data: bytes, offset: int = 0) -> bytes:
-    return (
-        json.dumps(
-            {
-                "schema_version": 1,
-                "event_type": "output",
-                "offset_ms": offset,
-                "data_b64": base64.b64encode(data).decode("ascii"),
-            }
-        ).encode("utf-8")
-        + b"\n"
-    )
+class TestRecordingOutputEdges:
+    """The first and last PTY bytes a recording holds, read row by row (#9587).
+
+    The rows are scanned whole, so the window is exact however the PTY reads
+    chunked the output, and bounded however long the session ran.
+    """
+
+    EDGE = 8192
+
+    @staticmethod
+    def _record(path: Path, chunks: list[bytes]) -> Path:
+        writer = TerminalRecordingWriter(path, initial_rows=40, initial_cols=120)
+        for chunk in chunks:
+            writer.write_output(chunk)
+        writer.close()
+        return path
+
+    def test_a_short_recording_comes_back_whole(self, tmp_path: Path) -> None:
+        path = self._record(tmp_path / "terminal-recording.jsonl", [b"Login ", b"expired"])
+
+        edges = read_recording_output_edges(path, self.EDGE)
+
+        assert edges == TerminalOutputEdges(head=b"Login expired", tail=None)
+
+    def test_output_longer_than_one_end_but_not_two_comes_back_whole(
+        self, tmp_path: Path
+    ) -> None:
+        """The two scans meet: no gap, so no separator splits a phrase in two."""
+        path = self._record(
+            tmp_path / "terminal-recording.jsonl", [b"a" * 6000, b"b" * 6000]
+        )
+
+        edges = read_recording_output_edges(path, self.EDGE)
+
+        assert edges == TerminalOutputEdges(head=b"a" * 6000 + b"b" * 6000, tail=None)
+
+    @pytest.mark.parametrize("seed", range(4))
+    def test_each_end_is_exact_whatever_the_chunk_sizes(
+        self, seed: int, tmp_path: Path
+    ) -> None:
+        rng = random.Random(seed)
+        chunks: list[bytes] = []
+        while sum(map(len, chunks)) < 96 * 1024:
+            if rng.random() < 0.5:
+                # A run of single-byte reads: a row's envelope per PTY byte.
+                chunks.extend(rng.randbytes(1) for _ in range(rng.randint(1, 300)))
+            else:
+                chunks.append(rng.randbytes(rng.randint(1, 4096)))
+        path = self._record(tmp_path / "terminal-recording.jsonl", chunks)
+        output = b"".join(chunks)
+
+        edges = read_recording_output_edges(path, self.EDGE)
+
+        assert edges.head == output[: self.EDGE]
+        assert edges.tail == output[-self.EDGE :]
+
+    def test_a_banner_followed_by_tiny_rows_is_still_in_the_tail(
+        self, tmp_path: Path
+    ) -> None:
+        """Inside the last edge of output, yet far more than 4x the edge of raw file.
+
+        Each single-byte row costs its whole JSON envelope, so a fixed raw window
+        (the first fix read 4x the edge) misses a banner that the terminal shows
+        just a few hundred bytes from the end.
+        """
+        banner = b"Login expired \xc2\xb7 Please run /login\r\n"
+        path = self._record(
+            tmp_path / "terminal-recording.jsonl",
+            [b"x" * 40_000, banner] + [b"."] * 2000,
+        )
+        raw = path.read_bytes()
+        banner_row_end = raw.index(b"\n", raw.index(base64.b64encode(banner))) + 1
+        assert len(raw) - banner_row_end > 4 * self.EDGE, "the shape proves nothing"
+
+        edges = read_recording_output_edges(path, self.EDGE)
+
+        assert edges.tail is not None
+        assert banner in edges.tail
+
+    def test_rows_that_carry_no_output_are_skipped(self, tmp_path: Path) -> None:
+        """Resizes, bad payloads, non-JSON and the row a live writer is still writing."""
+        path = tmp_path / "terminal-recording.jsonl"
+        writer = TerminalRecordingWriter(path, initial_rows=40, initial_cols=120)
+        writer.write_output(b"kept ")
+        writer.close()
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"event_type": "output", "data_b64": "@@"}) + "\n")
+            handle.write("not a json row\n")
+            handle.write(json.dumps({"event_type": "output", "data_b64": None}) + "\n")
+        writer = TerminalRecordingWriter(path)
+        writer.write_output(b"too")
+        writer.close()
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write('{"data_b64": "dW5maW5pc2hlZA')  # no newline yet
+
+        edges = read_recording_output_edges(path, self.EDGE)
+
+        assert edges == TerminalOutputEdges(head=b"kept too", tail=None)
+
+    def test_the_unfinished_last_row_of_a_long_recording_is_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        path = self._record(
+            tmp_path / "terminal-recording.jsonl",
+            [b"HEAD-MARK"] + [b"ordinary output line\r\n"] * 5000 + [b"TAIL-MARK"],
+        )
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write('{"data_b64": "dW5maW5pc2hlZA')
+
+        edges = read_recording_output_edges(path, self.EDGE)
+
+        assert edges.head.startswith(b"HEAD-MARK")
+        assert edges.tail is not None
+        assert edges.tail.endswith(b"TAIL-MARK")
+        assert len(edges.head) == len(edges.tail) == self.EDGE
+
+    def test_rows_without_output_spend_a_bounded_budget(self, tmp_path: Path) -> None:
+        """Past its budget of rows that carry no output, an end stops short.
+
+        The window shrinks rather than the read growing with the file: the
+        banner behind that many resizes is not reached from the tail.
+        """
+        path = tmp_path / "terminal-recording.jsonl"
+        writer = TerminalRecordingWriter(path)
+        writer.write_output(b"x" * (3 * self.EDGE))
+        writer.write_output(b"BANNER")
+        resize_row_bytes = len(
+            json.dumps(
+                {"cols": 120, "event_type": "resize", "offset_ms": 0, "rows": 40,
+                 "schema_version": 1},
+                sort_keys=True,
+            )
+        ) + 1
+        for _ in range(self.EDGE * MAX_ROW_BYTES_PER_OUTPUT_BYTE // resize_row_bytes + 1):
+            writer.write_resize(rows=40, cols=120, elapsed_ms=0)
+        writer.write_output(b"TAIL")
+        writer.close()
+
+        edges = read_recording_output_edges(path, self.EDGE)
+
+        assert edges.tail == b"TAIL"
+
+    def test_a_row_longer_than_the_budget_ends_the_scan(self, tmp_path: Path) -> None:
+        """No PTY write makes a row that long: the file is not a recording there."""
+        path = tmp_path / "terminal-recording.jsonl"
+        writer = TerminalRecordingWriter(path)
+        writer.write_output(b"HEAD")
+        writer.close()
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write("z" * (self.EDGE * MAX_ROW_BYTES_PER_OUTPUT_BYTE + 10) + "\n")
+        writer = TerminalRecordingWriter(path)
+        writer.write_output(b"TAIL")
+        writer.close()
+
+        edges = read_recording_output_edges(path, self.EDGE)
+
+        assert edges == TerminalOutputEdges(head=b"HEAD", tail=b"TAIL")
+
+    def test_an_unreadable_recording_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(OSError):
+            read_recording_output_edges(tmp_path / "missing.jsonl", self.EDGE)
 
 
-def test_output_bytes_in_decodes_every_complete_output_row() -> None:
-    from issue_orchestrator.infra.terminal_recording import output_bytes_in
+class TestTheRowBudgetHoldsForTheWriter:
+    """``MAX_ROW_BYTES_PER_OUTPUT_BYTE`` is derived from the writer's row format.
 
-    raw = _output_row(b"Login ", 0) + _output_row(b"expired", 1)
+    The exact-window guarantee rests on two writer facts: every output row
+    carries at least one PTY byte, and no row spends more raw bytes per PTY byte
+    than the budget allows. Both are checked against the writer itself.
+    """
 
-    assert output_bytes_in(raw) == b"Login expired"
+    #: A session clock past any real session: the widest offset_ms field.
+    LATE_MS = 10**13 - 1
 
+    @pytest.mark.parametrize("size", [1, 2, 3, 4, 5, 100, 4096])
+    def test_no_output_row_costs_more_than_the_budget_per_byte(
+        self, size: int, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "terminal-recording.jsonl"
+        writer = TerminalRecordingWriter(path)
+        writer.write_output(b"\xff" * size, elapsed_ms=self.LATE_MS)
+        writer.close()
 
-def test_output_bytes_in_skips_what_it_cannot_trust() -> None:
-    """Cut edges, non-output events and bad payloads drop out; the rest decodes."""
-    from issue_orchestrator.infra.terminal_recording import output_bytes_in
+        assert len(path.read_bytes()) <= size * MAX_ROW_BYTES_PER_OUTPUT_BYTE
 
-    whole = _output_row(b"kept", 2)
-    resize = json.dumps({"event_type": "resize", "rows": 40, "cols": 120}).encode() + b"\n"
-    bad_payload = json.dumps({"event_type": "output", "data_b64": "@@not-b64@@"}).encode() + b"\n"
-    cut_front = _output_row(b"front", 0)[7:]
-    cut_back = _output_row(b"back", 3)[:-9]
+    def test_the_writer_records_no_empty_output_row(self, tmp_path: Path) -> None:
+        path = tmp_path / "terminal-recording.jsonl"
+        writer = TerminalRecordingWriter(path)
+        writer.write_output(b"")
+        writer.write(b"")
+        writer.close()
 
-    raw = cut_front + resize + bad_payload + whole + cut_back
-
-    assert output_bytes_in(raw) == b"kept"
+        assert path.read_bytes() == b""
