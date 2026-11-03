@@ -129,6 +129,10 @@ def custody_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[st
 def _open(page: Page, url: str, theme: str = "dark") -> None:
     page.goto(f"{url}/?theme={theme}", wait_until="domcontentloaded", timeout=90_000)
     page.wait_for_function("() => window.dashboardBundleLoaded === true", timeout=15_000)
+    # The bundle loads BEFORE boot finishes: until `data-booting` clears, the
+    # board sits behind `visibility: hidden` (dashboard/base.css), where
+    # nothing can take focus, so a keyboard test would race the curtain.
+    page.wait_for_function("() => !document.documentElement.hasAttribute('data-booting')")
 
 
 def _card(page: Page, number: int):  # type: ignore[no-untyped-def]

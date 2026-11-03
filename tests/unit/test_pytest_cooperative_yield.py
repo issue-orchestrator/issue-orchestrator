@@ -31,6 +31,14 @@ def _run_inner_pytest(tmp_path: Path, test_body: str, name: str) -> int:
             "-q",
             "-p",
             "no:cacheprovider",
+            # The inner session runs INSIDE this test's call, which
+            # pytest-playwright already wraps in Playwright's soft-assertion
+            # scope (Playwright >= 1.61). An inner pytest-playwright would open
+            # a second scope, and Playwright rejects nesting ("nested soft
+            # assertion scopes are not supported"). The inner tests drive no
+            # browser, so the plugin stays out of the inner session.
+            "-p",
+            "no:playwright",
             "-p",
             "issue_orchestrator.entrypoints.pytest_cooperative_yield",
             "-o",
