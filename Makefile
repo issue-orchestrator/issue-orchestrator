@@ -872,11 +872,11 @@ test: sync-deps
 	$(PYTEST) tests/ -x $(PYTEST_QUIET) --tb=short $(PYTEST_TIMINGS)
 
 # Playwright browser smoke tests for Flow-first web UI
-test-web: sync-deps
+test-web: sync-deps playwright-install
 	$(call TIMED_RUN,test-web,\
 		$(PYTEST) tests/e2e_web -v --tb=short $(PYTEST_TIMINGS))
 
-test-web-headed: sync-deps
+test-web-headed: sync-deps playwright-install
 	$(PYTEST) tests/e2e_web -v --tb=short --headed $(PYTEST_TIMINGS)
 
 # VS Code extension tests (local only). Skipped in GitHub Actions.
@@ -896,8 +896,13 @@ endif
 install-vscode-extensions:
 	cd packages/vscode && npm install
 
-playwright-install:
-	playwright install chromium
+# Install the chromium build the venv's locked Playwright expects into the shared
+# PLAYWRIGHT_BROWSERS_PATH. A no-op (well under 1 s, no network) once it is
+# there; after a Playwright version bump it fetches the new build once instead of
+# every host's test-web failing with "Executable doesn't exist". After sync-deps,
+# so it asks the venv's Playwright (not whichever one is on PATH) for its build.
+playwright-install: sync-deps
+	.venv/bin/playwright install chromium
 
 # Quick validation for agent_gate (~45s)
 validate-quick: typecheck test-unit
