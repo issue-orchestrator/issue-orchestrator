@@ -21,6 +21,7 @@ import inspect
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+from fastapi.testclient import TestClient
 import pytest
 
 from issue_orchestrator.entrypoints import cli_run_modes
@@ -28,14 +29,21 @@ from issue_orchestrator.entrypoints.cli_run_modes import declare_no_control_api
 from issue_orchestrator.domain.repository_launch_selection import (
     RepositoryLaunchSelection,
 )
+from issue_orchestrator.entrypoints.web import (
+    app as dashboard_app,
+    get_configured_dashboard_admin_token,
+)
 from issue_orchestrator.execution.control_center_runtime import (
     RepositoryOrchestratorOwnership,
 )
+from issue_orchestrator.infra import browser_session
 from issue_orchestrator.infra.agent_callback_endpoint import (
     RuntimeAgentCallbackEndpoint,
 )
+from issue_orchestrator.infra.api_token import AGENT_CALLBACK_TOKEN_ENV_VAR
 
 BOUND_PORT = 54321
+ADMIN_TOKEN = "cli-web-mode-admin-token-long-enough"
 
 
 def _close_coroutine(coro: object) -> None:
@@ -255,7 +263,95 @@ class TestTuiDashboardMode:
         assert fake_server[0].stopped is True
 
 
+def _web_config() -> MagicMock:
+    """A web-mode config; ``None`` keeps ``browser_session`` on its defaults.
+
+    A bare MagicMock attribute coerces to ``int`` 1, which would become the
+    process-wide session TTL.
+    """
+    return MagicMock(
+        web_port=8080,
+        browser_session_ttl_seconds=None,
+        sse_token_ttl_seconds=None,
+        browser_session_max=None,
+    )
+
+
 class TestWebDashboardMode:
+    @pytest.fixture(autouse=True)
+    def _engine_tokens(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Tokens from the environment, so no test touches a real token file."""
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_API_TOKEN", ADMIN_TOKEN)
+        monkeypatch.setenv(AGENT_CALLBACK_TOKEN_ENV_VAR, "cli-web-mode-agent-token")
+
+    def test_the_dashboard_gate_has_the_admin_token_before_it_binds(
+        self, orchestrator, fake_server, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#7315: the gate must be complete by the first request it sees."""
+        token_when_serving: list[str | None] = []
+
+        async def serve(*_args, **_kwargs) -> None:
+            token_when_serving.append(get_configured_dashboard_admin_token())
+
+        monkeypatch.setattr("issue_orchestrator.entrypoints.web.run_with_web_dashboard", serve)
+        monkeypatch.setattr(cli_run_modes, "console", MagicMock(), raising=False)
+
+        asyncio.run(
+            cli_run_modes.run_web_dashboard_mode(
+                orchestrator, _web_config(), MagicMock(port=8080), 0
+            )
+        )
+
+        assert token_when_serving == [ADMIN_TOKEN]
+
+    def test_the_gate_takes_the_admin_bearer_and_refuses_any_other(
+        self, orchestrator, fake_server, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#7315: armed with no admin token, the gate refused the Control
+        Center's valid bearer as ``invalid``, and its tech-lead page read the
+        engine as not answering."""
+        monkeypatch.setattr(
+            "issue_orchestrator.entrypoints.web.run_with_web_dashboard",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(cli_run_modes, "console", MagicMock(), raising=False)
+
+        asyncio.run(
+            cli_run_modes.run_web_dashboard_mode(
+                orchestrator, _web_config(), MagicMock(port=8080), 0
+            )
+        )
+
+        client = TestClient(dashboard_app, raise_server_exceptions=False)
+        for path in ("/api/status", "/api/tech-lead/page"):
+            accepted = client.get(path, headers={"Authorization": f"Bearer {ADMIN_TOKEN}"})
+            assert accepted.status_code != 401, f"admin bearer refused on {path}"
+            refused = client.get(path, headers={"Authorization": "Bearer not-the-admin-token"})
+            assert refused.status_code == 401, f"a wrong bearer reached {path}"
+
+    def test_a_browser_can_sign_in_to_the_dashboard(
+        self, orchestrator, fake_server, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#7315: with no admin token ``POST /login`` answered ``ok`` and minted
+        no session, so a browser could never get past the sign-in page."""
+        monkeypatch.setattr(
+            "issue_orchestrator.entrypoints.web.run_with_web_dashboard",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(cli_run_modes, "console", MagicMock(), raising=False)
+
+        asyncio.run(
+            cli_run_modes.run_web_dashboard_mode(
+                orchestrator, _web_config(), MagicMock(port=8080), 0
+            )
+        )
+
+        client = TestClient(dashboard_app)
+        signed_in = client.post("/login", json={"token": ADMIN_TOKEN})
+        assert signed_in.status_code == 200
+        assert browser_session.SESSION_COOKIE in signed_in.cookies
+        assert client.post("/login", json={"token": "wrong"}).status_code == 401
+
     def test_a_second_signal_forces_even_before_the_first_request_ran(
         self, orchestrator, fake_server, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -300,7 +396,7 @@ class TestWebDashboardMode:
 
         asyncio.run(
             cli_run_modes.run_web_dashboard_mode(
-                orchestrator, MagicMock(web_port=8080), MagicMock(port=8080), 0
+                orchestrator, _web_config(), MagicMock(port=8080), 0
             )
         )
 
@@ -315,7 +411,7 @@ class TestWebDashboardMode:
             "issue_orchestrator.entrypoints.web.run_with_web_dashboard", web_runner
         )
         monkeypatch.setattr(cli_run_modes, "console", MagicMock(), raising=False)
-        config = MagicMock(web_port=8080)
+        config = _web_config()
         args = MagicMock(port=8080)
 
         asyncio.run(cli_run_modes.run_web_dashboard_mode(orchestrator, config, args, 0))
@@ -331,7 +427,7 @@ class TestWebDashboardMode:
             AsyncMock(return_value=None),
         )
         monkeypatch.setattr(cli_run_modes, "console", MagicMock(), raising=False)
-        config = MagicMock(web_port=8080)
+        config = _web_config()
         args = MagicMock(port=8080)
 
         asyncio.run(

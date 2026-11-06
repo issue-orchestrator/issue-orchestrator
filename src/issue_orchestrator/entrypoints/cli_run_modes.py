@@ -93,6 +93,7 @@ async def run_web_dashboard_mode(
     from .engine_custody import SignalShutdowns, detach
     from .web import run_with_web_dashboard, trigger_server_shutdown
     from .control_api_server import ControlAPIServer
+    from .engine_startup import EngineStartup
 
     # Shutdown requests wait for the state lock a running tick holds: off the
     # loop and detached, so the dashboard keeps serving meanwhile (#8222). The
@@ -110,6 +111,16 @@ async def run_web_dashboard_mode(
     loop.add_signal_handler(signal.SIGTERM, handle_signal)
 
     declare_no_control_api(orchestrator, api_port)
+
+    # The agent-callback token arms the dashboard's auth gate as well as the
+    # Control API's. Armed without the admin token, that gate refuses every
+    # admin bearer and ``POST /login`` mints no session, so neither the Control
+    # Center nor a browser can reach this engine (#7315). The same owner as
+    # ``run_orchestrator``, so the two launch paths cannot drift, and before
+    # either surface binds, so the first request already sees the gate.
+    EngineStartup(
+        callback_endpoint=orchestrator.deps.agent_callback_endpoint
+    ).configure_auth(dev_no_auth=False, config=config)
 
     control_api = None
     if api_port is not None:
