@@ -176,6 +176,18 @@ def isolate_web_orchestrator_globals():
 
 
 @pytest.fixture(autouse=True)
+def isolate_control_center_file_log(tmp_path):
+    """Keep a test that drives ``control_center.main()`` out of the real log.
+
+    See ``tests/control_center_log_isolation.py``.
+    """
+    from tests.control_center_log_isolation import control_center_log_isolated
+
+    with control_center_log_isolated(tmp_path / "control-center.log"):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def isolate_git_env(monkeypatch):
     """Strip git env vars to prevent test git commands from affecting main repo.
 
@@ -252,6 +264,15 @@ def isolate_orchestrator_env(monkeypatch, tmp_path):
     safe_repo = tmp_path / "isolated-repo-root"
     safe_repo.mkdir(exist_ok=True)
     monkeypatch.setenv("ISSUE_ORCHESTRATOR_REPO_ROOT", str(safe_repo))
+
+    # CodexProvider.build_command records its project in the runtime home's
+    # config.toml. Without this, every such test registers its temp directory
+    # in the Codex config live agents read: by 2026-11-06 that file held 38,080
+    # projects, 346 of them real, and each session launch spent 1.5 s on it
+    # instead of 12 ms. Tests that care about the root still set their own.
+    monkeypatch.setenv(
+        "ISSUE_ORCHESTRATOR_CODEX_RUNTIME_ROOT", str(tmp_path / "codex-runtime")
+    )
 
 
 @pytest.fixture

@@ -5653,6 +5653,10 @@ class TestAgentEnvPathIsolation:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        # This audits what production adds to an agent's env. The suite-wide
+        # scratch Codex root (tests/conftest.py) is not that, and allowlisting
+        # it would hide production ever injecting this variable.
+        monkeypatch.delenv("ISSUE_ORCHESTRATOR_CODEX_RUNTIME_ROOT")
         prompt_path = tmp_path / "p.md"
         prompt_path.write_text("Prompt", encoding="utf-8")
         coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
