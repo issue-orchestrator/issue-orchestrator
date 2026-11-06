@@ -13,7 +13,8 @@ resulting silence as an unresponsive agent — SIGKILLing healthy coders
 and stranding validated work (#6913, #6924).
 
 This is the public seam that owns both, so production and tests drive
-the same object. ``run_orchestrator`` holds one and calls it; a test
+the same object. ``run_orchestrator`` holds one and calls it, and the
+CLI web mode configures its auth through one too (#7315); a test
 that wants to prove "the real engine publishes auth and an endpoint
 before sessions can launch" drives this rather than reassembling
 startup from private helpers — reassembly is precisely what hid the
