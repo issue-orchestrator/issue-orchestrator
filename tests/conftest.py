@@ -265,6 +265,15 @@ def isolate_orchestrator_env(monkeypatch, tmp_path):
     safe_repo.mkdir(exist_ok=True)
     monkeypatch.setenv("ISSUE_ORCHESTRATOR_REPO_ROOT", str(safe_repo))
 
+    # CodexProvider.build_command records its project in the runtime home's
+    # config.toml. Without this, every such test registers its temp directory
+    # in the Codex config live agents read: by 2026-11-06 that file held 38,080
+    # projects, 346 of them real, and each session launch spent 1.5 s on it
+    # instead of 12 ms. Tests that care about the root still set their own.
+    monkeypatch.setenv(
+        "ISSUE_ORCHESTRATOR_CODEX_RUNTIME_ROOT", str(tmp_path / "codex-runtime")
+    )
+
 
 @pytest.fixture
 def durable_orchestrator_python(monkeypatch) -> Path:

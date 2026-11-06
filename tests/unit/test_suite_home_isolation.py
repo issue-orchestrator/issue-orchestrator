@@ -1,4 +1,4 @@
-"""The suite must not write to the host's real Control Center log."""
+"""The suite must not write to the host's real ``~/.issue-orchestrator``."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from issue_orchestrator.entrypoints import control_center
+from issue_orchestrator.execution.agent_runner_providers.codex import CodexProvider
 from issue_orchestrator.infra import logging_config
 from tests.control_center_log_isolation import control_center_log_isolated
 
@@ -99,3 +100,30 @@ def test_a_test_s_other_file_handlers_are_left_alone(tmp_path: Path) -> None:
     finally:
         root.removeHandler(other)
         other.close()
+
+
+def test_building_a_codex_command_leaves_the_home_runtime_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A test that never asks for a runtime root must still get a scratch one."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    project = tmp_path / "project"
+    project.mkdir()
+
+    command = CodexProvider().build_command(
+        "review this", working_directory=project, approval_mode="full-auto"
+    )
+
+    assert not (home / ".issue-orchestrator").exists()
+    runtime_home = Path(
+        next(
+            token.removeprefix("CODEX_HOME=")
+            for token in command
+            if token.startswith("CODEX_HOME=")
+        )
+    )
+    assert runtime_home.is_relative_to(tmp_path / "codex-runtime")
+    # The project did get recorded, so this test exercised the write it guards.
+    assert str(project) in (runtime_home / "config.toml").read_text(encoding="utf-8")

@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import base64
 import shlex
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -34,8 +33,8 @@ from issue_orchestrator.execution.session_interactions import (
 
 
 @pytest.fixture
-def working_directory() -> Path:
-    return Path(tempfile.mkdtemp(prefix="rule-contract-"))
+def working_directory(tmp_path: Path) -> Path:
+    return tmp_path
 
 
 def _rule_names(command: list[str]) -> set[str]:
