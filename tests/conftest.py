@@ -176,6 +176,18 @@ def isolate_web_orchestrator_globals():
 
 
 @pytest.fixture(autouse=True)
+def isolate_control_center_file_log(tmp_path):
+    """Keep a test that drives ``control_center.main()`` out of the real log.
+
+    See ``tests/control_center_log_isolation.py``.
+    """
+    from tests.control_center_log_isolation import control_center_log_isolated
+
+    with control_center_log_isolated(tmp_path / "control-center.log"):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def isolate_git_env(monkeypatch):
     """Strip git env vars to prevent test git commands from affecting main repo.
 
